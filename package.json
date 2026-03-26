@@ -1,0 +1,13 @@
+{
+  "name": "slatebuilder-workspace",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev:pro": "npm run dev -w @slatebuilder/pro",
+    "dev:offices": "npm run dev -w @slatebuilder/offices"
+  }
+}

@@ -1,0 +1,22 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  @apply bg-sand-50 text-slateBlue-900 font-body;
+}
+
+.card {
+  @apply bg-white/80 backdrop-blur border border-sand-200 rounded-2xl shadow-[0_20px_50px_-30px_rgba(35,40,85,0.35)];
+}
+
+.gridline {
+  background-image: radial-gradient(rgba(52, 58, 136, 0.08) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
