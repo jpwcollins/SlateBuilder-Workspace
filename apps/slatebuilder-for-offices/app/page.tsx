@@ -1443,11 +1443,10 @@ export default function Home() {
 
       <section className="card p-6">
         <h2 className="text-lg font-semibold text-slateBlue-900">About</h2>
-        <p className="mt-2 max-w-4xl text-sm leading-6 text-sand-800">
-          SlateBuilder for Offices is a slimmed-down scheduling tool for individual surgeon offices.
-          It keeps the slate optimization engine but removes enterprise-style multi-surgeon group
-          workflows so office staff can focus on a single uploaded waitlist, practical slate
-          generation, and a clean office Priority Waitlist.
+        <p className="mt-2 text-sm text-sand-800">
+          SlateBuilder Pro was designed by Dr Jonathan Collins for BC Women&apos;s Hospital Surgical
+          Services use only. It was built using an AI tool, and the designer takes no responsibility
+          for any errors or omissions in outputs.
         </p>
       </section>
     </main>
