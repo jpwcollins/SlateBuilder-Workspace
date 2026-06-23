@@ -6,13 +6,14 @@ import {
   formatMinutesToTime,
   getBlockMinutes,
   getBlockStartMinutes,
-  getCsvTemplate,
   normalizeDateOnly,
   optimizeSlatesForDates,
   parseCsv,
   PatientCase,
   ScoredCase,
   clinicalFlagDefinitions,
+  serializeCsv,
+  reorderSlateByCaseIds,
 } from "@slatebuilder/core";
 
 function downloadFile(filename: string, contents: string) {
@@ -25,19 +26,6 @@ function downloadFile(filename: string, contents: string) {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
-}
-
-function csvEscape(value: string) {
-  if (value.includes(",") || value.includes('"') || value.includes("\n")) {
-    return `"${value.replace(/"/g, '""')}"`;
-  }
-  return value;
-}
-
-function serializeCsv(rows: string[][]) {
-  return ["sep=,", ...rows.map((row) => row.map((value) => csvEscape(value)).join(","))].join(
-    "\n"
-  );
 }
 
 export default function Home() {
@@ -80,6 +68,8 @@ export default function Home() {
   });
   const [selectedSurgeon, setSelectedSurgeon] = useState<string>("");
   const [orderedSlates, setOrderedSlates] = useState<ScoredCase[][]>([]);
+  const [orderedSlateCaseIds, setOrderedSlateCaseIds] = useState<string[][]>([]);
+  const [includeNamesInExports, setIncludeNamesInExports] = useState(false);
   const [dragState, setDragState] = useState<{ slateIndex: number; caseId: string } | null>(
     null
   );
@@ -278,9 +268,17 @@ export default function Home() {
   useEffect(() => {
     if (!slates) {
       setOrderedSlates([]);
+      setOrderedSlateCaseIds([]);
       return;
     }
-    setOrderedSlates(slates.map((item) => sortForSlate(item.selected)));
+    const nextOrdered = slates.map((item, index) =>
+      reorderSlateByCaseIds(sortForSlate(item.selected), orderedSlateCaseIds[index])
+    );
+    setOrderedSlates(nextOrdered);
+    setOrderedSlateCaseIds(nextOrdered.map((slate) => slate.map((item) => item.caseId)));
+    // orderedSlateCaseIds is intentionally omitted from deps: it is the output we
+    // write here, and is read only to preserve prior manual ordering.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slates, priorityMode]);
 
   const blockMinutes = useMemo(() => {
@@ -347,6 +345,7 @@ export default function Home() {
       if (fromIndex < 0 || toIndex < 0) return prev;
       const [moved] = slate.splice(fromIndex, 1);
       slate.splice(toIndex, 0, moved);
+      setOrderedSlateCaseIds(next.map((ordered) => ordered.map((item) => item.caseId)));
       return next;
     });
   };
@@ -362,6 +361,7 @@ export default function Home() {
       const idx = slate.findIndex((item) => item.caseId === caseId);
       if (idx < 0) return prev;
       slate[idx] = { ...slate[idx], estimatedDurationMin: minutes };
+      setOrderedSlateCaseIds(next.map((ordered) => ordered.map((item) => item.caseId)));
       return next;
     });
   };
@@ -401,7 +401,9 @@ export default function Home() {
   const resetDurationOverrides = () => {
     setDurationOverrides({});
     if (!slates) return;
-    setOrderedSlates(slates.map((item) => sortForSlate(item.selected)));
+    const nextOrdered = slates.map((item) => sortForSlate(item.selected));
+    setOrderedSlates(nextOrdered);
+    setOrderedSlateCaseIds(nextOrdered.map((slate) => slate.map((item) => item.caseId)));
   };
 
   const saveDefaultDurations = () => {
@@ -421,6 +423,7 @@ export default function Home() {
       [
         "order",
         "case_id",
+        ...(includeNamesInExports ? ["patient_label"] : []),
         "start_time",
         "end_time",
         "patient_type",
@@ -443,6 +446,7 @@ export default function Home() {
       rows.push([
         String(index + 1),
         item.caseId,
+        ...(includeNamesInExports ? [item.displayLabel] : []),
         formatMinutesToTime(start),
         formatMinutesToTime(end),
         item.inpatient ? "Inpatient" : "Day Case",
@@ -463,10 +467,13 @@ export default function Home() {
 
   const downloadMappingCsv = (slateIndex: number) => {
     if (!orderedSlates[slateIndex] || orderedSlates[slateIndex].length === 0) return;
-    const rows = [["case_id", "source_key"]];
-    orderedSlates[slateIndex].forEach((item) => rows.push([item.caseId, item.sourceKey]));
+    // The reidentification key: opaque code -> patient label. This is the only
+    // export that pairs codes with identifiers; keep it secured and do not
+    // circulate it with the (deidentified) slate CSV.
+    const rows = [["case_id", "patient_label"]];
+    orderedSlates[slateIndex].forEach((item) => rows.push([item.caseId, item.displayLabel]));
     const csv = serializeCsv(rows);
-    downloadFile(`case_mapping_${slateDates[slateIndex]}_s${slateIndex + 1}.csv`, csv);
+    downloadFile(`CONFIDENTIAL_case_mapping_${slateDates[slateIndex]}_s${slateIndex + 1}.csv`, csv);
   };
 
   const orderedByUrgency = useMemo(() => {
@@ -489,6 +496,7 @@ export default function Home() {
       [
         "order",
         "case_id",
+        ...(includeNamesInExports ? ["patient_label"] : []),
         "patient_type",
         "benchmark_weeks",
         "time_to_target_days",
@@ -504,6 +512,7 @@ export default function Home() {
       rows.push([
         String(index + 1),
         item.caseId,
+        ...(includeNamesInExports ? [item.displayLabel] : []),
         item.inpatient ? "Inpatient" : "Day Case",
         String(item.benchmarkWeeks),
         String(item.timeToTargetDays),
@@ -563,8 +572,9 @@ export default function Home() {
           special assist needs.
         </p>
         <p className="max-w-2xl text-xs text-sand-600">
-          Privacy note: all processing happens locally in your browser. No data is uploaded or sent
-          over the internet.
+          Privacy: all processing happens locally in your browser — no data is uploaded or sent over
+          the internet. Each case is given an opaque code (e.g. C-001); exported slates use that code
+          by default and only include patient names when you explicitly opt in below.
         </p>
       </header>
 
@@ -592,6 +602,27 @@ export default function Home() {
                 </ul>
               </div>
             )}
+
+            <div className="rounded-xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
+              <label className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={includeNamesInExports}
+                  onChange={(event) => setIncludeNamesInExports(event.target.checked)}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="font-semibold text-sand-900">
+                    Include patient names in exported CSVs
+                  </span>
+                  <span className="block text-xs text-sand-600">
+                    Off (recommended): exports show only the opaque case code, safe to share. On:
+                    adds a patient_label column for an actionable named list. The on-screen slate
+                    always shows names regardless.
+                  </span>
+                </span>
+              </label>
+            </div>
 
             <div className="rounded-xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
               <p className="font-semibold text-sand-900">Priority rule</p>
@@ -908,7 +939,10 @@ export default function Home() {
                             <p className="text-xs uppercase tracking-[0.2em] text-sand-500">
                               #{index + 1} · {formatMinutesToTime(start)}–{formatMinutesToTime(end)}
                             </p>
-                            <p className="font-semibold text-slateBlue-900">{item.caseId}</p>
+                            <p className="font-semibold text-slateBlue-900">{item.displayLabel}</p>
+                            <p className="text-[10px] uppercase tracking-wider text-sand-400">
+                              {item.caseId}
+                            </p>
                             <p className="text-xs text-sand-700">
                               Benchmark {item.benchmarkWeeks}w · TTT {item.timeToTargetDays}d · {item.estimatedDurationMin}m
                             </p>
@@ -1066,7 +1100,10 @@ export default function Home() {
               <div key={item.caseId} className="rounded-lg border border-sand-200 bg-white/70 px-3 py-2">
                 <div className="flex items-center justify-between">
                   <span className="font-semibold text-slateBlue-900">
-                    #{index + 1} · {item.caseId}
+                    #{index + 1} · {item.displayLabel}
+                    <span className="ml-2 text-[10px] uppercase tracking-wider text-sand-400">
+                      {item.caseId}
+                    </span>
                   </span>
                   <span className="text-xs text-sand-700">{item.estimatedDurationMin}m</span>
                 </div>
@@ -1248,7 +1285,8 @@ export default function Home() {
               </button>
             </div>
             <p className="mt-2 text-xs text-sand-600">
-              Wait-time metrics use time-to-target as a proxy (lower TTT = longer waiting).
+              Shown as days past target (TTT): positive = overdue, negative = still within target.
+              These are time-to-target figures, not measured wait durations.
             </p>
             <div className="mt-4 grid gap-4 sm:grid-cols-3">
               <div className="rounded-xl border border-sand-200 bg-sand-50 p-3 text-xs text-sand-800">
@@ -1262,21 +1300,21 @@ export default function Home() {
                 </ul>
               </div>
               <div className="rounded-xl border border-sand-200 bg-sand-50 p-3 text-xs text-sand-800">
-                <p className="font-semibold text-sand-900">Longest waiting patients</p>
+                <p className="font-semibold text-sand-900">Most overdue (days past target)</p>
                 <ul className="mt-2 flex flex-col gap-1">
                   {topByLongestWait.map((item) => (
                     <li key={`max-${item.surgeon}`}>
-                      {item.surgeon} · {item.maxWait.toFixed(1)} days
+                      {item.surgeon} · {item.maxWait.toFixed(1)}d past target
                     </li>
                   ))}
                 </ul>
               </div>
               <div className="rounded-xl border border-sand-200 bg-sand-50 p-3 text-xs text-sand-800">
-                <p className="font-semibold text-sand-900">Lowest average wait time</p>
+                <p className="font-semibold text-sand-900">Lowest average days past target</p>
                 <ul className="mt-2 flex flex-col gap-1">
                   {topByLowestAvgWait.map((item) => (
                     <li key={`avg-${item.surgeon}`}>
-                      {item.surgeon} · {item.avgWait.toFixed(1)} days
+                      {item.surgeon} · {item.avgWait.toFixed(1)}d past target
                     </li>
                   ))}
                 </ul>

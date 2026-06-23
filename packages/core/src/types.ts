@@ -16,8 +16,21 @@ export type ClinicalFlags = Partial<Record<ClinicalFlagKey, boolean>> & {
 };
 
 export type PatientCase = {
+  /**
+   * Opaque, non-identifying code (e.g. "C-001"). Used everywhere internally
+   * (React keys, override maps, optimizer ids) and as the machine `case_id`
+   * column in exports. Carries no patient information and is stable for a given
+   * uploaded file.
+   */
   caseId: string;
+  /**
+   * The raw identifier as it appeared in the uploaded file (patient name, PHN,
+   * or an already-deidentified key). Only ever written to the secured
+   * code->patient mapping export. Never used as a React key.
+   */
   sourceKey: string;
+  /** Human-readable label shown on screen to staff (may contain PHI). */
+  displayLabel: string;
   benchmarkWeeks: BenchmarkWeeks;
   timeToTargetDays: number;
   estimatedDurationMin: number;

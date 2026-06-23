@@ -3,6 +3,14 @@
 import { useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import {
+  downloadSlatePdf,
+  downloadAllSlatesPdf,
+  downloadWaitlistPdf,
+  SlatePdfCase,
+  SlatePdfOptions,
+  WaitlistPdfRow,
+} from "./slatePdf";
+import {
   ClinicalFlagKey,
   formatMinutesToTime,
   getBlockMinutes,
@@ -13,35 +21,55 @@ import {
   PatientCase,
   ScoredCase,
   clinicalFlagDefinitions,
+  serializeCsv,
+  csvEscape,
+  reorderSlateByCaseIds,
+  encryptJson,
+  decryptJson,
+  isEncryptedEnvelope,
+  EncryptedEnvelope,
 } from "@slatebuilder/core";
 
 type SpreadsheetRow = Record<string, string | number | boolean | null | undefined>;
 
-type SavedOfficeSession = {
-  version: 1;
+type WaitingUnit = "weeks" | "days";
+
+type OfficeSessionState = {
+  csvText: string;
+  durationOverrides: Record<string, number>;
+  unavailableOverrides: Record<string, string>;
+  flagOverrides: Record<string, Partial<Record<ClinicalFlagKey, boolean>>>;
+  removedFromSlateSuggestions: Record<string, boolean>;
+  defaultDurations: {
+    hysteroscopy: number;
+    laparoscopy: number;
+    hysterectomy: number;
+    other: number;
+  };
+  priorityMode: "ttt" | "urgency_then_ttt";
+  slateCount: number;
+  slateDates: string[];
+  orderedSlateCaseIds: string[][];
+};
+
+/**
+ * What gets written to localStorage / exported to a file. The session state may
+ * contain patient identifiers, so it is stored only as an encrypted envelope.
+ * Name and savedAt are cleartext metadata so the list can render without the
+ * passphrase.
+ */
+type StoredOfficeSession = {
+  version: 2;
   id: string;
   name: string;
   savedAt: string;
-  state: {
-    csvText: string;
-    durationOverrides: Record<string, number>;
-    unavailableOverrides: Record<string, string>;
-    flagOverrides: Record<string, Partial<Record<ClinicalFlagKey, boolean>>>;
-    removedFromSlateSuggestions: Record<string, boolean>;
-    defaultDurations: {
-      hysteroscopy: number;
-      laparoscopy: number;
-      hysterectomy: number;
-      other: number;
-    };
-    priorityMode: "ttt" | "urgency_then_ttt";
-    slateCount: number;
-    slateDates: string[];
-    orderedSlateCaseIds: string[][];
-  };
+  encrypted: EncryptedEnvelope;
 };
 
-const OFFICE_SAVED_SESSIONS_KEY = "slatebuilder-office-saved-sessions";
+const OFFICE_SAVED_SESSIONS_KEY = "slatebuilder-office-saved-sessions-v2";
+// Autosave lives in sessionStorage (cleared when the tab closes, never shared
+// with other tabs or written to disk) so unencrypted PHI is not left behind on
+// a shared clinic workstation.
 const OFFICE_AUTOSAVE_KEY = "slatebuilder-office-autosave";
 
 function downloadFile(filename: string, contents: string) {
@@ -54,19 +82,6 @@ function downloadFile(filename: string, contents: string) {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
-}
-
-function csvEscape(value: string) {
-  if (value.includes(",") || value.includes('"') || value.includes("\n")) {
-    return `"${value.replace(/"/g, '""')}"`;
-  }
-  return value;
-}
-
-function serializeCsv(rows: string[][]) {
-  return ["sep=,", ...rows.map((row) => row.map((value) => csvEscape(value)).join(","))].join(
-    "\n"
-  );
 }
 
 function downloadJson(filename: string, value: unknown) {
@@ -83,11 +98,15 @@ function downloadJson(filename: string, value: unknown) {
   URL.revokeObjectURL(url);
 }
 
-function normalizeOfficeWorkbookToCsv(rows: SpreadsheetRow[]): string {
+function normalizeOfficeWorkbookToCsv(rows: SpreadsheetRow[], waitingUnit: WaitingUnit): string {
+  // TIME_WAITING in the office export has no unit label; the user confirms
+  // whether it is weeks or days so the time-to-target math is not silently off
+  // by a factor of 7.
+  const waitingColumn = waitingUnit === "days" ? "time_waiting_days" : "time_waiting_weeks";
   const headers = [
     "source_key",
     "benchmark",
-    "time_waiting_weeks",
+    waitingColumn,
     "estimated_duration_min",
     "unavailable_until",
     "surgeon_id",
@@ -122,26 +141,6 @@ function normalizeOfficeWorkbookToCsv(rows: SpreadsheetRow[]): string {
   return lines.join("\n");
 }
 
-function reorderSlateByCaseIds(items: ScoredCase[], orderedIds: string[] | undefined) {
-  if (!orderedIds || orderedIds.length === 0) return items;
-  const byId = new Map(items.map((item) => [item.caseId, item]));
-  const ordered: ScoredCase[] = [];
-  orderedIds.forEach((id) => {
-    const found = byId.get(id);
-    if (found) {
-      ordered.push(found);
-      byId.delete(id);
-    }
-  });
-  items.forEach((item) => {
-    if (byId.has(item.caseId)) {
-      ordered.push(item);
-      byId.delete(item.caseId);
-    }
-  });
-  return ordered;
-}
-
 function StatCard({
   label,
   value,
@@ -156,6 +155,69 @@ function StatCard({
       <p className="text-xs uppercase tracking-[0.2em] text-sand-600">{label}</p>
       <p className="mt-2 text-2xl font-semibold text-slateBlue-900">{value}</p>
       <p className="mt-1 text-xs text-sand-700">{detail}</p>
+    </div>
+  );
+}
+
+// Urgency tint keyed by benchmark class (most urgent = red).
+function urgencyChipClasses(weeks: number): string {
+  if (weeks <= 2) return "bg-rose-100 text-rose-700";
+  if (weeks <= 4) return "bg-orange-100 text-orange-700";
+  if (weeks <= 6) return "bg-amber-100 text-amber-800";
+  if (weeks <= 12) return "bg-sky-100 text-sky-700";
+  return "bg-slate-100 text-slate-600";
+}
+
+function UrgencyBadge({
+  benchmarkWeeks,
+  timeToTargetDays,
+}: {
+  benchmarkWeeks: number;
+  timeToTargetDays: number;
+}) {
+  const overdue = timeToTargetDays < 0;
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span
+        className={`rounded-full px-2 py-0.5 text-xs font-semibold ${urgencyChipClasses(
+          benchmarkWeeks
+        )}`}
+      >
+        {benchmarkWeeks}w
+      </span>
+      {overdue && (
+        <span className="rounded-full bg-rose-600 px-2 py-0.5 text-xs font-semibold text-white">
+          {Math.abs(timeToTargetDays)}d overdue
+        </span>
+      )}
+    </span>
+  );
+}
+
+// Capacity meter: green under target, amber as it fills, red when over the block.
+function CapacityBar({ totalMinutes, blockMinutes }: { totalMinutes: number; blockMinutes: number }) {
+  const pct = blockMinutes > 0 ? (totalMinutes / blockMinutes) * 100 : 0;
+  const over = totalMinutes > blockMinutes;
+  const remaining = blockMinutes - totalMinutes;
+  const barColor = over ? "bg-rose-500" : pct >= 85 ? "bg-amber-500" : "bg-emerald-500";
+  return (
+    <div>
+      <div className="flex items-center justify-between text-xs text-sand-700">
+        <span className="font-semibold text-sand-900">Capacity</span>
+        <span className={over ? "font-semibold text-rose-600" : ""}>
+          {over
+            ? `Over by ${Math.abs(remaining)} min`
+            : remaining === 0
+              ? "Full"
+              : `${remaining} min free`}
+        </span>
+      </div>
+      <div className="mt-1 h-2.5 w-full overflow-hidden rounded-full bg-sand-200">
+        <div
+          className={`h-full rounded-full ${barColor}`}
+          style={{ width: `${Math.min(100, Math.max(pct, totalMinutes > 0 ? 4 : 0))}%` }}
+        />
+      </div>
     </div>
   );
 }
@@ -196,9 +258,16 @@ export default function Home() {
     null
   );
   const [orderedSlateCaseIds, setOrderedSlateCaseIds] = useState<string[][]>([]);
-  const [savedSessions, setSavedSessions] = useState<SavedOfficeSession[]>([]);
+  const [savedSessions, setSavedSessions] = useState<StoredOfficeSession[]>([]);
   const [sessionName, setSessionName] = useState("");
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [passphrase, setPassphrase] = useState("");
+  const [includeNamesInExports, setIncludeNamesInExports] = useState(false);
+  const [waitingUnit, setWaitingUnit] = useState<WaitingUnit>("weeks");
+  const [lastAutosaveAt, setLastAutosaveAt] = useState<string | null>(null);
+  // Raw rows from the last Excel upload, retained so the time-waiting unit can
+  // be re-applied without re-uploading. Held in component memory only.
+  const [workbookRows, setWorkbookRows] = useState<SpreadsheetRow[] | null>(null);
 
   useEffect(() => {
     if (!csvText) return;
@@ -206,6 +275,13 @@ export default function Home() {
     setCases(result.cases);
     setWarnings(result.warnings);
   }, [csvText]);
+
+  // Re-derive the normalized CSV when the time-waiting unit changes for an
+  // already-uploaded workbook.
+  useEffect(() => {
+    if (!workbookRows) return;
+    setCsvText(normalizeOfficeWorkbookToCsv(workbookRows, waitingUnit));
+  }, [workbookRows, waitingUnit]);
 
   useEffect(() => {
     const stored = window.localStorage.getItem("slatebuilder-office-default-durations");
@@ -225,11 +301,25 @@ export default function Home() {
     const storedSessions = window.localStorage.getItem(OFFICE_SAVED_SESSIONS_KEY);
     if (storedSessions) {
       try {
-        setSavedSessions(JSON.parse(storedSessions) as SavedOfficeSession[]);
+        setSavedSessions(JSON.parse(storedSessions) as StoredOfficeSession[]);
       } catch {
         // ignore malformed saved sessions
       }
     }
+  }, []);
+
+  // Restore the in-tab autosave (sessionStorage only) so a reload within the
+  // same tab does not lose work. Nothing is read from disk.
+  useEffect(() => {
+    const auto = window.sessionStorage.getItem(OFFICE_AUTOSAVE_KEY);
+    if (!auto) return;
+    try {
+      const state = JSON.parse(auto) as OfficeSessionState;
+      applySessionState(state, false);
+    } catch {
+      // ignore malformed autosave
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const applyDefaultDuration = (item: PatientCase): PatientCase => {
@@ -341,6 +431,9 @@ export default function Home() {
     );
     setOrderedSlates(nextOrdered);
     setOrderedSlateCaseIds(nextOrdered.map((slate) => slate.map((item) => item.caseId)));
+    // orderedSlateCaseIds is read only to preserve prior manual ordering; it is
+    // the value we write here, so it is intentionally not a dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slates, priorityMode]);
 
   const selectedCaseIds = useMemo(() => {
@@ -389,6 +482,12 @@ export default function Home() {
   };
 
   const resetWorkspace = () => {
+    if (
+      (csvText || cases.length > 0) &&
+      !window.confirm("Clear the current workspace? Unsaved changes in this tab will be lost.")
+    ) {
+      return;
+    }
     setCsvText("");
     setCases([]);
     setWarnings([]);
@@ -410,11 +509,13 @@ export default function Home() {
     setOrderedSlateCaseIds([]);
     setDragState(null);
     setSessionName("");
-    window.localStorage.removeItem(OFFICE_AUTOSAVE_KEY);
+    setWorkbookRows(null);
+    window.sessionStorage.removeItem(OFFICE_AUTOSAVE_KEY);
+    setLastAutosaveAt(null);
     setSaveStatus("Workspace reset");
   };
 
-  function buildSessionState() {
+  function buildSessionState(): OfficeSessionState {
     return {
       csvText,
       durationOverrides,
@@ -429,42 +530,75 @@ export default function Home() {
     };
   }
 
-  function applySavedSession(session: SavedOfficeSession, persistMessage = true) {
-    setCsvText(session.state.csvText);
-    setDurationOverrides(session.state.durationOverrides ?? {});
-    setUnavailableOverrides(session.state.unavailableOverrides ?? {});
-    setFlagOverrides(session.state.flagOverrides ?? {});
-    setRemovedFromSlateSuggestions(session.state.removedFromSlateSuggestions ?? {});
-    setDefaultDurations(session.state.defaultDurations);
-    setPriorityMode(session.state.priorityMode);
-    setSlateCount(session.state.slateCount);
-    setSlateDates(session.state.slateDates);
-    setOrderedSlateCaseIds(session.state.orderedSlateCaseIds ?? []);
-    setSessionName(session.name);
-    if (persistMessage) {
-      setSaveStatus(`Loaded "${session.name}"`);
+  function applySessionState(state: OfficeSessionState, persistMessage = true, name?: string) {
+    // A loaded session carries its own normalized csvText, so clear any retained
+    // workbook rows to stop the unit effect from overwriting it.
+    setWorkbookRows(null);
+    setCsvText(state.csvText);
+    setDurationOverrides(state.durationOverrides ?? {});
+    setUnavailableOverrides(state.unavailableOverrides ?? {});
+    setFlagOverrides(state.flagOverrides ?? {});
+    setRemovedFromSlateSuggestions(state.removedFromSlateSuggestions ?? {});
+    setDefaultDurations(state.defaultDurations);
+    setPriorityMode(state.priorityMode);
+    setSlateCount(state.slateCount);
+    setSlateDates(state.slateDates);
+    setOrderedSlateCaseIds(state.orderedSlateCaseIds ?? []);
+    if (name !== undefined) setSessionName(name);
+    if (persistMessage && name !== undefined) {
+      setSaveStatus(`Loaded "${name}"`);
     }
   }
 
-  function persistSavedSessions(nextSessions: SavedOfficeSession[]) {
+  function persistSavedSessions(nextSessions: StoredOfficeSession[]) {
     setSavedSessions(nextSessions);
     window.localStorage.setItem(OFFICE_SAVED_SESSIONS_KEY, JSON.stringify(nextSessions));
   }
 
-  const saveSession = (nameOverride?: string) => {
+  function requirePassphrase(): string | null {
+    const pass = passphrase.trim();
+    if (!pass) {
+      setSaveStatus("Enter a passphrase first — it locks and unlocks saved work.");
+      return null;
+    }
+    return pass;
+  }
+
+  const saveSession = async (nameOverride?: string) => {
+    const pass = requirePassphrase();
+    if (!pass) return;
     const trimmedName = (nameOverride ?? sessionName).trim() || "Office Session";
     const existing = savedSessions.find((session) => session.name === trimmedName);
-    const nextSession: SavedOfficeSession = {
-      version: 1,
-      id: existing?.id ?? `${Date.now()}`,
-      name: trimmedName,
-      savedAt: new Date().toISOString(),
-      state: buildSessionState(),
-    };
-    const nextSessions = [nextSession, ...savedSessions.filter((session) => session.id !== nextSession.id)];
-    persistSavedSessions(nextSessions);
-    setSessionName(trimmedName);
-    setSaveStatus(`Saved "${trimmedName}"`);
+    try {
+      const encrypted = await encryptJson(pass, buildSessionState());
+      const nextSession: StoredOfficeSession = {
+        version: 2,
+        id: existing?.id ?? `${Date.now()}`,
+        name: trimmedName,
+        savedAt: new Date().toISOString(),
+        encrypted,
+      };
+      const nextSessions = [
+        nextSession,
+        ...savedSessions.filter((session) => session.id !== nextSession.id),
+      ];
+      persistSavedSessions(nextSessions);
+      setSessionName(trimmedName);
+      setSaveStatus(`Saved "${trimmedName}" (encrypted)`);
+    } catch {
+      setSaveStatus("Could not encrypt and save session");
+    }
+  };
+
+  const loadSession = async (session: StoredOfficeSession) => {
+    const pass = requirePassphrase();
+    if (!pass) return;
+    try {
+      const state = await decryptJson<OfficeSessionState>(pass, session.encrypted);
+      applySessionState(state, true, session.name);
+    } catch {
+      setSaveStatus(`Wrong passphrase for "${session.name}", or the data is corrupt.`);
+    }
   };
 
   const deleteSession = (id: string) => {
@@ -473,29 +607,49 @@ export default function Home() {
     setSaveStatus("Deleted saved session");
   };
 
-  const exportSession = () => {
-    const trimmedName = sessionName.trim() || "office-session";
-    const payload: SavedOfficeSession = {
-      version: 1,
-      id: `${Date.now()}`,
-      name: trimmedName,
-      savedAt: new Date().toISOString(),
-      state: buildSessionState(),
-    };
-    downloadJson(`${trimmedName.replace(/\s+/g, "-").toLowerCase()}.json`, payload);
-    setSaveStatus(`Exported "${trimmedName}"`);
+  const clearAllSavedData = () => {
+    if (
+      !window.confirm(
+        "Delete ALL saved sessions and autosave from this browser? This cannot be undone."
+      )
+    ) {
+      return;
+    }
+    window.localStorage.removeItem(OFFICE_SAVED_SESSIONS_KEY);
+    window.sessionStorage.removeItem(OFFICE_AUTOSAVE_KEY);
+    setSavedSessions([]);
+    setLastAutosaveAt(null);
+    setSaveStatus("Cleared all saved sessions and autosave from this browser");
   };
 
+  const exportSession = async () => {
+    const pass = requirePassphrase();
+    if (!pass) return;
+    const trimmedName = sessionName.trim() || "office-session";
+    try {
+      const encrypted = await encryptJson(pass, buildSessionState());
+      const payload: StoredOfficeSession = {
+        version: 2,
+        id: `${Date.now()}`,
+        name: trimmedName,
+        savedAt: new Date().toISOString(),
+        encrypted,
+      };
+      downloadJson(`${trimmedName.replace(/\s+/g, "-").toLowerCase()}.json`, payload);
+      setSaveStatus(`Exported "${trimmedName}" (encrypted)`);
+    } catch {
+      setSaveStatus("Could not encrypt and export session");
+    }
+  };
+
+  // Autosave to sessionStorage only: it survives an in-tab reload but is cleared
+  // when the tab closes and is never written to disk, so unencrypted PHI is not
+  // left on a shared workstation.
   useEffect(() => {
     if (!csvText && cases.length === 0) return;
-    const autosave: SavedOfficeSession = {
-      version: 1,
-      id: "autosave",
-      name: sessionName.trim() || "Autosave",
-      savedAt: new Date().toISOString(),
-      state: buildSessionState(),
-    };
-    window.localStorage.setItem(OFFICE_AUTOSAVE_KEY, JSON.stringify(autosave));
+    window.sessionStorage.setItem(OFFICE_AUTOSAVE_KEY, JSON.stringify(buildSessionState()));
+    setLastAutosaveAt(new Date().toLocaleTimeString());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     csvText,
     cases.length,
@@ -508,7 +662,6 @@ export default function Home() {
     slateCount,
     slateDates,
     orderedSlateCaseIds,
-    sessionName,
   ]);
 
   const handleUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -525,6 +678,7 @@ export default function Home() {
         const firstSheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[firstSheetName];
         if (!sheet) {
+          setWorkbookRows(null);
           setCsvText("");
           setWarnings(["No worksheet found in the uploaded Excel file."]);
           return;
@@ -533,8 +687,9 @@ export default function Home() {
           defval: "",
           raw: false,
         });
-        const normalizedCsv = normalizeOfficeWorkbookToCsv(rows);
-        setCsvText(normalizedCsv);
+        // Retain the raw rows so the time-waiting unit can be re-applied; the
+        // effect on [workbookRows, waitingUnit] produces the normalized CSV.
+        setWorkbookRows(rows);
       };
       reader.readAsArrayBuffer(file);
       return;
@@ -543,6 +698,7 @@ export default function Home() {
     const reader = new FileReader();
     reader.onload = () => {
       const text = typeof reader.result === "string" ? reader.result : "";
+      setWorkbookRows(null);
       setCsvText(text);
     };
     reader.readAsText(file);
@@ -552,13 +708,20 @@ export default function Home() {
     const file = event.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
         const text = typeof reader.result === "string" ? reader.result : "";
-        const parsed = JSON.parse(text) as SavedOfficeSession;
-        applySavedSession(parsed);
+        const parsed = JSON.parse(text) as StoredOfficeSession;
+        if (!isEncryptedEnvelope(parsed.encrypted)) {
+          setSaveStatus("Unrecognized or unencrypted session file");
+          return;
+        }
+        const pass = requirePassphrase();
+        if (!pass) return;
+        const state = await decryptJson<OfficeSessionState>(pass, parsed.encrypted);
+        applySessionState(state, true, parsed.name);
       } catch {
-        setSaveStatus("Could not import saved session");
+        setSaveStatus("Could not import session — wrong passphrase or invalid file");
       }
     };
     reader.readAsText(file);
@@ -676,6 +839,7 @@ export default function Home() {
       [
         "order",
         "case_id",
+        ...(includeNamesInExports ? ["patient_label"] : []),
         "start_time",
         "end_time",
         "patient_type",
@@ -698,6 +862,7 @@ export default function Home() {
       rows.push([
         String(index + 1),
         item.caseId,
+        ...(includeNamesInExports ? [item.displayLabel] : []),
         formatMinutesToTime(start),
         formatMinutesToTime(end),
         item.inpatient ? "Inpatient" : "Day Case",
@@ -716,12 +881,128 @@ export default function Home() {
     downloadFile(`office_slate_${slateDates[slateIndex]}_${slateIndex + 1}.csv`, csv);
   };
 
+  // The surgeon name comes from the uploaded waitlist's SURGEON field
+  // (parsed into surgeonId); offices do not type it in.
+  const surgeonNameFor = (slate: { surgeonId: string }[]): string => {
+    const unique = Array.from(new Set(slate.map((item) => item.surgeonId)));
+    return unique.join(", ") || "Surgeon";
+  };
+
+  const fileSlug = (value: string): string =>
+    value.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "surgeon";
+
+  const buildSlateOptions = (slateIndex: number): SlatePdfOptions | null => {
+    const orderedSlate = orderedSlates[slateIndex];
+    if (!orderedSlate || orderedSlate.length === 0) return null;
+    const dateISO = slateDates[slateIndex];
+    const date = new Date(`${dateISO}T00:00:00`);
+    const startMin = getBlockStartMinutes(date);
+    const blockMin = getBlockMinutes(date);
+
+    let cursor = startMin;
+    const pdfCases: SlatePdfCase[] = orderedSlate.map((item, index) => {
+      const start = cursor;
+      const end = cursor + Math.round(item.estimatedDurationMin);
+      cursor = end;
+      return {
+        order: index + 1,
+        startLabel: formatMinutesToTime(start),
+        endLabel: formatMinutesToTime(end),
+        durationMin: Math.round(item.estimatedDurationMin),
+        benchmarkWeeks: item.benchmarkWeeks,
+        overdueDays: Math.max(0, -item.timeToTargetDays),
+        primary: includeNamesInExports ? item.displayLabel : item.caseId,
+        secondary: includeNamesInExports ? item.caseId : undefined,
+        procedure: item.procedureName ?? "",
+        flags: clinicalFlagDefinitions
+          .filter((flag) => item.flags?.[flag.key])
+          .map((flag) => flag.label),
+        inpatient: Boolean(item.inpatient),
+      };
+    });
+
+    const totalMin = orderedSlate.reduce(
+      (sum, item) => sum + Math.round(item.estimatedDurationMin),
+      0
+    );
+    const utilization = blockMin > 0 ? (totalMin / blockMin) * 100 : 0;
+    const surgeonName = surgeonNameFor(orderedSlate);
+    const orDateLabel = dateISO
+      ? date.toLocaleDateString(undefined, {
+          weekday: "long",
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+        })
+      : "Date not set";
+
+    return {
+      surgeonName,
+      orDateLabel,
+      blockLabel: `${formatMinutesToTime(startMin)}–${formatMinutesToTime(
+        startMin + blockMin
+      )} · ${blockMin} min`,
+      summaryLabel: `${orderedSlate.length} ${
+        orderedSlate.length === 1 ? "case" : "cases"
+      } · ${utilization.toFixed(0)}% utilization`,
+      cases: pdfCases,
+      fileName: `slate_${fileSlug(surgeonName)}_${dateISO || "undated"}.pdf`,
+    };
+  };
+
+  const downloadSlatePdfFile = (slateIndex: number) => {
+    const opts = buildSlateOptions(slateIndex);
+    if (opts) downloadSlatePdf(opts);
+  };
+
+  const downloadAllSlatesPdfFile = () => {
+    const allOpts = (orderedSlates ?? [])
+      .map((_, index) => buildSlateOptions(index))
+      .filter((opts): opts is SlatePdfOptions => opts !== null);
+    if (allOpts.length === 0) return;
+    const surgeon = fileSlug(allOpts[0].surgeonName);
+    const first = slateDates[0] || "undated";
+    downloadAllSlatesPdf(allOpts, `slates_${surgeon}_${first}.pdf`);
+  };
+
+  const downloadWaitlistPdfFile = () => {
+    if (orderedByUrgency.length === 0) return;
+    const rows: WaitlistPdfRow[] = orderedByUrgency.map((item, index) => ({
+      rank: index + 1,
+      primary: includeNamesInExports ? item.displayLabel : item.caseId,
+      secondary: includeNamesInExports ? item.caseId : undefined,
+      procedure: item.procedureName ?? "",
+      benchmarkWeeks: item.benchmarkWeeks,
+      timeToTargetDays: item.timeToTargetDays,
+      overdueDays: Math.max(0, -item.timeToTargetDays),
+      status: selectedCaseIds.has(item.caseId) ? "Slated" : "Waiting",
+    }));
+    const surgeonName = surgeonNameFor(orderedByUrgency);
+    const slatedCount = rows.filter((r) => r.status === "Slated").length;
+    downloadWaitlistPdf({
+      surgeonName,
+      generatedLabel: new Date().toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      }),
+      summaryLabel: `${rows.length} ${rows.length === 1 ? "patient" : "patients"} · ${slatedCount} slated`,
+      rows,
+      fileName: `priority_waitlist_${fileSlug(surgeonName)}.pdf`,
+    });
+  };
+
   const downloadMappingCsv = (slateIndex: number) => {
     if (!orderedSlates[slateIndex] || orderedSlates[slateIndex].length === 0) return;
-    const rows = [["case_id", "source_key"]];
-    orderedSlates[slateIndex].forEach((item) => rows.push([item.caseId, item.sourceKey]));
+    // The reidentification key: opaque code -> patient label. Keep this file
+    // secured and separate from the deidentified slate CSV.
+    const rows = [["case_id", "patient_label"]];
+    orderedSlates[slateIndex].forEach((item) => rows.push([item.caseId, item.displayLabel]));
     const csv = serializeCsv(rows);
-    downloadFile(`office_case_mapping_${slateDates[slateIndex]}_${slateIndex + 1}.csv`, csv);
+    downloadFile(
+      `CONFIDENTIAL_office_case_mapping_${slateDates[slateIndex]}_${slateIndex + 1}.csv`,
+      csv
+    );
   };
 
   const downloadPriorityCsv = () => {
@@ -730,6 +1011,7 @@ export default function Home() {
       [
         "order",
         "case_id",
+        ...(includeNamesInExports ? ["patient_label"] : []),
         "status",
         "patient_type",
         "benchmark_weeks",
@@ -746,6 +1028,7 @@ export default function Home() {
       rows.push([
         String(index + 1),
         item.caseId,
+        ...(includeNamesInExports ? [item.displayLabel] : []),
         selectedCaseIds.has(item.caseId) ? "Slated" : "Waiting",
         item.inpatient ? "Inpatient" : "Day Case",
         String(item.benchmarkWeeks),
@@ -777,12 +1060,17 @@ export default function Home() {
             a Priority Waitlist that clearly shows which patients are already slated and which are
             still waiting.
           </p>
+          <p className="mt-3 max-w-3xl text-xs leading-6 text-sand-600">
+            Patient data never leaves this device. Each case gets an opaque code (e.g. C-001);
+            exports use that code unless you opt to include names. Saved work is encrypted with your
+            passphrase, and autosave is cleared when you close the tab.
+          </p>
           <div className="mt-6 flex flex-wrap gap-3 text-xs text-sand-700">
             <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
               Local browser processing only
             </span>
             <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
-              Office-level upload
+              Encrypted saves
             </span>
             <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
               Up to 3 selectable OR dates
@@ -849,14 +1137,55 @@ export default function Home() {
                   Reset
                 </button>
               </div>
+              <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-sand-700">
+                <label className="flex items-center gap-2">
+                  TIME_WAITING is in
+                  <select
+                    value={waitingUnit}
+                    onChange={(event) => setWaitingUnit(event.target.value as WaitingUnit)}
+                    className="rounded-md border border-sand-300 bg-white px-2 py-1"
+                  >
+                    <option value="weeks">weeks</option>
+                    <option value="days">days</option>
+                  </select>
+                </label>
+                <span className="text-sand-500">
+                  Set this to match your Excel export so time-to-target is correct.
+                </span>
+              </div>
+              <label className="mt-3 flex items-start gap-2 text-xs text-sand-700">
+                <input
+                  type="checkbox"
+                  checked={includeNamesInExports}
+                  onChange={(event) => setIncludeNamesInExports(event.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="font-semibold text-sand-900">
+                    Include patient names in exported CSVs
+                  </span>
+                  <span className="block text-sand-600">
+                    Off (recommended): exports carry only the opaque case code. On: adds a
+                    patient_label column. The screen always shows names either way.
+                  </span>
+                </span>
+              </label>
             </div>
             <div className="rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="font-semibold text-sand-900">Saved Work</p>
-                {saveStatus && <span className="text-xs text-sand-600">{saveStatus}</span>}
+                <div className="flex items-center gap-3">
+                  {lastAutosaveAt && (
+                    <span className="inline-flex items-center gap-1 text-xs text-emerald-700">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                      All changes saved {lastAutosaveAt}
+                    </span>
+                  )}
+                  {saveStatus && <span className="text-xs text-sand-600">{saveStatus}</span>}
+                </div>
               </div>
               <div className="mt-3 flex flex-wrap items-end gap-3">
-                <label className="flex min-w-[220px] flex-1 flex-col gap-2 text-xs text-sand-700">
+                <label className="flex min-w-[200px] flex-1 flex-col gap-2 text-xs text-sand-700">
                   Session name
                   <input
                     type="text"
@@ -866,16 +1195,26 @@ export default function Home() {
                     className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
                   />
                 </label>
+                <label className="flex min-w-[200px] flex-1 flex-col gap-2 text-xs text-sand-700">
+                  Passphrase
+                  <input
+                    type="password"
+                    value={passphrase}
+                    onChange={(event) => setPassphrase(event.target.value)}
+                    placeholder="Locks & unlocks saved work"
+                    className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                  />
+                </label>
                 <button
                   type="button"
-                  onClick={() => saveSession()}
+                  onClick={() => void saveSession()}
                   className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
                 >
                   Save
                 </button>
                 <button
                   type="button"
-                  onClick={exportSession}
+                  onClick={() => void exportSession()}
                   className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
                 >
                   Export session
@@ -889,9 +1228,18 @@ export default function Home() {
                     className="hidden"
                   />
                 </label>
+                <button
+                  type="button"
+                  onClick={clearAllSavedData}
+                  className="rounded-full border border-rose-300 px-4 py-2 text-xs font-semibold text-rose-700"
+                >
+                  Clear all data
+                </button>
               </div>
               <p className="mt-3 text-xs text-sand-600">
-                Work is autosaved in this browser, and named saves let you return later.
+                Named saves and exported files are encrypted with your passphrase (which is never
+                stored) — keep it safe, as it cannot be recovered. Work is autosaved only for this
+                browser tab and is cleared when the tab closes.
               </p>
               <div className="mt-3 flex flex-col gap-2">
                 {savedSessions.length === 0 && (
@@ -911,7 +1259,7 @@ export default function Home() {
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
-                        onClick={() => applySavedSession(session)}
+                        onClick={() => void loadSession(session)}
                         className="rounded-full border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
                       >
                         Load
@@ -1109,13 +1457,24 @@ export default function Home() {
                 Reorder cases manually after optimization and adjust durations as needed.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={resetDurationOverrides}
-              className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
-            >
-              Reset manual durations
-            </button>
+            <div className="flex flex-wrap gap-2">
+              {slates && slates.length > 0 && (
+                <button
+                  type="button"
+                  onClick={downloadAllSlatesPdfFile}
+                  className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
+                >
+                  Export all slates (PDF)
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={resetDurationOverrides}
+                className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
+              >
+                Reset manual durations
+              </button>
+            </div>
           </div>
 
           <div className="mt-4 rounded-2xl border border-sand-200 bg-white/70 px-4 py-3 text-sm text-sand-800">
@@ -1165,8 +1524,15 @@ export default function Home() {
                       <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
-                          onClick={() => downloadSlateCsv(slateIndex)}
+                          onClick={() => downloadSlatePdfFile(slateIndex)}
                           className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
+                        >
+                          Export slate PDF
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => downloadSlateCsv(slateIndex)}
+                          className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
                         >
                           Export slate CSV
                         </button>
@@ -1195,6 +1561,10 @@ export default function Home() {
                       />
                     </div>
 
+                    <div className="mt-4 rounded-2xl border border-sand-200 bg-white/70 p-4">
+                      <CapacityBar totalMinutes={totalMinutes} blockMinutes={slate.blockMinutes} />
+                    </div>
+
                     <div className="mt-4 flex flex-col gap-3">
                       {schedule.map(({ item, start, end }, index) => (
                         <div
@@ -1208,10 +1578,18 @@ export default function Home() {
                             <p className="text-xs uppercase tracking-[0.2em] text-sand-500">
                               #{index + 1} · {formatMinutesToTime(start)}-{formatMinutesToTime(end)}
                             </p>
-                            <p className="font-semibold text-slateBlue-900">{item.caseId}</p>
-                            <p className="text-xs text-sand-700">
-                              Benchmark {item.benchmarkWeeks}w · TTT {item.timeToTargetDays}d ·{" "}
-                              {item.estimatedDurationMin}m
+                            <p className="font-semibold text-slateBlue-900">{item.displayLabel}</p>
+                            <p className="text-[10px] uppercase tracking-wider text-sand-400">
+                              {item.caseId}
+                            </p>
+                            <div className="mt-1">
+                              <UrgencyBadge
+                                benchmarkWeeks={item.benchmarkWeeks}
+                                timeToTargetDays={item.timeToTargetDays}
+                              />
+                            </div>
+                            <p className="mt-1 text-xs text-sand-700">
+                              TTT {item.timeToTargetDays}d · {item.estimatedDurationMin}m
                             </p>
                             <p className="text-xs text-sand-600">Surgeon ID: {item.surgeonId}</p>
                             {item.unavailableUntil && (
@@ -1310,13 +1688,22 @@ export default function Home() {
                 list.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={downloadPriorityCsv}
-              className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
-            >
-              Export priority CSV
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={downloadWaitlistPdfFile}
+                className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
+              >
+                Export priority PDF
+              </button>
+              <button
+                type="button"
+                onClick={downloadPriorityCsv}
+                className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
+              >
+                Export priority CSV
+              </button>
+            </div>
           </div>
 
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -1340,7 +1727,10 @@ export default function Home() {
               >
                 <div className="flex items-center justify-between gap-4">
                   <span className="font-semibold text-slateBlue-900">
-                    #{index + 1} · {item.caseId}
+                    #{index + 1} · {item.displayLabel}
+                    <span className="ml-2 text-[10px] uppercase tracking-wider text-sand-400">
+                      {item.caseId}
+                    </span>
                   </span>
                   <div className="flex flex-wrap justify-end gap-2">
                     <span className="text-xs text-sand-700">{item.estimatedDurationMin}m</span>
@@ -1351,9 +1741,14 @@ export default function Home() {
                     )}
                   </div>
                 </div>
-                <div className="mt-1 text-xs text-sand-700">
-                  Benchmark {item.benchmarkWeeks}w · TTT {item.timeToTargetDays}d · Surgeon ID{" "}
-                  {item.surgeonId}
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <UrgencyBadge
+                    benchmarkWeeks={item.benchmarkWeeks}
+                    timeToTargetDays={item.timeToTargetDays}
+                  />
+                  <span className="text-xs text-sand-700">
+                    TTT {item.timeToTargetDays}d · Surgeon ID {item.surgeonId}
+                  </span>
                 </div>
                 {item.unavailableUntil && (
                   <div className="mt-1 text-xs text-sand-600">
@@ -1444,9 +1839,9 @@ export default function Home() {
       <section className="card p-6">
         <h2 className="text-lg font-semibold text-slateBlue-900">About</h2>
         <p className="mt-2 text-sm text-sand-800">
-          SlateBuilder Pro was designed by Dr Jonathan Collins for BC Women&apos;s Hospital Surgical
-          Services use only. It was built using an AI tool, and the designer takes no responsibility
-          for any errors or omissions in outputs.
+          SlateBuilder for Offices was designed by Dr Jonathan Collins for BC Women&apos;s Hospital
+          Surgical Services use only. It was built using an AI tool, and the designer takes no
+          responsibility for any errors or omissions in outputs.
         </p>
       </section>
     </main>

@@ -37,10 +37,20 @@ export function normalizeDateOnly(value: string | undefined): string | undefined
   return trimmed.slice(0, 10);
 }
 
+export function toLocalDateOnly(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 export function isAvailableOnDate(unavailableUntil: string | undefined, date: Date): boolean {
   const normalized = normalizeDateOnly(unavailableUntil);
   if (!normalized) return true;
-  const dateOnly = date.toISOString().slice(0, 10);
+  // Compare on the local calendar date. Using toISOString() here would convert
+  // to UTC and shift the day backwards in negative-offset timezones (e.g. PST),
+  // producing an off-by-one on the OR date and on availability checks.
+  const dateOnly = toLocalDateOnly(date);
   return normalized <= dateOnly;
 }
 

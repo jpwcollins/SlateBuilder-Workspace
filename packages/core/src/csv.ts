@@ -71,6 +71,7 @@ export function parseCsv(text: string): ParseResult {
 
   const warnings: string[] = [];
   const cases: PatientCase[] = [];
+  let caseSeq = 0;
 
   for (let i = 1; i < lines.length; i += 1) {
     const row = splitCsvLine(lines[i]);
@@ -85,7 +86,11 @@ export function parseCsv(text: string): ParseResult {
     }
 
     const rawId = record["source_key"] || record["case_num"] || `row-${i}`;
-    const sourceKey = rawId ? `Patient ${rawId}` : `Patient row-${i}`;
+    // displayLabel may contain PHI (a name/PHN); it is shown on screen but kept
+    // out of React keys, the optimizer, and default exports. caseId (assigned
+    // below) is the opaque, non-identifying handle used everywhere internally.
+    const displayLabel = `Patient ${rawId}`;
+    const sourceKey = displayLabel;
     const benchmarkRaw =
       record["benchmark"] || record["target_time_weeks"] || record["target_time"];
     if (!benchmarkRaw && !record["time_to_target_days"] && !record["time_waiting_days"] && !record["time_waiting_weeks"]) {
@@ -104,15 +109,24 @@ export function parseCsv(text: string): ParseResult {
     const targetWeeks = Number.isFinite(toNumber(targetWeeksRaw))
       ? toNumber(targetWeeksRaw)
       : Number.NaN;
-    const timeToTargetDays = Number.isFinite(timeToTargetDaysRaw)
-      ? timeToTargetDaysRaw
-      : Number.isFinite(timeWaitingDays)
-        ? benchmarkWeeks * 7 - timeWaitingDays
-        : Number.isFinite(timeWaitingWeeks)
-          ? benchmarkWeeks * 7 - timeWaitingWeeks * 7
-          : Number.isFinite(targetWeeks) && Number.isFinite(timeWaitingWeeks)
-            ? targetWeeks * 7 - timeWaitingWeeks * 7
-        : Number.NaN;
+    // Prefer an explicit target time over the urgency benchmark when both are
+    // present, so a row whose target differs from its benchmark class is scored
+    // against its real target.
+    const targetWeeksForTtt = Number.isFinite(targetWeeks) ? targetWeeks : benchmarkWeeks;
+    // Priority ladder (first available wins):
+    //   1. explicit time_to_target_days
+    //   2. target*7 - time_waiting_days
+    //   3. target*7 - time_waiting_weeks*7
+    let timeToTargetDays: number;
+    if (Number.isFinite(timeToTargetDaysRaw)) {
+      timeToTargetDays = timeToTargetDaysRaw;
+    } else if (Number.isFinite(timeWaitingDays)) {
+      timeToTargetDays = targetWeeksForTtt * 7 - timeWaitingDays;
+    } else if (Number.isFinite(timeWaitingWeeks)) {
+      timeToTargetDays = targetWeeksForTtt * 7 - timeWaitingWeeks * 7;
+    } else {
+      timeToTargetDays = Number.NaN;
+    }
     const roundedTimeToTargetDays = Number.isFinite(timeToTargetDays)
       ? Math.round(timeToTargetDays)
       : timeToTargetDays;
@@ -143,9 +157,11 @@ export function parseCsv(text: string): ParseResult {
       }
     }
 
+    caseSeq += 1;
     cases.push({
-      caseId: sourceKey,
+      caseId: `C-${String(caseSeq).padStart(3, "0")}`,
       sourceKey,
+      displayLabel,
       benchmarkWeeks,
       timeToTargetDays: roundedTimeToTargetDays,
       estimatedDurationMin,

@@ -9,6 +9,35 @@ const urgencyWeightMap: Record<number, number> = {
   26: 1,
 };
 
+/**
+ * Re-applies a previously saved manual ordering (by caseId) to a freshly
+ * optimized slate. Cases named in `orderedIds` come first in that order; any
+ * remaining cases keep their incoming order. Used so manual drag-reordering
+ * survives re-optimization and saved/restored sessions.
+ */
+export function reorderSlateByCaseIds(
+  items: ScoredCase[],
+  orderedIds: string[] | undefined
+): ScoredCase[] {
+  if (!orderedIds || orderedIds.length === 0) return items;
+  const byId = new Map(items.map((item) => [item.caseId, item]));
+  const ordered: ScoredCase[] = [];
+  orderedIds.forEach((id) => {
+    const found = byId.get(id);
+    if (found) {
+      ordered.push(found);
+      byId.delete(id);
+    }
+  });
+  items.forEach((item) => {
+    if (byId.has(item.caseId)) {
+      ordered.push(item);
+      byId.delete(item.caseId);
+    }
+  });
+  return ordered;
+}
+
 export function scoreCases(cases: PatientCase[], date: Date): ScoredCase[] {
   const blockMinutes = getBlockMinutes(date);
   const scoredBase = cases.map((item) => {
@@ -33,30 +62,40 @@ export function optimizeSlate(cases: PatientCase[], date: Date): SlateResult {
 
   const durations = scored.map((item) => Math.round(item.estimatedDurationMin));
   const values = scored.map((item) => item.valueScore);
+  const n = scored.length;
 
-  const dp: number[] = Array(blockMinutes + 1).fill(0);
-  const keep: boolean[][] = Array.from({ length: scored.length }, () =>
-    Array(blockMinutes + 1).fill(false)
+  // 0/1 knapsack with a full 2-D table so the optimum can be reconstructed
+  // consistently. dp[i][w] = best total value using the first i cases within w
+  // minutes of block time. (A 1-D table with per-cell "keep" flags cannot be
+  // back-tracked reliably because cells are mutated across items.)
+  const dp: Float64Array[] = Array.from(
+    { length: n + 1 },
+    () => new Float64Array(blockMinutes + 1)
   );
 
-  for (let i = 0; i < scored.length; i += 1) {
-    const weight = durations[i];
-    const value = values[i];
-    for (let w = blockMinutes; w >= weight; w -= 1) {
-      const candidate = dp[w - weight] + value;
-      if (candidate > dp[w]) {
-        dp[w] = candidate;
-        keep[i][w] = true;
+  for (let i = 1; i <= n; i += 1) {
+    const weight = durations[i - 1];
+    const value = values[i - 1];
+    const prev = dp[i - 1];
+    const curr = dp[i];
+    for (let w = 0; w <= blockMinutes; w += 1) {
+      let best = prev[w];
+      if (weight <= w) {
+        const candidate = prev[w - weight] + value;
+        if (candidate > best) best = candidate;
       }
+      curr[w] = best;
     }
   }
 
-  let w = blockMinutes;
+  // Reconstruct: case i-1 is included at capacity w iff including it produced a
+  // strictly better value than excluding it.
   const selectedIndexes: number[] = [];
-  for (let i = scored.length - 1; i >= 0; i -= 1) {
-    if (keep[i][w]) {
-      selectedIndexes.push(i);
-      w -= durations[i];
+  let w = blockMinutes;
+  for (let i = n; i >= 1; i -= 1) {
+    if (dp[i][w] !== dp[i - 1][w]) {
+      selectedIndexes.push(i - 1);
+      w -= durations[i - 1];
     }
   }
 
