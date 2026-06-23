@@ -3,6 +3,14 @@
 import { useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import {
+  downloadSlatePdf,
+  downloadAllSlatesPdf,
+  downloadWaitlistPdf,
+  SlatePdfCase,
+  SlatePdfOptions,
+  WaitlistPdfRow,
+} from "./slatePdf";
+import {
   ClinicalFlagKey,
   formatMinutesToTime,
   getBlockMinutes,
@@ -151,6 +159,69 @@ function StatCard({
   );
 }
 
+// Urgency tint keyed by benchmark class (most urgent = red).
+function urgencyChipClasses(weeks: number): string {
+  if (weeks <= 2) return "bg-rose-100 text-rose-700";
+  if (weeks <= 4) return "bg-orange-100 text-orange-700";
+  if (weeks <= 6) return "bg-amber-100 text-amber-800";
+  if (weeks <= 12) return "bg-sky-100 text-sky-700";
+  return "bg-slate-100 text-slate-600";
+}
+
+function UrgencyBadge({
+  benchmarkWeeks,
+  timeToTargetDays,
+}: {
+  benchmarkWeeks: number;
+  timeToTargetDays: number;
+}) {
+  const overdue = timeToTargetDays < 0;
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span
+        className={`rounded-full px-2 py-0.5 text-xs font-semibold ${urgencyChipClasses(
+          benchmarkWeeks
+        )}`}
+      >
+        {benchmarkWeeks}w
+      </span>
+      {overdue && (
+        <span className="rounded-full bg-rose-600 px-2 py-0.5 text-xs font-semibold text-white">
+          {Math.abs(timeToTargetDays)}d overdue
+        </span>
+      )}
+    </span>
+  );
+}
+
+// Capacity meter: green under target, amber as it fills, red when over the block.
+function CapacityBar({ totalMinutes, blockMinutes }: { totalMinutes: number; blockMinutes: number }) {
+  const pct = blockMinutes > 0 ? (totalMinutes / blockMinutes) * 100 : 0;
+  const over = totalMinutes > blockMinutes;
+  const remaining = blockMinutes - totalMinutes;
+  const barColor = over ? "bg-rose-500" : pct >= 85 ? "bg-amber-500" : "bg-emerald-500";
+  return (
+    <div>
+      <div className="flex items-center justify-between text-xs text-sand-700">
+        <span className="font-semibold text-sand-900">Capacity</span>
+        <span className={over ? "font-semibold text-rose-600" : ""}>
+          {over
+            ? `Over by ${Math.abs(remaining)} min`
+            : remaining === 0
+              ? "Full"
+              : `${remaining} min free`}
+        </span>
+      </div>
+      <div className="mt-1 h-2.5 w-full overflow-hidden rounded-full bg-sand-200">
+        <div
+          className={`h-full rounded-full ${barColor}`}
+          style={{ width: `${Math.min(100, Math.max(pct, totalMinutes > 0 ? 4 : 0))}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [csvText, setCsvText] = useState("");
   const [cases, setCases] = useState<PatientCase[]>([]);
@@ -193,6 +264,7 @@ export default function Home() {
   const [passphrase, setPassphrase] = useState("");
   const [includeNamesInExports, setIncludeNamesInExports] = useState(false);
   const [waitingUnit, setWaitingUnit] = useState<WaitingUnit>("weeks");
+  const [lastAutosaveAt, setLastAutosaveAt] = useState<string | null>(null);
   // Raw rows from the last Excel upload, retained so the time-waiting unit can
   // be re-applied without re-uploading. Held in component memory only.
   const [workbookRows, setWorkbookRows] = useState<SpreadsheetRow[] | null>(null);
@@ -410,6 +482,12 @@ export default function Home() {
   };
 
   const resetWorkspace = () => {
+    if (
+      (csvText || cases.length > 0) &&
+      !window.confirm("Clear the current workspace? Unsaved changes in this tab will be lost.")
+    ) {
+      return;
+    }
     setCsvText("");
     setCases([]);
     setWarnings([]);
@@ -433,6 +511,7 @@ export default function Home() {
     setSessionName("");
     setWorkbookRows(null);
     window.sessionStorage.removeItem(OFFICE_AUTOSAVE_KEY);
+    setLastAutosaveAt(null);
     setSaveStatus("Workspace reset");
   };
 
@@ -529,9 +608,17 @@ export default function Home() {
   };
 
   const clearAllSavedData = () => {
+    if (
+      !window.confirm(
+        "Delete ALL saved sessions and autosave from this browser? This cannot be undone."
+      )
+    ) {
+      return;
+    }
     window.localStorage.removeItem(OFFICE_SAVED_SESSIONS_KEY);
     window.sessionStorage.removeItem(OFFICE_AUTOSAVE_KEY);
     setSavedSessions([]);
+    setLastAutosaveAt(null);
     setSaveStatus("Cleared all saved sessions and autosave from this browser");
   };
 
@@ -561,6 +648,7 @@ export default function Home() {
   useEffect(() => {
     if (!csvText && cases.length === 0) return;
     window.sessionStorage.setItem(OFFICE_AUTOSAVE_KEY, JSON.stringify(buildSessionState()));
+    setLastAutosaveAt(new Date().toLocaleTimeString());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     csvText,
@@ -793,6 +881,117 @@ export default function Home() {
     downloadFile(`office_slate_${slateDates[slateIndex]}_${slateIndex + 1}.csv`, csv);
   };
 
+  // The surgeon name comes from the uploaded waitlist's SURGEON field
+  // (parsed into surgeonId); offices do not type it in.
+  const surgeonNameFor = (slate: { surgeonId: string }[]): string => {
+    const unique = Array.from(new Set(slate.map((item) => item.surgeonId)));
+    return unique.join(", ") || "Surgeon";
+  };
+
+  const fileSlug = (value: string): string =>
+    value.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "surgeon";
+
+  const buildSlateOptions = (slateIndex: number): SlatePdfOptions | null => {
+    const orderedSlate = orderedSlates[slateIndex];
+    if (!orderedSlate || orderedSlate.length === 0) return null;
+    const dateISO = slateDates[slateIndex];
+    const date = new Date(`${dateISO}T00:00:00`);
+    const startMin = getBlockStartMinutes(date);
+    const blockMin = getBlockMinutes(date);
+
+    let cursor = startMin;
+    const pdfCases: SlatePdfCase[] = orderedSlate.map((item, index) => {
+      const start = cursor;
+      const end = cursor + Math.round(item.estimatedDurationMin);
+      cursor = end;
+      return {
+        order: index + 1,
+        startLabel: formatMinutesToTime(start),
+        endLabel: formatMinutesToTime(end),
+        durationMin: Math.round(item.estimatedDurationMin),
+        benchmarkWeeks: item.benchmarkWeeks,
+        overdueDays: Math.max(0, -item.timeToTargetDays),
+        primary: includeNamesInExports ? item.displayLabel : item.caseId,
+        secondary: includeNamesInExports ? item.caseId : undefined,
+        procedure: item.procedureName ?? "",
+        flags: clinicalFlagDefinitions
+          .filter((flag) => item.flags?.[flag.key])
+          .map((flag) => flag.label),
+        inpatient: Boolean(item.inpatient),
+      };
+    });
+
+    const totalMin = orderedSlate.reduce(
+      (sum, item) => sum + Math.round(item.estimatedDurationMin),
+      0
+    );
+    const utilization = blockMin > 0 ? (totalMin / blockMin) * 100 : 0;
+    const surgeonName = surgeonNameFor(orderedSlate);
+    const orDateLabel = dateISO
+      ? date.toLocaleDateString(undefined, {
+          weekday: "long",
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+        })
+      : "Date not set";
+
+    return {
+      surgeonName,
+      orDateLabel,
+      blockLabel: `${formatMinutesToTime(startMin)}–${formatMinutesToTime(
+        startMin + blockMin
+      )} · ${blockMin} min`,
+      summaryLabel: `${orderedSlate.length} ${
+        orderedSlate.length === 1 ? "case" : "cases"
+      } · ${utilization.toFixed(0)}% utilization`,
+      cases: pdfCases,
+      fileName: `slate_${fileSlug(surgeonName)}_${dateISO || "undated"}.pdf`,
+    };
+  };
+
+  const downloadSlatePdfFile = (slateIndex: number) => {
+    const opts = buildSlateOptions(slateIndex);
+    if (opts) downloadSlatePdf(opts);
+  };
+
+  const downloadAllSlatesPdfFile = () => {
+    const allOpts = (orderedSlates ?? [])
+      .map((_, index) => buildSlateOptions(index))
+      .filter((opts): opts is SlatePdfOptions => opts !== null);
+    if (allOpts.length === 0) return;
+    const surgeon = fileSlug(allOpts[0].surgeonName);
+    const first = slateDates[0] || "undated";
+    downloadAllSlatesPdf(allOpts, `slates_${surgeon}_${first}.pdf`);
+  };
+
+  const downloadWaitlistPdfFile = () => {
+    if (orderedByUrgency.length === 0) return;
+    const rows: WaitlistPdfRow[] = orderedByUrgency.map((item, index) => ({
+      rank: index + 1,
+      primary: includeNamesInExports ? item.displayLabel : item.caseId,
+      secondary: includeNamesInExports ? item.caseId : undefined,
+      procedure: item.procedureName ?? "",
+      benchmarkWeeks: item.benchmarkWeeks,
+      timeToTargetDays: item.timeToTargetDays,
+      overdueDays: Math.max(0, -item.timeToTargetDays),
+      status: selectedCaseIds.has(item.caseId) ? "Slated" : "Waiting",
+    }));
+    const surgeonName = surgeonNameFor(orderedByUrgency);
+    const slatedCount = rows.filter((r) => r.status === "Slated").length;
+    downloadWaitlistPdf({
+      surgeonName,
+      generatedLabel: new Date().toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      }),
+      summaryLabel: `${rows.length} ${rows.length === 1 ? "patient" : "patients"} · ${slatedCount} slated`,
+      rows,
+      fileName: `priority_waitlist_${fileSlug(surgeonName)}.pdf`,
+    });
+  };
+
   const downloadMappingCsv = (slateIndex: number) => {
     if (!orderedSlates[slateIndex] || orderedSlates[slateIndex].length === 0) return;
     // The reidentification key: opaque code -> patient label. Keep this file
@@ -975,7 +1174,15 @@ export default function Home() {
             <div className="rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="font-semibold text-sand-900">Saved Work</p>
-                {saveStatus && <span className="text-xs text-sand-600">{saveStatus}</span>}
+                <div className="flex items-center gap-3">
+                  {lastAutosaveAt && (
+                    <span className="inline-flex items-center gap-1 text-xs text-emerald-700">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                      All changes saved {lastAutosaveAt}
+                    </span>
+                  )}
+                  {saveStatus && <span className="text-xs text-sand-600">{saveStatus}</span>}
+                </div>
               </div>
               <div className="mt-3 flex flex-wrap items-end gap-3">
                 <label className="flex min-w-[200px] flex-1 flex-col gap-2 text-xs text-sand-700">
@@ -1250,13 +1457,24 @@ export default function Home() {
                 Reorder cases manually after optimization and adjust durations as needed.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={resetDurationOverrides}
-              className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
-            >
-              Reset manual durations
-            </button>
+            <div className="flex flex-wrap gap-2">
+              {slates && slates.length > 0 && (
+                <button
+                  type="button"
+                  onClick={downloadAllSlatesPdfFile}
+                  className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
+                >
+                  Export all slates (PDF)
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={resetDurationOverrides}
+                className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
+              >
+                Reset manual durations
+              </button>
+            </div>
           </div>
 
           <div className="mt-4 rounded-2xl border border-sand-200 bg-white/70 px-4 py-3 text-sm text-sand-800">
@@ -1306,8 +1524,15 @@ export default function Home() {
                       <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
-                          onClick={() => downloadSlateCsv(slateIndex)}
+                          onClick={() => downloadSlatePdfFile(slateIndex)}
                           className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
+                        >
+                          Export slate PDF
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => downloadSlateCsv(slateIndex)}
+                          className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
                         >
                           Export slate CSV
                         </button>
@@ -1336,6 +1561,10 @@ export default function Home() {
                       />
                     </div>
 
+                    <div className="mt-4 rounded-2xl border border-sand-200 bg-white/70 p-4">
+                      <CapacityBar totalMinutes={totalMinutes} blockMinutes={slate.blockMinutes} />
+                    </div>
+
                     <div className="mt-4 flex flex-col gap-3">
                       {schedule.map(({ item, start, end }, index) => (
                         <div
@@ -1353,9 +1582,14 @@ export default function Home() {
                             <p className="text-[10px] uppercase tracking-wider text-sand-400">
                               {item.caseId}
                             </p>
-                            <p className="text-xs text-sand-700">
-                              Benchmark {item.benchmarkWeeks}w · TTT {item.timeToTargetDays}d ·{" "}
-                              {item.estimatedDurationMin}m
+                            <div className="mt-1">
+                              <UrgencyBadge
+                                benchmarkWeeks={item.benchmarkWeeks}
+                                timeToTargetDays={item.timeToTargetDays}
+                              />
+                            </div>
+                            <p className="mt-1 text-xs text-sand-700">
+                              TTT {item.timeToTargetDays}d · {item.estimatedDurationMin}m
                             </p>
                             <p className="text-xs text-sand-600">Surgeon ID: {item.surgeonId}</p>
                             {item.unavailableUntil && (
@@ -1454,13 +1688,22 @@ export default function Home() {
                 list.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={downloadPriorityCsv}
-              className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
-            >
-              Export priority CSV
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={downloadWaitlistPdfFile}
+                className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
+              >
+                Export priority PDF
+              </button>
+              <button
+                type="button"
+                onClick={downloadPriorityCsv}
+                className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
+              >
+                Export priority CSV
+              </button>
+            </div>
           </div>
 
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -1498,9 +1741,14 @@ export default function Home() {
                     )}
                   </div>
                 </div>
-                <div className="mt-1 text-xs text-sand-700">
-                  Benchmark {item.benchmarkWeeks}w · TTT {item.timeToTargetDays}d · Surgeon ID{" "}
-                  {item.surgeonId}
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <UrgencyBadge
+                    benchmarkWeeks={item.benchmarkWeeks}
+                    timeToTargetDays={item.timeToTargetDays}
+                  />
+                  <span className="text-xs text-sand-700">
+                    TTT {item.timeToTargetDays}d · Surgeon ID {item.surgeonId}
+                  </span>
                 </div>
                 {item.unavailableUntil && (
                   <div className="mt-1 text-xs text-sand-600">
