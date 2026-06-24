@@ -434,7 +434,7 @@ export default function Home() {
         "unavailable_until",
         "surgeon_id",
         ...clinicalFlagDefinitions.map((flag) => flag.csvColumn),
-        "risk_score",
+        "priority_score",
       ],
     ];
 
@@ -457,7 +457,7 @@ export default function Home() {
         item.unavailableUntil ?? "",
         item.surgeonId,
         ...clinicalFlagDefinitions.map((flag) => (item.flags?.[flag.key] ? "yes" : "no")),
-        item.riskScore.toFixed(2),
+        item.priorityScore.toFixed(2),
       ]);
     });
 
@@ -570,6 +570,12 @@ export default function Home() {
           maximize OR utilization. Drag to reorder cases after optimization for clinical
           considerations such as OSA, diabetes, out-of-town travel, high BMI, chronic pain, or
           special assist needs.
+        </p>
+        <p className="max-w-2xl rounded-xl border border-sand-200 bg-white/70 px-4 py-3 text-xs text-sand-700">
+          <span className="font-semibold text-sand-900">How the priority score works:</span> each
+          case scores its benchmark urgency weight (2w = 5, 4w = 4, 6w = 3, 12w = 2, 26w = 1),
+          multiplied by how far it is past target (+½ for every week overdue). Higher means more
+          urgent and more overdue, so it rises up the slate.
         </p>
         <p className="max-w-2xl text-xs text-sand-600">
           Privacy: all processing happens locally in your browser — no data is uploaded or sent over
@@ -859,7 +865,7 @@ export default function Home() {
                 );
                 const utilizationPct =
                   slate.blockMinutes > 0 ? (totalMinutes / slate.blockMinutes) * 100 : 0;
-                const totalRiskScore = orderedSlate.reduce((sum, item) => sum + item.riskScore, 0);
+                const totalPriorityScore = orderedSlate.reduce((sum, item) => sum + item.priorityScore, 0);
                 return (
                   <div key={`slate-${slateIndex}`} className="rounded-2xl border border-sand-200 bg-white/70 p-5">
                     <div className="flex flex-wrap items-center justify-between gap-4">
@@ -904,15 +910,15 @@ export default function Home() {
                       </div>
                       <div
                         className="rounded-xl border border-sand-200 bg-white/70 p-3"
-                        title="Sum of case risk scores in this slate. Higher means more urgent cases are included."
+                        title="Sum of case priority scores in this slate. Higher means more urgent, more overdue cases are included."
                       >
-                        <p className="text-xs uppercase tracking-[0.2em] text-sand-600">Total Risk</p>
+                        <p className="text-xs uppercase tracking-[0.2em] text-sand-600">Total Priority</p>
                         <p className="mt-1 text-xl font-semibold text-slateBlue-900">
-                          {totalRiskScore.toFixed(1)}
+                          {totalPriorityScore.toFixed(1)}
                         </p>
                         <p
                           className="text-xs text-sand-700"
-                          title="Scaling factor that balances utilization minutes with clinical risk in the optimization."
+                          title="Scaling factor that balances utilization minutes with clinical priority in the optimization."
                         >
                           Util weight {slate.utilizationWeight.toFixed(3)}
                         </p>
@@ -969,7 +975,7 @@ export default function Home() {
                                   </span>
                                 ))}
                               <span className="rounded-full bg-slateBlue-50 px-2 py-1 text-slateBlue-700">
-                                Risk {item.riskScore.toFixed(2)}
+                                Priority {item.priorityScore.toFixed(2)}
                               </span>
                               {item.inpatient && (
                                 <span className="rounded-full bg-sand-200 px-2 py-1 text-sand-800">

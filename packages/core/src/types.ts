@@ -44,7 +44,7 @@ export type PatientCase = {
 export type ScoredCase = PatientCase & {
   urgencyWeight: number;
   overdueDays: number;
-  riskScore: number;
+  priorityScore: number;
   valueScore: number;
 };
 
@@ -52,7 +52,7 @@ export type SlateResult = {
   blockMinutes: number;
   totalMinutes: number;
   utilizationPct: number;
-  totalRiskScore: number;
+  totalPriorityScore: number;
   utilizationWeight: number;
   selected: ScoredCase[];
   remaining: ScoredCase[];

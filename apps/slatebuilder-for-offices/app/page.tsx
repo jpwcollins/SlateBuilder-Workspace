@@ -222,6 +222,89 @@ function CapacityBar({ totalMinutes, blockMinutes }: { totalMinutes: number; blo
   );
 }
 
+type OverviewBucket = {
+  label: string;
+  wellUnder: number; // > 50% below target wait (lots of slack)
+  approaching: number; // within 50% of target
+  recentlyOver: number; // overdue by up to 50% of target
+  wellOver: number; // overdue by more than 50% of target
+  total: number;
+};
+
+const OVERVIEW_SEGMENTS = [
+  { key: "wellUnder", color: "#a7f3d0", label: ">50% below target" },
+  { key: "approaching", color: "#34d399", label: "≤50% below target" },
+  { key: "recentlyOver", color: "#f59e0b", label: "≤50% overdue" },
+  { key: "wellOver", color: "#e11d48", label: ">50% overdue" },
+] as const;
+
+// Stacked histogram: one bar per benchmark bucket, split into under/over-target
+// bands. Pure SVG so no charting dependency is needed.
+function WaitlistHistogram({ buckets }: { buckets: OverviewBucket[] }) {
+  const max = Math.max(1, ...buckets.map((b) => b.total));
+  const W = 320;
+  const H = 188;
+  const padL = 8;
+  const padR = 8;
+  const padTop = 14;
+  const axis = 30;
+  const chartH = H - padTop - axis;
+  const innerW = W - padL - padR;
+  const slot = innerW / buckets.length;
+  const barW = Math.min(42, slot * 0.6);
+  const baseline = padTop + chartH;
+
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      className="w-full"
+      role="img"
+      aria-label="Waitlist overview by benchmark bucket"
+    >
+      <line x1={padL} y1={baseline} x2={W - padR} y2={baseline} stroke="#e7d3b2" strokeWidth="1" />
+      {buckets.map((b, i) => {
+        const cx = padL + slot * i + slot / 2;
+        const x = cx - barW / 2;
+        let cursor = baseline;
+        return (
+          <g key={b.label}>
+            {OVERVIEW_SEGMENTS.map((seg) => {
+              const count = b[seg.key];
+              if (count <= 0) return null;
+              const h = (count / max) * chartH;
+              cursor -= h;
+              return (
+                <rect key={seg.key} x={x} y={cursor} width={barW} height={h} fill={seg.color} />
+              );
+            })}
+            {b.total > 0 && (
+              <text
+                x={cx}
+                y={baseline - (b.total / max) * chartH - 4}
+                textAnchor="middle"
+                fontSize="9"
+                fill="#7b4724"
+              >
+                {b.total}
+              </text>
+            )}
+            <text
+              x={cx}
+              y={baseline + 15}
+              textAnchor="middle"
+              fontSize="11"
+              fontWeight="600"
+              fill="#512f1c"
+            >
+              {b.label}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 export default function Home() {
   const [csvText, setCsvText] = useState("");
   const [cases, setCases] = useState<PatientCase[]>([]);
@@ -471,6 +554,38 @@ export default function Home() {
       urgent,
       totalHours: totalMinutes / 60,
     };
+  }, [officeCasesWithOverrides]);
+
+  // Histogram data: per benchmark bucket, split patients into under-/over-target
+  // bands at the ±50%-of-target threshold.
+  const waitlistOverview = useMemo<OverviewBucket[]>(() => {
+    const order = [2, 4, 6, 12, 26] as const;
+    const buckets: OverviewBucket[] = order.map((weeks) => ({
+      label: `${weeks}w`,
+      wellUnder: 0,
+      approaching: 0,
+      recentlyOver: 0,
+      wellOver: 0,
+      total: 0,
+    }));
+    const indexOf = new Map(order.map((weeks, i) => [weeks, i]));
+    officeCasesWithOverrides.forEach((item) => {
+      const i = indexOf.get(item.benchmarkWeeks);
+      if (i === undefined) return;
+      const bucket = buckets[i];
+      const target = item.benchmarkWeeks * 7;
+      const ttt = item.timeToTargetDays;
+      if (ttt >= 0) {
+        if (ttt > 0.5 * target) bucket.wellUnder += 1;
+        else bucket.approaching += 1;
+      } else {
+        const overdue = -ttt;
+        if (overdue > 0.5 * target) bucket.wellOver += 1;
+        else bucket.recentlyOver += 1;
+      }
+      bucket.total += 1;
+    });
+    return buckets;
   }, [officeCasesWithOverrides]);
 
   const updateSlateDate = (index: number, value: string) => {
@@ -850,7 +965,7 @@ export default function Home() {
         "unavailable_until",
         "surgeon_id",
         ...clinicalFlagDefinitions.map((flag) => flag.csvColumn),
-        "risk_score",
+        "priority_score",
       ],
     ];
 
@@ -873,7 +988,7 @@ export default function Home() {
         item.unavailableUntil ?? "",
         item.surgeonId,
         ...clinicalFlagDefinitions.map((flag) => (item.flags?.[flag.key] ? "yes" : "no")),
-        item.riskScore.toFixed(2),
+        item.priorityScore.toFixed(2),
       ]);
     });
 
@@ -1060,6 +1175,12 @@ export default function Home() {
             a Priority Waitlist that clearly shows which patients are already slated and which are
             still waiting.
           </p>
+          <p className="mt-3 max-w-3xl rounded-xl border border-sand-200 bg-white/70 px-4 py-3 text-xs leading-6 text-sand-700">
+            <span className="font-semibold text-sand-900">How the priority score works:</span> each
+            case scores its benchmark urgency weight (2w = 5, 4w = 4, 6w = 3, 12w = 2, 26w = 1),
+            multiplied by how far it is past target (+½ for every week overdue). Higher means more
+            urgent and more overdue.
+          </p>
           <p className="mt-3 max-w-3xl text-xs leading-6 text-sand-600">
             Patient data never leaves this device. Each case gets an opaque code (e.g. C-001);
             exports use that code unless you opt to include names. Saved work is encrypted with your
@@ -1104,6 +1225,32 @@ export default function Home() {
               value={`${officeStats.totalHours.toFixed(1)}h`}
               detail="Estimated operative time"
             />
+          </div>
+          <div className="mt-4 rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
+            <div className="flex items-center justify-between">
+              <p className="font-semibold text-sand-900">Waitlist overview</p>
+              <p className="text-xs text-sand-600">By benchmark · under vs. over target</p>
+            </div>
+            {officeStats.totalCases > 0 ? (
+              <>
+                <div className="mt-2">
+                  <WaitlistHistogram buckets={waitlistOverview} />
+                </div>
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-sand-700">
+                  {OVERVIEW_SEGMENTS.map((seg) => (
+                    <span key={seg.key} className="inline-flex items-center gap-1.5">
+                      <span
+                        className="inline-block h-2.5 w-2.5 rounded-sm"
+                        style={{ backgroundColor: seg.color }}
+                      />
+                      {seg.label}
+                    </span>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <p className="mt-2 text-xs text-sand-600">No waitlist uploaded yet.</p>
+            )}
           </div>
           <div className="mt-4 rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
             <p className="font-semibold text-sand-900">Detected surgeon IDs</p>
@@ -1620,7 +1767,7 @@ export default function Home() {
                                 </span>
                               )}
                               <span className="rounded-full bg-slateBlue-50 px-2 py-1 text-slateBlue-700">
-                                Risk {item.riskScore.toFixed(2)}
+                                Priority {item.priorityScore.toFixed(2)}
                               </span>
                             </div>
                             <div className="flex flex-wrap justify-end gap-3">

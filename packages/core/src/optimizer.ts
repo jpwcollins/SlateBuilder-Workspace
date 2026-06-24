@@ -43,16 +43,16 @@ export function scoreCases(cases: PatientCase[], date: Date): ScoredCase[] {
   const scoredBase = cases.map((item) => {
     const urgencyWeight = urgencyWeightMap[item.benchmarkWeeks] ?? 1;
     const overdueDays = Math.max(0, -item.timeToTargetDays);
-    const riskScore = urgencyWeight * (1 + overdueDays / 14);
-    return { ...item, urgencyWeight, overdueDays, riskScore, valueScore: 0 };
+    const priorityScore = urgencyWeight * (1 + overdueDays / 14);
+    return { ...item, urgencyWeight, overdueDays, priorityScore, valueScore: 0 };
   });
 
-  const totalRisk = scoredBase.reduce((sum, item) => sum + item.riskScore, 0);
-  const utilizationWeight = totalRisk > 0 ? totalRisk / blockMinutes : 1 / blockMinutes;
+  const totalPriority = scoredBase.reduce((sum, item) => sum + item.priorityScore, 0);
+  const utilizationWeight = totalPriority > 0 ? totalPriority / blockMinutes : 1 / blockMinutes;
 
   return scoredBase.map((item) => ({
     ...item,
-    valueScore: item.riskScore + utilizationWeight * item.estimatedDurationMin,
+    valueScore: item.priorityScore + utilizationWeight * item.estimatedDurationMin,
   }));
 }
 
@@ -103,23 +103,23 @@ export function optimizeSlate(cases: PatientCase[], date: Date): SlateResult {
   const selected = scored
     .filter((_, idx) => selectedSet.has(idx))
     .sort((a, b) => {
-      if (b.riskScore !== a.riskScore) return b.riskScore - a.riskScore;
+      if (b.priorityScore !== a.priorityScore) return b.priorityScore - a.priorityScore;
       return a.timeToTargetDays - b.timeToTargetDays;
     });
   const remaining = scored.filter((_, idx) => !selectedSet.has(idx));
 
   const totalMinutes = selected.reduce((sum, item) => sum + item.estimatedDurationMin, 0);
-  const totalRiskScore = selected.reduce((sum, item) => sum + item.riskScore, 0);
+  const totalPriorityScore = selected.reduce((sum, item) => sum + item.priorityScore, 0);
   const utilizationPct = blockMinutes > 0 ? (totalMinutes / blockMinutes) * 100 : 0;
 
-  const totalRiskAll = scored.reduce((sum, item) => sum + item.riskScore, 0);
-  const utilizationWeight = totalRiskAll > 0 ? totalRiskAll / blockMinutes : 1 / blockMinutes;
+  const totalPriorityAll = scored.reduce((sum, item) => sum + item.priorityScore, 0);
+  const utilizationWeight = totalPriorityAll > 0 ? totalPriorityAll / blockMinutes : 1 / blockMinutes;
 
   return {
     blockMinutes,
     totalMinutes,
     utilizationPct,
-    totalRiskScore,
+    totalPriorityScore,
     utilizationWeight,
     selected,
     remaining,
