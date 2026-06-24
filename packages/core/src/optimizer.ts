@@ -9,6 +9,12 @@ const urgencyWeightMap: Record<number, number> = {
   26: 1,
 };
 
+/** Minutes of OR turnaround (prep for the next case) after every case but the last. */
+export const TURNAROUND_MINUTES = 30;
+
+/** Hard ceiling on cases in a single slate. */
+export const MAX_CASES_PER_SLATE = 7;
+
 /**
  * Re-applies a previously saved manual ordering (by caseId) to a freshly
  * optimized slate. Cases named in `orderedIds` come first in that order; any
@@ -60,42 +66,55 @@ export function optimizeSlate(cases: PatientCase[], date: Date): SlateResult {
   const blockMinutes = getBlockMinutes(date);
   const scored = scoreCases(cases, date);
 
-  const durations = scored.map((item) => Math.round(item.estimatedDurationMin));
   const values = scored.map((item) => item.valueScore);
   const n = scored.length;
 
-  // 0/1 knapsack with a full 2-D table so the optimum can be reconstructed
-  // consistently. dp[i][w] = best total value using the first i cases within w
-  // minutes of block time. (A 1-D table with per-cell "keep" flags cannot be
-  // back-tracked reliably because cells are mutated across items.)
-  const dp: Float64Array[] = Array.from(
-    { length: n + 1 },
-    () => new Float64Array(blockMinutes + 1)
+  // Turnaround follows every case except the last. Packing each case with
+  // weight = duration + TAT into a capacity of (block + TAT) exactly models
+  // that: a slate of k cases consumes sum(durations) + TAT*(k-1) <= block.
+  const weights = scored.map(
+    (item) => Math.round(item.estimatedDurationMin) + TURNAROUND_MINUTES
+  );
+  const capacity = blockMinutes + TURNAROUND_MINUTES;
+  const maxCases = MAX_CASES_PER_SLATE;
+
+  // 0/1 knapsack with two constraints — capacity (minutes) and cardinality
+  // (<= 7 cases). dp[i][w][k] = best value from the first i cases within w
+  // minutes using at most k cases. The full table makes reconstruction exact.
+  const dp: Float64Array[][] = Array.from({ length: n + 1 }, () =>
+    Array.from({ length: capacity + 1 }, () => new Float64Array(maxCases + 1))
   );
 
   for (let i = 1; i <= n; i += 1) {
-    const weight = durations[i - 1];
+    const weight = weights[i - 1];
     const value = values[i - 1];
     const prev = dp[i - 1];
     const curr = dp[i];
-    for (let w = 0; w <= blockMinutes; w += 1) {
-      let best = prev[w];
-      if (weight <= w) {
-        const candidate = prev[w - weight] + value;
-        if (candidate > best) best = candidate;
+    for (let w = 0; w <= capacity; w += 1) {
+      const prevW = prev[w];
+      const prevFit = weight <= w ? prev[w - weight] : null;
+      const currW = curr[w];
+      for (let k = 0; k <= maxCases; k += 1) {
+        let best = prevW[k];
+        if (prevFit && k >= 1) {
+          const candidate = prevFit[k - 1] + value;
+          if (candidate > best) best = candidate;
+        }
+        currW[k] = best;
       }
-      curr[w] = best;
     }
   }
 
-  // Reconstruct: case i-1 is included at capacity w iff including it produced a
-  // strictly better value than excluding it.
+  // Reconstruct: case i-1 is included iff including it (consuming one case slot)
+  // produced a strictly better value than excluding it.
   const selectedIndexes: number[] = [];
-  let w = blockMinutes;
+  let w = capacity;
+  let k = maxCases;
   for (let i = n; i >= 1; i -= 1) {
-    if (dp[i][w] !== dp[i - 1][w]) {
+    if (dp[i][w][k] !== dp[i - 1][w][k]) {
       selectedIndexes.push(i - 1);
-      w -= durations[i - 1];
+      w -= weights[i - 1];
+      k -= 1;
     }
   }
 
@@ -109,8 +128,10 @@ export function optimizeSlate(cases: PatientCase[], date: Date): SlateResult {
   const remaining = scored.filter((_, idx) => !selectedSet.has(idx));
 
   const totalMinutes = selected.reduce((sum, item) => sum + item.estimatedDurationMin, 0);
+  const turnaroundMinutes = TURNAROUND_MINUTES * Math.max(0, selected.length - 1);
   const totalPriorityScore = selected.reduce((sum, item) => sum + item.priorityScore, 0);
-  const utilizationPct = blockMinutes > 0 ? (totalMinutes / blockMinutes) * 100 : 0;
+  const occupiedMinutes = totalMinutes + turnaroundMinutes;
+  const utilizationPct = blockMinutes > 0 ? (occupiedMinutes / blockMinutes) * 100 : 0;
 
   const totalPriorityAll = scored.reduce((sum, item) => sum + item.priorityScore, 0);
   const utilizationWeight = totalPriorityAll > 0 ? totalPriorityAll / blockMinutes : 1 / blockMinutes;
@@ -118,6 +139,7 @@ export function optimizeSlate(cases: PatientCase[], date: Date): SlateResult {
   return {
     blockMinutes,
     totalMinutes,
+    turnaroundMinutes,
     utilizationPct,
     totalPriorityScore,
     utilizationWeight,

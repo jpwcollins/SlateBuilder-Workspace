@@ -136,7 +136,7 @@ export function parseCsv(text: string): ParseResult {
     if (!Number.isFinite(estimatedDurationMin)) {
       estimatedDurationMin = inferDurationFromProcedure(procedureName);
       if (!Number.isFinite(estimatedDurationMin)) {
-        estimatedDurationMin = 60;
+        estimatedDurationMin = 90; // "other" default
       }
     }
 
@@ -257,10 +257,10 @@ function inferDurationFromProcedure(name: string): number {
     return 180;
   }
   if (normalized.includes("hysteroscop")) {
-    return 60;
+    return 30;
   }
   if (normalized.includes("laparoscop")) {
-    return 90;
+    return 60;
   }
   return Number.NaN;
 }

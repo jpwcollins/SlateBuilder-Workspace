@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { optimizeSlate, scoreCases, reorderSlateByCaseIds } from "./optimizer";
+import {
+  optimizeSlate,
+  scoreCases,
+  reorderSlateByCaseIds,
+  TURNAROUND_MINUTES,
+  MAX_CASES_PER_SLATE,
+} from "./optimizer";
 import { getBlockMinutes } from "./date";
 import { PatientCase, BenchmarkWeeks } from "./types";
 
@@ -35,36 +41,50 @@ const fixture: PatientCase[] = [
   makeCase(8, 6, 1, 180),
 ];
 
+// Occupied time = surgical minutes + 30-min turnaround after every case but the last.
+function occupied(durations: number[]): number {
+  const surgical = durations.reduce((a, b) => a + b, 0);
+  return surgical + TURNAROUND_MINUTES * Math.max(0, durations.length - 1);
+}
+
 describe("optimizeSlate", () => {
-  it("never selects cases that exceed the block length", () => {
+  it("keeps occupied time (cases + turnaround) within the block", () => {
     const block = getBlockMinutes(DATE);
     const result = optimizeSlate(fixture, DATE);
-    const total = result.selected.reduce(
-      (sum, item) => sum + Math.round(item.estimatedDurationMin),
-      0
-    );
-    expect(total).toBeLessThanOrEqual(block);
+    const durations = result.selected.map((item) => Math.round(item.estimatedDurationMin));
+    expect(occupied(durations)).toBeLessThanOrEqual(block);
     expect(result.blockMinutes).toBe(block);
+    expect(result.turnaroundMinutes).toBe(
+      TURNAROUND_MINUTES * Math.max(0, result.selected.length - 1)
+    );
   });
 
-  it("selects the value-optimal subset (matches brute force)", () => {
+  it("never exceeds the 7-case ceiling", () => {
+    // Many tiny cases would otherwise all fit on minutes alone.
+    const many = Array.from({ length: 20 }, (_, i) => makeCase(i + 1, 2, -i, 20));
+    const result = optimizeSlate(many, DATE);
+    expect(result.selected.length).toBeLessThanOrEqual(MAX_CASES_PER_SLATE);
+  });
+
+  it("selects the value-optimal subset under both constraints (matches brute force)", () => {
     const block = getBlockMinutes(DATE);
     const scored = scoreCases(fixture, DATE);
     const durations = scored.map((c) => Math.round(c.estimatedDurationMin));
     const values = scored.map((c) => c.valueScore);
 
-    // Brute-force best achievable value within the block.
     let best = 0;
     for (let mask = 0; mask < 1 << scored.length; mask += 1) {
-      let weight = 0;
+      const chosen: number[] = [];
       let value = 0;
       for (let i = 0; i < scored.length; i += 1) {
         if (mask & (1 << i)) {
-          weight += durations[i];
+          chosen.push(durations[i]);
           value += values[i];
         }
       }
-      if (weight <= block && value > best) best = value;
+      if (chosen.length <= MAX_CASES_PER_SLATE && occupied(chosen) <= block && value > best) {
+        best = value;
+      }
     }
 
     const result = optimizeSlate(fixture, DATE);
@@ -72,10 +92,11 @@ describe("optimizeSlate", () => {
     expect(selectedValue).toBeCloseTo(best, 6);
   });
 
-  it("includes everything when all cases fit", () => {
+  it("includes everything when all cases fit (with turnaround)", () => {
     const small = [makeCase(1, 2, -1, 60), makeCase(2, 4, -1, 60)];
     const result = optimizeSlate(small, DATE);
     expect(result.selected).toHaveLength(2);
+    expect(result.turnaroundMinutes).toBe(TURNAROUND_MINUTES);
   });
 });
 

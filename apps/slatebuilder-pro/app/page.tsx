@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   ClinicalFlagKey,
   formatMinutesToTime,
@@ -14,6 +14,7 @@ import {
   clinicalFlagDefinitions,
   serializeCsv,
   reorderSlateByCaseIds,
+  TURNAROUND_MINUTES,
 } from "@slatebuilder/core";
 
 function downloadFile(filename: string, contents: string) {
@@ -46,10 +47,10 @@ export default function Home() {
   const [waitlistScope, setWaitlistScope] = useState<"surgeon" | "group">("surgeon");
   const [selectedGroup, setSelectedGroup] = useState("");
   const [defaultDurations, setDefaultDurations] = useState({
-    hysteroscopy: 60,
-    laparoscopy: 90,
+    hysteroscopy: 30,
+    laparoscopy: 60,
     hysterectomy: 180,
-    other: 60,
+    other: 90,
   });
   const [defaultsSavedAt, setDefaultsSavedAt] = useState<string | null>(null);
   const [showMetrics, setShowMetrics] = useState(false);
@@ -296,11 +297,15 @@ export default function Home() {
   const buildSchedule = (items: ScoredCase[], slateIndex: number) => {
     const date = new Date(`${slateDates[slateIndex]}T00:00:00`);
     let cursor = getBlockStartMinutes(date);
-    return items.map((item) => {
+    return items.map((item, index) => {
       const start = cursor;
       const end = cursor + Math.round(item.estimatedDurationMin);
       cursor = end;
-      return { item, start, end };
+      // Every case but the last is followed by a 30-min turnaround.
+      const tatAfter = index < items.length - 1;
+      const tatEnd = tatAfter ? end + TURNAROUND_MINUTES : end;
+      if (tatAfter) cursor = tatEnd;
+      return { item, start, end, tatAfter, tatEnd };
     });
   };
 
@@ -426,6 +431,7 @@ export default function Home() {
         ...(includeNamesInExports ? ["patient_label"] : []),
         "start_time",
         "end_time",
+        "turnaround_after_min",
         "patient_type",
         "procedure_name",
         "benchmark_weeks",
@@ -442,13 +448,15 @@ export default function Home() {
     orderedSlate.forEach((item, index) => {
       const start = cursor;
       const end = cursor + Math.round(item.estimatedDurationMin);
-      cursor = end;
+      const tatAfter = index < orderedSlate.length - 1;
+      cursor = end + (tatAfter ? TURNAROUND_MINUTES : 0);
       rows.push([
         String(index + 1),
         item.caseId,
         ...(includeNamesInExports ? [item.displayLabel] : []),
         formatMinutesToTime(start),
         formatMinutesToTime(end),
+        tatAfter ? String(TURNAROUND_MINUTES) : "0",
         item.inpatient ? "Inpatient" : "Day Case",
         item.procedureName ?? "",
         String(item.benchmarkWeeks),
@@ -834,7 +842,8 @@ export default function Home() {
               Standard day: 08:00–16:00 (480 min). 2nd &amp; 4th Thursday: 09:00–16:00 (420 min).
             </p>
             <p className="mt-1 text-xs text-sand-600">
-              Case times include turnaround time.
+              A 30-minute turnaround (OR prep) follows every case except the last of the day. Slates
+              hold a maximum of 7 cases.
             </p>
           </div>
 
@@ -859,10 +868,13 @@ export default function Home() {
                 const slateStart = slateDate
                   ? getBlockStartMinutes(new Date(`${slateDate}T00:00:00`))
                   : blockStartMinutes;
-                const totalMinutes = orderedSlate.reduce(
+                const surgicalMinutes = orderedSlate.reduce(
                   (sum, item) => sum + item.estimatedDurationMin,
                   0
                 );
+                const turnaroundMinutes =
+                  TURNAROUND_MINUTES * Math.max(0, orderedSlate.length - 1);
+                const totalMinutes = surgicalMinutes + turnaroundMinutes;
                 const utilizationPct =
                   slate.blockMinutes > 0 ? (totalMinutes / slate.blockMinutes) * 100 : 0;
                 const totalPriorityScore = orderedSlate.reduce((sum, item) => sum + item.priorityScore, 0);
@@ -907,6 +919,9 @@ export default function Home() {
                         <p className="text-xs text-sand-700">
                           {totalMinutes.toFixed(0)} / {slate.blockMinutes} min
                         </p>
+                        <p className="text-[11px] text-sand-600">
+                          {surgicalMinutes} min cases + {turnaroundMinutes} min TAT
+                        </p>
                       </div>
                       <div
                         className="rounded-xl border border-sand-200 bg-white/70 p-3"
@@ -933,9 +948,9 @@ export default function Home() {
                     </div>
 
                     <div className="mt-4 flex flex-col gap-2">
-                      {schedule.map(({ item, start, end }, index) => (
+                      {schedule.map(({ item, start, end, tatAfter, tatEnd }, index) => (
+                        <Fragment key={item.caseId}>
                         <div
-                          key={item.caseId}
                           draggable
                           onDragStart={() => handleDragStart(slateIndex, item.caseId)}
                           onDragOver={(event) => handleDragOver(event, slateIndex, item.caseId)}
@@ -1030,6 +1045,16 @@ export default function Home() {
                             </button>
                           </div>
                         </div>
+                        {tatAfter && (
+                          <div className="flex items-center gap-2 px-4 text-xs text-sand-500">
+                            <span className="h-px flex-1 bg-sand-200" />
+                            <span className="rounded-full bg-sand-100 px-2 py-0.5 font-medium">
+                              ↻ 30-min turnaround · OR ready {formatMinutesToTime(tatEnd)}
+                            </span>
+                            <span className="h-px flex-1 bg-sand-200" />
+                          </div>
+                        )}
+                        </Fragment>
                       ))}
                     </div>
                   </div>

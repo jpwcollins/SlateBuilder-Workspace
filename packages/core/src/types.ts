@@ -50,7 +50,11 @@ export type ScoredCase = PatientCase & {
 
 export type SlateResult = {
   blockMinutes: number;
+  /** Sum of surgical case durations only (excludes turnaround). */
   totalMinutes: number;
+  /** Total turnaround time in the slate: 30 min after every case but the last. */
+  turnaroundMinutes: number;
+  /** Occupied time (cases + turnaround) as a percentage of the block. */
   utilizationPct: number;
   totalPriorityScore: number;
   utilizationWeight: number;

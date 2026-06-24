@@ -9,6 +9,7 @@ export type SlatePdfCase = {
   startLabel: string; // "0800"
   endLabel: string; // "0930"
   durationMin: number;
+  tatAfter: boolean; // a 30-min turnaround follows this case
   benchmarkWeeks: number;
   overdueDays: number; // days past target, 0 if not overdue
   primary: string; // name (or opaque code when names are hidden)
@@ -186,17 +187,24 @@ function drawSlateTable(doc: jsPDF, cases: SlatePdfCase[]): void {
     doc.setTextColor(...WHITE);
     doc.text(String(c.order), COLS.num[0] + COLS.num[1] / 2, chipY + 13, { align: "center" });
 
-    // Time, duration + benchmark, overdue marker.
+    // Time, duration + benchmark, overdue marker, turnaround note.
     doc.setFontSize(11);
     doc.setTextColor(...INK);
     doc.text(`${c.startLabel}–${c.endLabel}`, COLS.time[0] + 4, rowTop + 20);
+    let ty = rowTop + 34;
     doc.setFont("helvetica", "normal");
     doc.setFontSize(8.5);
     doc.setTextColor(...GREY);
-    doc.text(`${c.durationMin} min · ${c.benchmarkWeeks}w`, COLS.time[0] + 4, rowTop + 34);
+    doc.text(`${c.durationMin} min · ${c.benchmarkWeeks}w`, COLS.time[0] + 4, ty);
     if (c.overdueDays > 0) {
+      ty += 12;
       doc.setTextColor(...RED);
-      doc.text(`${c.overdueDays}d overdue`, COLS.time[0] + 4, rowTop + 46);
+      doc.text(`${c.overdueDays}d overdue`, COLS.time[0] + 4, ty);
+    }
+    if (c.tatAfter) {
+      ty += 12;
+      doc.setTextColor(...GREY);
+      doc.text("+30 min turnaround", COLS.time[0] + 4, ty);
     }
 
     // Patient: primary + code + flags.
