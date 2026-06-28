@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "offices",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:offices"],
+      "port": 3000
+    }
+  ]
+}

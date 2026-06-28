@@ -1305,38 +1305,12 @@ export default function Home() {
 
   return (
     <main className="relative mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-6 py-12">
-      <div className="sticky top-0 z-30 -mx-6 mb-2 border-b border-sand-200 bg-sand-50/90 px-6 py-3 backdrop-blur">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap gap-2">
-            {tabs.map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold ${
-                  activeTab === tab.id
-                    ? "bg-slateBlue-700 text-white"
-                    : "border border-sand-300 bg-white/70 text-slateBlue-700"
-                }`}
-              >
-                {tab.label}
-                {tab.badge !== undefined && tab.badge > 0 && (
-                  <span
-                    className={`rounded-full px-1.5 py-0.5 text-[10px] ${
-                      activeTab === tab.id
-                        ? "bg-white/25"
-                        : tab.danger
-                          ? "bg-rose-100 text-rose-700"
-                          : "bg-sand-100 text-sand-700"
-                    }`}
-                  >
-                    {tab.badge}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-          <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-sand-700">
+      <div className="sticky top-0 z-30 -mx-6 mb-2 bg-sand-50/95 px-6 pt-3 backdrop-blur">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-sand-700">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-sand-500">
+            SlateBuilder for Offices
+          </p>
+          <div className="flex flex-wrap gap-x-4 gap-y-0.5">
             <span>
               Cases <span className="font-semibold text-slateBlue-900">{officeStats.totalCases}</span>
             </span>
@@ -1352,11 +1326,44 @@ export default function Home() {
             </span>
           </div>
         </div>
+        <nav className="mt-2 flex gap-1 overflow-x-auto border-b border-sand-300" aria-label="Sections">
+          {tabs.map((tab) => {
+            const active = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                aria-current={active ? "page" : undefined}
+                className={`flex shrink-0 items-center gap-2 rounded-t-lg px-4 py-2.5 text-sm transition-colors ${
+                  active
+                    ? "-mb-px border border-b-white border-sand-300 border-t-2 border-t-slateBlue-600 bg-white font-semibold text-slateBlue-900"
+                    : "border border-transparent font-medium text-sand-500 hover:bg-white/60 hover:text-slateBlue-700"
+                }`}
+              >
+                {tab.label}
+                {tab.badge !== undefined && tab.badge > 0 && (
+                  <span
+                    className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+                      tab.danger
+                        ? "bg-rose-100 text-rose-700"
+                        : active
+                          ? "bg-slateBlue-100 text-slateBlue-700"
+                          : "bg-sand-100 text-sand-600"
+                    }`}
+                  >
+                    {tab.badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
       </div>
 
       {activeTab === "setup" && (
         <>
-      <header className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+      <header>
         <div className="card p-8">
           <p className="text-sm uppercase tracking-[0.26em] text-sand-600">
             Office Scheduling Toolkit
@@ -1399,67 +1406,6 @@ export default function Home() {
             <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
               Up to 3 selectable OR dates
             </span>
-          </div>
-        </div>
-
-        <div className="card p-6">
-          <h2 className="text-lg font-semibold text-slateBlue-900">Office Snapshot</h2>
-          <p className="mt-1 text-sm text-sand-700">
-            A quick read on the uploaded office waitlist.
-          </p>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <StatCard
-              label="Cases"
-              value={String(officeStats.totalCases)}
-              detail="Total active patients loaded"
-            />
-            <StatCard
-              label="Overdue"
-              value={String(officeStats.overdue)}
-              detail="Patients past target date"
-            />
-            <StatCard
-              label="Urgent"
-              value={String(officeStats.urgent)}
-              detail="2w, 4w, or 6w benchmarks"
-            />
-            <StatCard
-              label="Workload"
-              value={`${officeStats.totalHours.toFixed(1)}h`}
-              detail="Estimated operative time"
-            />
-          </div>
-          <div className="mt-4 rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
-            <div className="flex items-center justify-between">
-              <p className="font-semibold text-sand-900">Waitlist overview</p>
-              <p className="text-xs text-sand-600">By benchmark · under vs. over target</p>
-            </div>
-            {officeStats.totalCases > 0 ? (
-              <>
-                <div className="mt-2">
-                  <WaitlistHistogram buckets={waitlistOverview} />
-                </div>
-                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-sand-700">
-                  {OVERVIEW_SEGMENTS.map((seg) => (
-                    <span key={seg.key} className="inline-flex items-center gap-1.5">
-                      <span
-                        className="inline-block h-2.5 w-2.5 rounded-sm"
-                        style={{ backgroundColor: seg.color }}
-                      />
-                      {seg.label}
-                    </span>
-                  ))}
-                </div>
-              </>
-            ) : (
-              <p className="mt-2 text-xs text-sand-600">No waitlist uploaded yet.</p>
-            )}
-          </div>
-          <div className="mt-4 rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
-            <p className="font-semibold text-sand-900">Detected surgeon IDs</p>
-            <p className="mt-1 text-xs text-sand-700">
-              {officeSurgeons.length > 0 ? officeSurgeons.join(", ") : "No waitlist uploaded yet."}
-            </p>
           </div>
         </div>
       </header>
@@ -1778,6 +1724,67 @@ export default function Home() {
                 </p>
               </div>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="card p-6">
+        <h2 className="text-lg font-semibold text-slateBlue-900">Office Snapshot</h2>
+        <p className="mt-1 text-sm text-sand-700">A quick read on the uploaded office waitlist.</p>
+        <div className="mt-4 grid gap-3 sm:grid-cols-4">
+          <StatCard
+            label="Cases"
+            value={String(officeStats.totalCases)}
+            detail="Total active patients loaded"
+          />
+          <StatCard
+            label="Overdue"
+            value={String(officeStats.overdue)}
+            detail="Patients past target date"
+          />
+          <StatCard
+            label="Urgent"
+            value={String(officeStats.urgent)}
+            detail="2w, 4w, or 6w benchmarks"
+          />
+          <StatCard
+            label="Workload"
+            value={`${officeStats.totalHours.toFixed(1)}h`}
+            detail="Estimated operative time"
+          />
+        </div>
+        <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_1fr]">
+          <div className="rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
+            <div className="flex items-center justify-between">
+              <p className="font-semibold text-sand-900">Waitlist overview</p>
+              <p className="text-xs text-sand-600">By benchmark · under vs. over target</p>
+            </div>
+            {officeStats.totalCases > 0 ? (
+              <>
+                <div className="mt-2">
+                  <WaitlistHistogram buckets={waitlistOverview} />
+                </div>
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-sand-700">
+                  {OVERVIEW_SEGMENTS.map((seg) => (
+                    <span key={seg.key} className="inline-flex items-center gap-1.5">
+                      <span
+                        className="inline-block h-2.5 w-2.5 rounded-sm"
+                        style={{ backgroundColor: seg.color }}
+                      />
+                      {seg.label}
+                    </span>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <p className="mt-2 text-xs text-sand-600">No waitlist uploaded yet.</p>
+            )}
+          </div>
+          <div className="rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
+            <p className="font-semibold text-sand-900">Detected surgeon IDs</p>
+            <p className="mt-1 text-xs text-sand-700">
+              {officeSurgeons.length > 0 ? officeSurgeons.join(", ") : "No waitlist uploaded yet."}
+            </p>
           </div>
         </div>
       </section>
