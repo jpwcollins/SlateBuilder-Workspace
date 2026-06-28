@@ -67,6 +67,8 @@ type StoredOfficeSession = {
   encrypted: EncryptedEnvelope;
 };
 
+type OfficeTab = "setup" | "slates" | "waitlist" | "long";
+const OFFICE_TAB_KEY = "slatebuilder-office-tab";
 const OFFICE_SAVED_SESSIONS_KEY = "slatebuilder-office-saved-sessions-v2";
 // Autosave lives in sessionStorage (cleared when the tab closes, never shared
 // with other tabs or written to disk) so unencrypted PHI is not left behind on
@@ -345,6 +347,11 @@ export default function Home() {
   const [passphrase, setPassphrase] = useState("");
   const [includeNamesInExports, setIncludeNamesInExports] = useState(false);
   const [lastAutosaveAt, setLastAutosaveAt] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<OfficeTab>("setup");
+  const [expandedCaseIds, setExpandedCaseIds] = useState<Record<string, boolean>>({});
+  const [waitlistQuery, setWaitlistQuery] = useState("");
+  const [waitlistOverdueOnly, setWaitlistOverdueOnly] = useState(false);
+  const [waitlistUnslatedOnly, setWaitlistUnslatedOnly] = useState(false);
 
   useEffect(() => {
     if (!csvText) return;
@@ -391,6 +398,17 @@ export default function Home() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Remember the last-viewed tab for this browser tab.
+  useEffect(() => {
+    const t = window.sessionStorage.getItem(OFFICE_TAB_KEY);
+    if (t === "setup" || t === "slates" || t === "waitlist" || t === "long") {
+      setActiveTab(t);
+    }
+  }, []);
+  useEffect(() => {
+    window.sessionStorage.setItem(OFFICE_TAB_KEY, activeTab);
+  }, [activeTab]);
 
   const applyDefaultDuration = (item: PatientCase): PatientCase => {
     const name = (item.procedureName ?? "").toLowerCase();
@@ -1239,6 +1257,31 @@ export default function Home() {
     });
   };
 
+  const toggleExpanded = (id: string) =>
+    setExpandedCaseIds((prev) => ({ ...prev, [id]: !prev[id] }));
+
+  const waitlistQ = waitlistQuery.trim().toLowerCase();
+  const filteredWaitlist = orderedByUrgency
+    .map((item, i) => ({ item, rank: i + 1 }))
+    .filter(({ item }) => {
+      if (waitlistOverdueOnly && item.timeToTargetDays >= 0) return false;
+      if (waitlistUnslatedOnly && selectedCaseIds.has(item.caseId)) return false;
+      if (!waitlistQ) return true;
+      return (
+        item.displayLabel.toLowerCase().includes(waitlistQ) ||
+        item.caseId.toLowerCase().includes(waitlistQ) ||
+        (item.procedureName ?? "").toLowerCase().includes(waitlistQ) ||
+        item.surgeonId.toLowerCase().includes(waitlistQ)
+      );
+    });
+
+  const tabs: { id: OfficeTab; label: string; badge?: number; danger?: boolean }[] = [
+    { id: "setup", label: "Setup" },
+    { id: "slates", label: "Suggested slates", badge: slates?.length ?? 0 },
+    { id: "waitlist", label: "Priority waitlist", badge: orderedByUrgency.length },
+    { id: "long", label: "Long-waiters", badge: longWaiters.total, danger: true },
+  ];
+
   const activeDates = slateDates.slice(0, slateCount);
   const filledDates = activeDates.filter(Boolean);
   const todayISO = toLocalDateOnly(new Date());
@@ -1262,6 +1305,57 @@ export default function Home() {
 
   return (
     <main className="relative mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-6 py-12">
+      <div className="sticky top-0 z-30 -mx-6 mb-2 border-b border-sand-200 bg-sand-50/90 px-6 py-3 backdrop-blur">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap gap-2">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold ${
+                  activeTab === tab.id
+                    ? "bg-slateBlue-700 text-white"
+                    : "border border-sand-300 bg-white/70 text-slateBlue-700"
+                }`}
+              >
+                {tab.label}
+                {tab.badge !== undefined && tab.badge > 0 && (
+                  <span
+                    className={`rounded-full px-1.5 py-0.5 text-[10px] ${
+                      activeTab === tab.id
+                        ? "bg-white/25"
+                        : tab.danger
+                          ? "bg-rose-100 text-rose-700"
+                          : "bg-sand-100 text-sand-700"
+                    }`}
+                  >
+                    {tab.badge}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-sand-700">
+            <span>
+              Cases <span className="font-semibold text-slateBlue-900">{officeStats.totalCases}</span>
+            </span>
+            <span className={officeStats.overdue > 0 ? "text-rose-600" : ""}>
+              Overdue <span className="font-semibold">{officeStats.overdue}</span>
+            </span>
+            <span>
+              Slated <span className="font-semibold text-slateBlue-900">{selectedCaseIds.size}</span>
+            </span>
+            <span>
+              Waiting{" "}
+              <span className="font-semibold text-slateBlue-900">{remainingByUrgency.length}</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {activeTab === "setup" && (
+        <>
       <header className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
         <div className="card p-8">
           <p className="text-sm uppercase tracking-[0.26em] text-sand-600">
@@ -1687,8 +1781,11 @@ export default function Home() {
           </div>
         </div>
       </section>
+        </>
+      )}
 
-      <section className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+      {activeTab === "slates" && (
+      <section className="flex flex-col gap-6">
         <div className="card p-6">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
@@ -1950,7 +2047,11 @@ export default function Home() {
             </div>
           )}
         </div>
+      </section>
+      )}
 
+      {activeTab === "waitlist" && (
+      <section className="flex flex-col gap-6">
         <div className="card p-6">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
@@ -1991,123 +2092,175 @@ export default function Home() {
             />
           </div>
 
-          <div className="mt-4 flex flex-col gap-2 text-sm">
-            {orderedByUrgency.map((item, index) => (
-              <div
-                key={item.caseId}
-                className="rounded-2xl border border-sand-200 bg-white/70 px-4 py-3"
-              >
-                <div className="flex items-center justify-between gap-4">
-                  <span className="font-semibold text-slateBlue-900">
-                    #{index + 1} · {item.displayLabel}
-                    <span className="ml-2 text-[10px] uppercase tracking-wider text-sand-400">
-                      {item.caseId}
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <input
+              type="search"
+              value={waitlistQuery}
+              onChange={(event) => setWaitlistQuery(event.target.value)}
+              placeholder="Search name, code or procedure…"
+              className="min-w-[200px] flex-1 rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+            />
+            <label className="flex items-center gap-1.5 text-xs text-sand-700">
+              <input
+                type="checkbox"
+                checked={waitlistOverdueOnly}
+                onChange={(event) => setWaitlistOverdueOnly(event.target.checked)}
+              />
+              Overdue only
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-sand-700">
+              <input
+                type="checkbox"
+                checked={waitlistUnslatedOnly}
+                onChange={(event) => setWaitlistUnslatedOnly(event.target.checked)}
+              />
+              Not yet slated
+            </label>
+          </div>
+
+          <p className="mt-2 text-xs text-sand-600">
+            Showing {filteredWaitlist.length} of {orderedByUrgency.length}
+          </p>
+
+          <div className="mt-2 flex flex-col gap-1.5 text-sm">
+            {filteredWaitlist.map(({ item, rank }) => {
+              const expanded = Boolean(expandedCaseIds[item.caseId]);
+              return (
+                <div key={item.caseId} className="rounded-xl border border-sand-200 bg-white/70">
+                  <button
+                    type="button"
+                    onClick={() => toggleExpanded(item.caseId)}
+                    className="flex w-full items-center gap-3 px-3 py-2 text-left"
+                  >
+                    <span className="w-6 shrink-0 text-xs font-semibold text-sand-500">{rank}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-semibold text-slateBlue-900">
+                        {item.displayLabel}
+                        <span className="ml-1.5 text-[10px] uppercase tracking-wider text-sand-400">
+                          {item.caseId}
+                        </span>
+                      </span>
+                      {item.procedureName && (
+                        <span className="block truncate text-xs text-sand-600">
+                          {item.procedureName}
+                        </span>
+                      )}
                     </span>
-                  </span>
-                  <div className="flex flex-wrap justify-end gap-2">
-                    <span className="text-xs text-sand-700">{item.estimatedDurationMin}m</span>
-                    {selectedCaseIds.has(item.caseId) && (
-                      <span className="rounded-full bg-slateBlue-100 px-2 py-1 text-xs text-slateBlue-700">
+                    <UrgencyBadge
+                      benchmarkWeeks={item.benchmarkWeeks}
+                      timeToTargetDays={item.timeToTargetDays}
+                    />
+                    <span className="hidden shrink-0 text-xs text-sand-600 sm:inline">
+                      {item.estimatedDurationMin}m
+                    </span>
+                    {selectedCaseIds.has(item.caseId) ? (
+                      <span className="shrink-0 rounded-full bg-slateBlue-100 px-2 py-0.5 text-[11px] text-slateBlue-700">
                         Slated
                       </span>
-                    )}
-                  </div>
-                </div>
-                <div className="mt-1 flex flex-wrap items-center gap-2">
-                  <UrgencyBadge
-                    benchmarkWeeks={item.benchmarkWeeks}
-                    timeToTargetDays={item.timeToTargetDays}
-                  />
-                  <span className="text-xs text-sand-700">
-                    TTT {item.timeToTargetDays}d · Surgeon ID {item.surgeonId}
-                  </span>
-                </div>
-                {item.unavailableUntil && (
-                  <div className="mt-1 text-xs text-sand-600">
-                    Patient unavailable until {item.unavailableUntil}
-                  </div>
-                )}
-                {item.procedureName && (
-                  <div className="mt-1 text-xs text-sand-600">{item.procedureName}</div>
-                )}
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {clinicalFlagDefinitions
-                    .filter((flag) => item.flags?.[flag.key])
-                    .map((flag) => (
-                      <span
-                        key={`${item.caseId}-${flag.key}`}
-                        className="rounded-full bg-sand-100 px-2 py-1 text-xs text-sand-800"
-                      >
-                        {flag.label}
+                    ) : (
+                      <span className="shrink-0 rounded-full bg-sand-100 px-2 py-0.5 text-[11px] text-sand-600">
+                        Waiting
                       </span>
-                    ))}
-                  {item.inpatient && (
-                    <span className="rounded-full bg-sand-200 px-2 py-1 text-xs text-sand-800">
-                      Inpatient
-                    </span>
-                  )}
-                  {removedFromSlateSuggestions[item.caseId] && (
-                    <span className="rounded-full bg-sand-200 px-2 py-1 text-xs text-sand-800">
-                      Removed from suggestions
-                    </span>
-                  )}
-                </div>
-                <div className="mt-2 flex flex-wrap gap-3 text-xs text-sand-700">
-                  {clinicalFlagDefinitions.map((flag) => (
-                    <label key={`${item.caseId}-${flag.key}`} className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(item.flags?.[flag.key])}
-                        onChange={(event) =>
-                          updateFlag(item.caseId, flag.key, event.target.checked)
-                        }
-                      />
-                      {flag.label}
-                    </label>
-                  ))}
-                  <label className="flex items-center gap-2">
-                    Patient unavailable until
-                    <input
-                      type="date"
-                      value={item.unavailableUntil ?? ""}
-                      onChange={(event) =>
-                        updateUnavailableUntil(item.caseId, event.target.value)
-                      }
-                      className="rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
-                    />
-                  </label>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {removedFromSlateSuggestions[item.caseId] ? (
-                    <button
-                      type="button"
-                      onClick={() => restoreToSuggestedSlates(item.caseId)}
-                      className="rounded-full border border-slateBlue-200 px-3 py-1 text-xs font-semibold text-slateBlue-700"
-                    >
-                      Restore to suggested slates
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => removeFromSuggestedSlates(item.caseId)}
-                      className="rounded-full border border-slateBlue-200 px-3 py-1 text-xs font-semibold text-slateBlue-700"
-                    >
-                      Remove from suggested slates
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
+                    )}
+                    <span className="shrink-0 text-sand-400">{expanded ? "▾" : "▸"}</span>
+                  </button>
 
-            {orderedByUrgency.length === 0 && (
+                  {expanded && (
+                    <div className="border-t border-sand-200 px-3 py-3 text-xs text-sand-700">
+                      <div className="text-sand-600">
+                        TTT {item.timeToTargetDays}d · Surgeon ID {item.surgeonId}
+                        {item.unavailableUntil
+                          ? ` · unavailable until ${item.unavailableUntil}`
+                          : ""}
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {clinicalFlagDefinitions
+                          .filter((flag) => item.flags?.[flag.key])
+                          .map((flag) => (
+                            <span
+                              key={`${item.caseId}-${flag.key}`}
+                              className="rounded-full bg-sand-100 px-2 py-1 text-sand-800"
+                            >
+                              {flag.label}
+                            </span>
+                          ))}
+                        {item.inpatient && (
+                          <span className="rounded-full bg-sand-200 px-2 py-1 text-sand-800">
+                            Inpatient
+                          </span>
+                        )}
+                        {removedFromSlateSuggestions[item.caseId] && (
+                          <span className="rounded-full bg-sand-200 px-2 py-1 text-sand-800">
+                            Removed from suggestions
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-3">
+                        {clinicalFlagDefinitions.map((flag) => (
+                          <label
+                            key={`${item.caseId}-${flag.key}`}
+                            className="flex items-center gap-2"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={Boolean(item.flags?.[flag.key])}
+                              onChange={(event) =>
+                                updateFlag(item.caseId, flag.key, event.target.checked)
+                              }
+                            />
+                            {flag.label}
+                          </label>
+                        ))}
+                        <label className="flex items-center gap-2">
+                          Patient unavailable until
+                          <input
+                            type="date"
+                            value={item.unavailableUntil ?? ""}
+                            onChange={(event) =>
+                              updateUnavailableUntil(item.caseId, event.target.value)
+                            }
+                            className="rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
+                          />
+                        </label>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {removedFromSlateSuggestions[item.caseId] ? (
+                          <button
+                            type="button"
+                            onClick={() => restoreToSuggestedSlates(item.caseId)}
+                            className="rounded-full border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
+                          >
+                            Restore to suggested slates
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => removeFromSuggestedSlates(item.caseId)}
+                            className="rounded-full border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
+                          >
+                            Remove from suggested slates
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {filteredWaitlist.length === 0 && (
               <div className="rounded-2xl border border-dashed border-sand-300 bg-white/70 px-3 py-6 text-center text-xs text-sand-700">
-                No office waitlist loaded yet.
+                {orderedByUrgency.length === 0
+                  ? "No office waitlist loaded yet."
+                  : "No patients match the filter."}
               </div>
             )}
           </div>
         </div>
       </section>
+      )}
 
+      {activeTab === "long" && (
       <section className="card p-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
@@ -2186,7 +2339,9 @@ export default function Home() {
           </div>
         )}
       </section>
+      )}
 
+      {activeTab === "setup" && (
       <section className="card p-6">
         <h2 className="text-lg font-semibold text-slateBlue-900">About</h2>
         <p className="mt-2 text-sm text-sand-800">
@@ -2195,6 +2350,7 @@ export default function Home() {
           responsibility for any errors or omissions in outputs.
         </p>
       </section>
+      )}
     </main>
   );
 }
