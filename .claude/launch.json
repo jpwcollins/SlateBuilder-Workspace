@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev:offices"],
       "port": 3000
+    },
+    {
+      "name": "pro",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:pro"],
+      "port": 3000
     }
   ]
 }
