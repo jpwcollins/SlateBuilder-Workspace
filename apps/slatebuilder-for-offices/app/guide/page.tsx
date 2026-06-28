@@ -1,0 +1,177 @@
+export const metadata = {
+  title: "SlateBuilder for Offices — User guide",
+};
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="card p-6">
+      <h2 className="text-lg font-semibold text-slateBlue-900">{title}</h2>
+      <div className="mt-3 flex flex-col gap-3 text-sm leading-6 text-sand-800">{children}</div>
+    </section>
+  );
+}
+
+export default function Guide() {
+  return (
+    <main className="relative mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-6 px-6 py-12">
+      <header className="flex flex-col gap-2">
+        <p className="text-sm uppercase tracking-[0.26em] text-sand-600">User guide</p>
+        <h1 className="text-3xl font-semibold text-slateBlue-900">SlateBuilder for Offices</h1>
+        <p className="text-sm text-sand-700">
+          A quick guide to turning your office waitlist into OR slates and priority lists. Everything
+          runs in your browser — no patient data ever leaves this device.
+        </p>
+        <a
+          href="/"
+          className="mt-1 w-fit rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
+        >
+          ← Back to the app
+        </a>
+      </header>
+
+      <Section title="1. Load the office waitlist">
+        <p>
+          Use <span className="font-semibold">Load Office Waitlist</span> to upload your office&apos;s
+          own CSV or Excel file. Each row is one patient. The importer reads these columns:
+        </p>
+        <ul className="list-disc pl-5">
+          <li>
+            <span className="font-semibold">PAT_NAME1</span> or <span className="font-semibold">PHN</span>{" "}
+            — the patient identifier (shown on screen; see privacy below)
+          </li>
+          <li>
+            <span className="font-semibold">SURGEON</span> — used as the surgeon shown on printed
+            slates (one surgeon per file)
+          </li>
+          <li>
+            <span className="font-semibold">DIAGNOSIS</span> — the procedure (drives the default case
+            duration)
+          </li>
+          <li>
+            <span className="font-semibold">TARGET_TIME</span> and{" "}
+            <span className="font-semibold">TIME_WAITING</span> — both in{" "}
+            <span className="font-semibold">weeks</span>
+          </li>
+        </ul>
+        <p className="rounded-xl border border-sand-200 bg-white/70 px-4 py-3 text-xs text-sand-700">
+          <span className="font-semibold text-sand-900">Privacy:</span> each patient is given an
+          opaque code (e.g. C-001). Names stay on your screen; exported slates and lists use the code
+          by default. Tick <span className="font-semibold">Include patient names in exported CSVs</span>{" "}
+          only when you need a named list to work from.
+        </p>
+      </Section>
+
+      <Section title="2. Set the scheduling rules">
+        <ul className="list-disc pl-5">
+          <li>
+            <span className="font-semibold">Priority rule</span> — &quot;composite priority&quot;
+            (urgency + time waited) is the default; &quot;wait time only&quot; sorts purely by
+            time-to-target.
+          </li>
+          <li>
+            <span className="font-semibold">Default case durations</span> — four buckets
+            (hysteroscopy 30, laparoscopy 60, hysterectomy 180, other 90 min). These are starting
+            estimates; you can override any case&apos;s duration on its slate card, and most offices
+            will want to.
+          </li>
+          <li>
+            <span className="font-semibold">OR dates</span> — choose up to three. A standard day is
+            08:00–16:00 (480 min); the 2nd and 4th Thursday of the month run 09:00–16:00 (420 min).
+          </li>
+        </ul>
+        <p>
+          A <span className="font-semibold">30-minute turnaround</span> (OR prep) is added after
+          every case except the last of the day, and a slate holds a{" "}
+          <span className="font-semibold">maximum of 7 cases</span>.
+        </p>
+      </Section>
+
+      <Section title="3. Review the suggested slates">
+        <p>
+          For each OR date the tool builds a slate in two steps: it first places every patient who is
+          already <span className="font-semibold">past target</span> (most urgent first, so the
+          longest-waiting are never bumped), then fills the remaining time with not-yet-overdue cases
+          to complete as many further patients as possible.
+        </p>
+        <ul className="list-disc pl-5">
+          <li>The capacity bar shows time used vs. the block, including turnaround.</li>
+          <li>Drag cases to reorder them; the order is the running order for the day.</li>
+          <li>Edit a case&apos;s duration or clinical flags, or set a date a patient is unavailable until.</li>
+          <li>
+            <span className="font-semibold">Remove from suggested slates</span> takes a case off; the
+            freed time is offered to the next patient. Restore it from the Priority Waitlist.
+          </li>
+          <li>
+            Export each slate as a one-page <span className="font-semibold">PDF</span> (surgeon and
+            date prominent, room for handwritten notes), as a <span className="font-semibold">CSV</span>,
+            or all slates at once. <span className="font-semibold">Export all slates (PDF)</span> is at
+            the top of the section.
+          </li>
+        </ul>
+      </Section>
+
+      <Section title="4. Work from the Priority Waitlist">
+        <p>
+          The Priority Waitlist ranks the whole office by composite priority and marks each patient{" "}
+          <span className="font-semibold">Slated</span> or <span className="font-semibold">Waiting</span>,
+          so staff can work from one list. Export it as a PDF or CSV.
+        </p>
+      </Section>
+
+      <Section title="Office snapshot & waitlist overview">
+        <p>
+          The snapshot shows totals (cases, overdue, urgent, workload). The{" "}
+          <span className="font-semibold">Waitlist overview</span> histogram breaks each benchmark
+          class (2w–26w) into bands: well under target, approaching target, recently overdue, and
+          well overdue — a quick read of where pressure is building.
+        </p>
+      </Section>
+
+      <Section title="Long-waiters (over target)">
+        <p>
+          This section lists every patient already past their target, grouped by urgency class and
+          most-overdue-first. These are the patients guaranteed onto slates before any not-yet-overdue
+          case. Export the full list as PDF or CSV to review or circulate.
+        </p>
+      </Section>
+
+      <Section title="How the priority score works">
+        <p>
+          Each case scores its benchmark urgency weight (2w = 5, 4w = 4, 6w = 3, 12w = 2, 26w = 1)
+          multiplied by how far the patient has waited toward their target. The score climbs every day
+          and keeps rising once a patient is past target, so urgency and waiting time both count — and
+          a breached short-target patient outranks a long-overdue long-target one.
+        </p>
+      </Section>
+
+      <Section title="Saving your work">
+        <ul className="list-disc pl-5">
+          <li>
+            Work is <span className="font-semibold">autosaved for the current tab only</span> and is
+            cleared when you close it.
+          </li>
+          <li>
+            <span className="font-semibold">Named saves</span> and exported session files are
+            encrypted with a passphrase you choose. The passphrase is never stored and{" "}
+            <span className="font-semibold">cannot be recovered</span> — keep it safe.
+          </li>
+          <li>
+            <span className="font-semibold">Clear all data</span> removes every saved session and the
+            autosave from this browser.
+          </li>
+        </ul>
+      </Section>
+
+      <Section title="Tips & troubleshooting">
+        <ul className="list-disc pl-5">
+          <li>Set a date for every slate — an amber banner warns about missing, duplicate, or past dates.</li>
+          <li>Upload one surgeon&apos;s file at a time; a banner warns if it detects several.</li>
+          <li>Durations drive how many cases fit — adjust per-case estimates for an accurate slate.</li>
+          <li>If the slate looks empty, check the file includes TARGET_TIME and TIME_WAITING.</li>
+        </ul>
+      </Section>
+
+      <footer className="pb-6 text-center text-xs text-sand-500">Generated with SlateBuilder</footer>
+    </main>
+  );
+}

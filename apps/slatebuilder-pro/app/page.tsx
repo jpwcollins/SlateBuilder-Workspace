@@ -14,6 +14,7 @@ import {
   clinicalFlagDefinitions,
   serializeCsv,
   reorderSlateByCaseIds,
+  priorityScoreOf,
   TURNAROUND_MINUTES,
 } from "@slatebuilder/core";
 
@@ -228,14 +229,13 @@ export default function Home() {
   }, [waitlistCases, durationOverrides]);
 
   const sortForWaitlist = (items: PatientCase[]) => {
-    const order = [2, 4, 6, 12, 26];
     return [...items].sort((a, b) => {
       if (priorityMode === "ttt") {
         return a.timeToTargetDays - b.timeToTargetDays;
       }
-      const aGroup = order.indexOf(a.benchmarkWeeks);
-      const bGroup = order.indexOf(b.benchmarkWeeks);
-      if (aGroup !== bGroup) return aGroup - bGroup;
+      // Composite priority (same score the slate uses), longest wait breaks ties.
+      const diff = priorityScoreOf(b) - priorityScoreOf(a);
+      if (diff !== 0) return diff;
       return a.timeToTargetDays - b.timeToTargetDays;
     });
   };
@@ -294,8 +294,8 @@ export default function Home() {
     return getBlockStartMinutes(date);
   }, [slateDates]);
 
-  const buildSchedule = (items: ScoredCase[], slateIndex: number) => {
-    const date = new Date(`${slateDates[slateIndex]}T00:00:00`);
+  const buildSchedule = (items: ScoredCase[], dateISO: string) => {
+    const date = new Date(`${dateISO}T00:00:00`);
     let cursor = getBlockStartMinutes(date);
     return items.map((item, index) => {
       const start = cursor;
@@ -422,7 +422,8 @@ export default function Home() {
   const downloadSlateCsv = (slateIndex: number) => {
     if (!slates || !orderedSlates[slateIndex]) return;
     const orderedSlate = orderedSlates[slateIndex];
-    const date = new Date(`${slateDates[slateIndex]}T00:00:00`);
+    const dateISO = slates[slateIndex].dateISO;
+    const date = new Date(`${dateISO}T00:00:00`);
     const startMinutes = getBlockStartMinutes(date);
     const rows = [
       [
@@ -470,7 +471,7 @@ export default function Home() {
     });
 
     const csv = serializeCsv(rows);
-    downloadFile(`surgical_slate_${slateDates[slateIndex]}_s${slateIndex + 1}.csv`, csv);
+    downloadFile(`surgical_slate_${dateISO}_s${slateIndex + 1}.csv`, csv);
   };
 
   const downloadMappingCsv = (slateIndex: number) => {
@@ -478,10 +479,11 @@ export default function Home() {
     // The reidentification key: opaque code -> patient label. This is the only
     // export that pairs codes with identifiers; keep it secured and do not
     // circulate it with the (deidentified) slate CSV.
+    const dateISO = slates?.[slateIndex]?.dateISO ?? "undated";
     const rows = [["case_id", "patient_label"]];
     orderedSlates[slateIndex].forEach((item) => rows.push([item.caseId, item.displayLabel]));
     const csv = serializeCsv(rows);
-    downloadFile(`CONFIDENTIAL_case_mapping_${slateDates[slateIndex]}_s${slateIndex + 1}.csv`, csv);
+    downloadFile(`CONFIDENTIAL_case_mapping_${dateISO}_s${slateIndex + 1}.csv`, csv);
   };
 
   const orderedByUrgency = useMemo(() => {
@@ -572,6 +574,14 @@ export default function Home() {
           >
             Advanced Metrics
           </button>
+          <a
+            href="/guide"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-full bg-slateBlue-700 px-3 py-1 font-semibold text-white"
+          >
+            User guide ↗
+          </a>
         </div>
         <p className="max-w-2xl text-base text-sand-800">
           Upload a deidentified waitlist, prioritize by benchmark time and time-to-target, and
@@ -581,9 +591,10 @@ export default function Home() {
         </p>
         <p className="max-w-2xl rounded-xl border border-sand-200 bg-white/70 px-4 py-3 text-xs text-sand-700">
           <span className="font-semibold text-sand-900">How the priority score works:</span> each
-          case scores its benchmark urgency weight (2w = 5, 4w = 4, 6w = 3, 12w = 2, 26w = 1),
-          multiplied by how far it is past target (+½ for every week overdue). Higher means more
-          urgent and more overdue, so it rises up the slate.
+          case scores its benchmark urgency weight (2w = 5, 4w = 4, 6w = 3, 12w = 2, 26w = 1)
+          multiplied by how far it has waited toward its target (the score climbs every day and keeps
+          rising once a patient is past target). Cases already past target are placed on the slate
+          first; the rest of the block is then filled to do as many further cases as possible.
         </p>
         <p className="max-w-2xl text-xs text-sand-600">
           Privacy: all processing happens locally in your browser — no data is uploaded or sent over
@@ -652,10 +663,10 @@ export default function Home() {
                   />
                   <span>
                     <span className="font-semibold">
-                      Prioritize by clinical urgency then wait time
+                      Prioritize by composite priority (urgency + wait)
                     </span>
                     <span className="block text-xs text-sand-600">
-                      Sort by benchmark (2w, 4w, 6w, 12w, 26w) and then TTT.
+                      Combines benchmark urgency with how far each patient has waited toward target.
                     </span>
                   </span>
                 </label>
@@ -863,8 +874,8 @@ export default function Home() {
             <div className="mt-6 flex flex-col gap-6">
               {slates.map((slate, slateIndex) => {
                 const orderedSlate = orderedSlates[slateIndex] ?? slate.selected;
-                const schedule = buildSchedule(orderedSlate, slateIndex);
-                const slateDate = slateDates[slateIndex];
+                const slateDate = slate.dateISO;
+                const schedule = buildSchedule(orderedSlate, slateDate);
                 const slateStart = slateDate
                   ? getBlockStartMinutes(new Date(`${slateDate}T00:00:00`))
                   : blockStartMinutes;
@@ -931,11 +942,8 @@ export default function Home() {
                         <p className="mt-1 text-xl font-semibold text-slateBlue-900">
                           {totalPriorityScore.toFixed(1)}
                         </p>
-                        <p
-                          className="text-xs text-sand-700"
-                          title="Scaling factor that balances utilization minutes with clinical priority in the optimization."
-                        >
-                          Util weight {slate.utilizationWeight.toFixed(3)}
+                        <p className="text-xs text-sand-700">
+                          {orderedSlate.length} {orderedSlate.length === 1 ? "case" : "cases"}
                         </p>
                       </div>
                       <div className="rounded-xl border border-sand-200 bg-white/70 p-3">
@@ -1071,7 +1079,7 @@ export default function Home() {
               <p className="text-sm text-sand-700">
                 {priorityMode === "ttt"
                   ? "Sorted by time-to-target (TTT) regardless of urgency class."
-                  : "Sorted by urgency class (2w→26w), then days to target."}
+                  : "Sorted by composite priority (urgency + time waited)."}
               </p>
               <p className="mt-1 text-xs text-sand-600">
                 {waitlistScope === "group" && selectedGroup

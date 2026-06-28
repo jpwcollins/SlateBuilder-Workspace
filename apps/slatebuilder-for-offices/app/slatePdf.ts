@@ -40,6 +40,7 @@ export type WaitlistPdfRow = {
 };
 
 export type WaitlistPdfOptions = {
+  heading?: string; // defaults to "PRIORITY WAITLIST"
   surgeonName: string;
   generatedLabel: string;
   summaryLabel: string;
@@ -293,7 +294,7 @@ function drawWaitlistHeader(
   doc.setFontSize(9);
   doc.setTextColor(...GREY);
   doc.setCharSpace(2);
-  doc.text("PRIORITY WAITLIST", MARGIN, top);
+  doc.text(opts.heading ?? "PRIORITY WAITLIST", MARGIN, top);
   doc.setCharSpace(0);
 
   doc.setFontSize(20);

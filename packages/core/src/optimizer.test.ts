@@ -3,6 +3,7 @@ import {
   optimizeSlate,
   scoreCases,
   reorderSlateByCaseIds,
+  priorityScoreOf,
   TURNAROUND_MINUTES,
   MAX_CASES_PER_SLATE,
 } from "./optimizer";
@@ -66,30 +67,37 @@ describe("optimizeSlate", () => {
     expect(result.selected.length).toBeLessThanOrEqual(MAX_CASES_PER_SLATE);
   });
 
-  it("selects the value-optimal subset under both constraints (matches brute force)", () => {
-    const block = getBlockMinutes(DATE);
-    const scored = scoreCases(fixture, DATE);
-    const durations = scored.map((c) => Math.round(c.estimatedDurationMin));
-    const values = scored.map((c) => c.valueScore);
+  it("never bumps the most urgent over-target case for shorter less-urgent ones", () => {
+    // Regression for the original failure: a 2w-overdue 330-min case used to be
+    // dropped in favour of four shorter 4w cases. Strategy B must keep it.
+    const cases = [
+      makeCase(1, 2, -1, 330), // most urgent, long
+      makeCase(2, 4, -1, 90),
+      makeCase(3, 4, -1, 90),
+      makeCase(4, 4, -1, 90),
+      makeCase(5, 4, -1, 90),
+      makeCase(6, 4, -1, 90),
+    ];
+    const result = optimizeSlate(cases, DATE);
+    expect(result.selected.some((c) => c.caseId === "C-001")).toBe(true);
+    expect(result.anchoredCount).toBeGreaterThanOrEqual(1);
+  });
 
-    let best = 0;
-    for (let mask = 0; mask < 1 << scored.length; mask += 1) {
-      const chosen: number[] = [];
-      let value = 0;
-      for (let i = 0; i < scored.length; i += 1) {
-        if (mask & (1 << i)) {
-          chosen.push(durations[i]);
-          value += values[i];
-        }
-      }
-      if (chosen.length <= MAX_CASES_PER_SLATE && occupied(chosen) <= block && value > best) {
-        best = value;
-      }
-    }
-
-    const result = optimizeSlate(fixture, DATE);
-    const selectedValue = result.selected.reduce((sum, item) => sum + item.valueScore, 0);
-    expect(selectedValue).toBeCloseTo(best, 6);
+  it("keeps an over-target low-urgency case a pure-priority pick would drop", () => {
+    // C-001 is overdue but low urgency (26w); the five 2w cases are higher
+    // priority and would fill the block on their own. Anchoring must still slate
+    // the long-waiter.
+    const cases = [
+      makeCase(1, 26, -3, 90), // over target, low urgency -> anchored
+      makeCase(2, 2, 5, 90),
+      makeCase(3, 2, 5, 90),
+      makeCase(4, 2, 5, 90),
+      makeCase(5, 2, 5, 90),
+      makeCase(6, 2, 5, 90),
+    ];
+    const result = optimizeSlate(cases, DATE);
+    expect(result.selected.some((c) => c.caseId === "C-001")).toBe(true);
+    expect(result.anchoredCount).toBe(1);
   });
 
   it("includes everything when all cases fit (with turnaround)", () => {
@@ -97,6 +105,20 @@ describe("optimizeSlate", () => {
     const result = optimizeSlate(small, DATE);
     expect(result.selected).toHaveLength(2);
     expect(result.turnaroundMinutes).toBe(TURNAROUND_MINUTES);
+  });
+});
+
+describe("priorityScoreOf", () => {
+  it("rises with waiting before target (FIFO)", () => {
+    const longWait = priorityScoreOf({ benchmarkWeeks: 6, timeToTargetDays: 2 });
+    const shortWait = priorityScoreOf({ benchmarkWeeks: 6, timeToTargetDays: 41 });
+    expect(longWait).toBeGreaterThan(shortWait);
+  });
+
+  it("ranks a breached short-target case above a long-overdue long-target case", () => {
+    const shortBreached = priorityScoreOf({ benchmarkWeeks: 2, timeToTargetDays: -14 });
+    const longOverdue = priorityScoreOf({ benchmarkWeeks: 26, timeToTargetDays: -140 });
+    expect(shortBreached).toBeGreaterThan(longOverdue);
   });
 });
 

@@ -43,12 +43,15 @@ export type PatientCase = {
 
 export type ScoredCase = PatientCase & {
   urgencyWeight: number;
+  /** Days past target (0 if not yet overdue). */
   overdueDays: number;
+  /** Composite urgency + wait score (see priorityScoreOf). */
   priorityScore: number;
-  valueScore: number;
 };
 
 export type SlateResult = {
+  /** Local calendar date (YYYY-MM-DD) this slate was optimized for. */
+  dateISO: string;
   blockMinutes: number;
   /** Sum of surgical case durations only (excludes turnaround). */
   totalMinutes: number;
@@ -57,7 +60,8 @@ export type SlateResult = {
   /** Occupied time (cases + turnaround) as a percentage of the block. */
   utilizationPct: number;
   totalPriorityScore: number;
-  utilizationWeight: number;
+  /** Cases guaranteed onto the slate because they are over target (anchors). */
+  anchoredCount: number;
   selected: ScoredCase[];
   remaining: ScoredCase[];
 };

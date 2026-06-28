@@ -24,6 +24,8 @@ import {
   serializeCsv,
   csvEscape,
   reorderSlateByCaseIds,
+  priorityScoreOf,
+  toLocalDateOnly,
   encryptJson,
   decryptJson,
   isEncryptedEnvelope,
@@ -32,8 +34,6 @@ import {
 } from "@slatebuilder/core";
 
 type SpreadsheetRow = Record<string, string | number | boolean | null | undefined>;
-
-type WaitingUnit = "weeks" | "days";
 
 type OfficeSessionState = {
   csvText: string;
@@ -99,15 +99,12 @@ function downloadJson(filename: string, value: unknown) {
   URL.revokeObjectURL(url);
 }
 
-function normalizeOfficeWorkbookToCsv(rows: SpreadsheetRow[], waitingUnit: WaitingUnit): string {
-  // TIME_WAITING in the office export has no unit label; the user confirms
-  // whether it is weeks or days so the time-to-target math is not silently off
-  // by a factor of 7.
-  const waitingColumn = waitingUnit === "days" ? "time_waiting_days" : "time_waiting_weeks";
+function normalizeOfficeWorkbookToCsv(rows: SpreadsheetRow[]): string {
+  // Office exports always express TARGET_TIME and TIME_WAITING in weeks.
   const headers = [
     "source_key",
     "benchmark",
-    waitingColumn,
+    "time_waiting_weeks",
     "estimated_duration_min",
     "unavailable_until",
     "surgeon_id",
@@ -347,11 +344,7 @@ export default function Home() {
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [passphrase, setPassphrase] = useState("");
   const [includeNamesInExports, setIncludeNamesInExports] = useState(false);
-  const [waitingUnit, setWaitingUnit] = useState<WaitingUnit>("weeks");
   const [lastAutosaveAt, setLastAutosaveAt] = useState<string | null>(null);
-  // Raw rows from the last Excel upload, retained so the time-waiting unit can
-  // be re-applied without re-uploading. Held in component memory only.
-  const [workbookRows, setWorkbookRows] = useState<SpreadsheetRow[] | null>(null);
 
   useEffect(() => {
     if (!csvText) return;
@@ -359,13 +352,6 @@ export default function Home() {
     setCases(result.cases);
     setWarnings(result.warnings);
   }, [csvText]);
-
-  // Re-derive the normalized CSV when the time-waiting unit changes for an
-  // already-uploaded workbook.
-  useEffect(() => {
-    if (!workbookRows) return;
-    setCsvText(normalizeOfficeWorkbookToCsv(workbookRows, waitingUnit));
-  }, [workbookRows, waitingUnit]);
 
   useEffect(() => {
     const stored = window.localStorage.getItem("slatebuilder-office-default-durations");
@@ -466,14 +452,13 @@ export default function Home() {
   }, [officeCases]);
 
   const sortForWaitlist = (items: PatientCase[]) => {
-    const order = [2, 4, 6, 12, 26];
     return [...items].sort((a, b) => {
       if (priorityMode === "ttt") {
         return a.timeToTargetDays - b.timeToTargetDays;
       }
-      const aGroup = order.indexOf(a.benchmarkWeeks);
-      const bGroup = order.indexOf(b.benchmarkWeeks);
-      if (aGroup !== bGroup) return aGroup - bGroup;
+      // Composite priority (same score the slate uses), longest wait breaks ties.
+      const diff = priorityScoreOf(b) - priorityScoreOf(a);
+      if (diff !== 0) return diff;
       return a.timeToTargetDays - b.timeToTargetDays;
     });
   };
@@ -589,6 +574,27 @@ export default function Home() {
     return buckets;
   }, [officeCasesWithOverrides]);
 
+  // Long-waiters: every case past target, grouped by benchmark class, most
+  // overdue first within each class.
+  const longWaiters = useMemo(() => {
+    const order = [2, 4, 6, 12, 26] as const;
+    const groups = order.map((weeks) => ({
+      weeks,
+      label: `${weeks}w`,
+      cases: [] as PatientCase[],
+    }));
+    const indexOf = new Map(order.map((weeks, i) => [weeks, i]));
+    officeCasesWithOverrides
+      .filter((c) => c.timeToTargetDays < 0)
+      .forEach((c) => {
+        const i = indexOf.get(c.benchmarkWeeks);
+        if (i !== undefined) groups[i].cases.push(c);
+      });
+    groups.forEach((g) => g.cases.sort((a, b) => a.timeToTargetDays - b.timeToTargetDays));
+    const total = groups.reduce((sum, g) => sum + g.cases.length, 0);
+    return { groups, total };
+  }, [officeCasesWithOverrides]);
+
   const updateSlateDate = (index: number, value: string) => {
     setSlateDates((prev) => {
       const next = [...prev];
@@ -625,7 +631,6 @@ export default function Home() {
     setOrderedSlateCaseIds([]);
     setDragState(null);
     setSessionName("");
-    setWorkbookRows(null);
     window.sessionStorage.removeItem(OFFICE_AUTOSAVE_KEY);
     setLastAutosaveAt(null);
     setSaveStatus("Workspace reset");
@@ -647,9 +652,6 @@ export default function Home() {
   }
 
   function applySessionState(state: OfficeSessionState, persistMessage = true, name?: string) {
-    // A loaded session carries its own normalized csvText, so clear any retained
-    // workbook rows to stop the unit effect from overwriting it.
-    setWorkbookRows(null);
     setCsvText(state.csvText);
     setDurationOverrides(state.durationOverrides ?? {});
     setUnavailableOverrides(state.unavailableOverrides ?? {});
@@ -794,7 +796,6 @@ export default function Home() {
         const firstSheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[firstSheetName];
         if (!sheet) {
-          setWorkbookRows(null);
           setCsvText("");
           setWarnings(["No worksheet found in the uploaded Excel file."]);
           return;
@@ -803,9 +804,7 @@ export default function Home() {
           defval: "",
           raw: false,
         });
-        // Retain the raw rows so the time-waiting unit can be re-applied; the
-        // effect on [workbookRows, waitingUnit] produces the normalized CSV.
-        setWorkbookRows(rows);
+        setCsvText(normalizeOfficeWorkbookToCsv(rows));
       };
       reader.readAsArrayBuffer(file);
       return;
@@ -814,7 +813,6 @@ export default function Home() {
     const reader = new FileReader();
     reader.onload = () => {
       const text = typeof reader.result === "string" ? reader.result : "";
-      setWorkbookRows(null);
       setCsvText(text);
     };
     reader.readAsText(file);
@@ -935,8 +933,8 @@ export default function Home() {
     setDefaultsSavedAt(new Date().toLocaleTimeString());
   };
 
-  const buildSchedule = (items: ScoredCase[], slateIndex: number) => {
-    const date = new Date(`${slateDates[slateIndex]}T00:00:00`);
+  const buildSchedule = (items: ScoredCase[], dateISO: string) => {
+    const date = new Date(`${dateISO}T00:00:00`);
     let cursor = getBlockStartMinutes(date);
     return items.map((item, index) => {
       const start = cursor;
@@ -954,7 +952,8 @@ export default function Home() {
   const downloadSlateCsv = (slateIndex: number) => {
     if (!slates || !orderedSlates[slateIndex]) return;
     const orderedSlate = orderedSlates[slateIndex];
-    const date = new Date(`${slateDates[slateIndex]}T00:00:00`);
+    const dateISO = slates[slateIndex].dateISO;
+    const date = new Date(`${dateISO}T00:00:00`);
     const startMinutes = getBlockStartMinutes(date);
     const rows = [
       [
@@ -1002,7 +1001,7 @@ export default function Home() {
     });
 
     const csv = serializeCsv(rows);
-    downloadFile(`office_slate_${slateDates[slateIndex]}_${slateIndex + 1}.csv`, csv);
+    downloadFile(`office_slate_${dateISO}_${slateIndex + 1}.csv`, csv);
   };
 
   // The surgeon name comes from the uploaded waitlist's SURGEON field
@@ -1017,8 +1016,8 @@ export default function Home() {
 
   const buildSlateOptions = (slateIndex: number): SlatePdfOptions | null => {
     const orderedSlate = orderedSlates[slateIndex];
-    if (!orderedSlate || orderedSlate.length === 0) return null;
-    const dateISO = slateDates[slateIndex];
+    if (!orderedSlate || orderedSlate.length === 0 || !slates) return null;
+    const dateISO = slates[slateIndex].dateISO;
     const date = new Date(`${dateISO}T00:00:00`);
     const startMin = getBlockStartMinutes(date);
     const blockMin = getBlockMinutes(date);
@@ -1122,15 +1121,13 @@ export default function Home() {
 
   const downloadMappingCsv = (slateIndex: number) => {
     if (!orderedSlates[slateIndex] || orderedSlates[slateIndex].length === 0) return;
+    const dateISO = slates?.[slateIndex]?.dateISO ?? "undated";
     // The reidentification key: opaque code -> patient label. Keep this file
     // secured and separate from the deidentified slate CSV.
     const rows = [["case_id", "patient_label"]];
     orderedSlates[slateIndex].forEach((item) => rows.push([item.caseId, item.displayLabel]));
     const csv = serializeCsv(rows);
-    downloadFile(
-      `CONFIDENTIAL_office_case_mapping_${slateDates[slateIndex]}_${slateIndex + 1}.csv`,
-      csv
-    );
+    downloadFile(`CONFIDENTIAL_office_case_mapping_${dateISO}_${slateIndex + 1}.csv`, csv);
   };
 
   const downloadPriorityCsv = () => {
@@ -1173,6 +1170,96 @@ export default function Home() {
     downloadFile("office_priority_waitlist.csv", csv);
   };
 
+  const downloadLongWaitersCsv = () => {
+    if (longWaiters.total === 0) return;
+    const rows = [
+      [
+        "urgency_class",
+        "days_over_target",
+        "case_id",
+        ...(includeNamesInExports ? ["patient_label"] : []),
+        "benchmark_weeks",
+        "time_to_target_days",
+        "surgeon_id",
+        "procedure_name",
+        "status",
+        ...clinicalFlagDefinitions.map((flag) => flag.csvColumn),
+      ],
+    ];
+    longWaiters.groups.forEach((group) => {
+      group.cases.forEach((item) => {
+        rows.push([
+          group.label,
+          String(Math.abs(item.timeToTargetDays)),
+          item.caseId,
+          ...(includeNamesInExports ? [item.displayLabel] : []),
+          String(item.benchmarkWeeks),
+          String(item.timeToTargetDays),
+          item.surgeonId,
+          item.procedureName ?? "",
+          selectedCaseIds.has(item.caseId) ? "Slated" : "Waiting",
+          ...clinicalFlagDefinitions.map((flag) => (item.flags?.[flag.key] ? "yes" : "no")),
+        ]);
+      });
+    });
+    downloadFile("office_long_waiters.csv", serializeCsv(rows));
+  };
+
+  const downloadLongWaitersPdf = () => {
+    if (longWaiters.total === 0) return;
+    let rank = 0;
+    const rows: WaitlistPdfRow[] = [];
+    longWaiters.groups.forEach((group) => {
+      group.cases.forEach((item) => {
+        rank += 1;
+        rows.push({
+          rank,
+          primary: includeNamesInExports ? item.displayLabel : item.caseId,
+          secondary: includeNamesInExports ? item.caseId : undefined,
+          procedure: item.procedureName ?? "",
+          benchmarkWeeks: item.benchmarkWeeks,
+          timeToTargetDays: item.timeToTargetDays,
+          overdueDays: Math.max(0, -item.timeToTargetDays),
+          status: selectedCaseIds.has(item.caseId) ? "Slated" : "Waiting",
+        });
+      });
+    });
+    const surgeonName = surgeonNameFor(orderedByUrgency);
+    downloadWaitlistPdf({
+      heading: "LONG-WAITERS (OVER TARGET)",
+      surgeonName,
+      generatedLabel: new Date().toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      }),
+      summaryLabel: `${longWaiters.total} over target`,
+      rows,
+      fileName: `long_waiters_${fileSlug(surgeonName)}.pdf`,
+    });
+  };
+
+  const activeDates = slateDates.slice(0, slateCount);
+  const filledDates = activeDates.filter(Boolean);
+  const todayISO = toLocalDateOnly(new Date());
+  const planningWarnings: string[] = [];
+  if (filledDates.length < activeDates.length) {
+    planningWarnings.push("Set a date for every slate.");
+  }
+  if (new Set(filledDates).size < filledDates.length) {
+    planningWarnings.push("Two slates use the same date.");
+  }
+  if (filledDates.some((d) => d < todayISO)) {
+    planningWarnings.push("A slate date is in the past.");
+  }
+  if (officeSurgeons.length > 1) {
+    planningWarnings.push(
+      `Multiple surgeons detected (${officeSurgeons.join(
+        ", "
+      )}). This tool is intended for one surgeon's office — slates and the surgeon name on exports will mix surgeons.`
+    );
+  }
+
   return (
     <main className="relative mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-6 py-12">
       <header className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
@@ -1190,16 +1277,25 @@ export default function Home() {
           </p>
           <p className="mt-3 max-w-3xl rounded-xl border border-sand-200 bg-white/70 px-4 py-3 text-xs leading-6 text-sand-700">
             <span className="font-semibold text-sand-900">How the priority score works:</span> each
-            case scores its benchmark urgency weight (2w = 5, 4w = 4, 6w = 3, 12w = 2, 26w = 1),
-            multiplied by how far it is past target (+½ for every week overdue). Higher means more
-            urgent and more overdue.
+            case scores its benchmark urgency weight (2w = 5, 4w = 4, 6w = 3, 12w = 2, 26w = 1)
+            multiplied by how far it has waited toward target (the score climbs every day and keeps
+            rising once past target). Patients already past target are slated first; the rest of the
+            block is then filled to complete as many further cases as possible.
           </p>
           <p className="mt-3 max-w-3xl text-xs leading-6 text-sand-600">
             Patient data never leaves this device. Each case gets an opaque code (e.g. C-001);
             exports use that code unless you opt to include names. Saved work is encrypted with your
             passphrase, and autosave is cleared when you close the tab.
           </p>
-          <div className="mt-6 flex flex-wrap gap-3 text-xs text-sand-700">
+          <div className="mt-6 flex flex-wrap items-center gap-3 text-xs text-sand-700">
+            <a
+              href="/guide"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-full bg-slateBlue-700 px-4 py-1.5 font-semibold text-white"
+            >
+              User guide ↗
+            </a>
             <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
               Local browser processing only
             </span>
@@ -1296,22 +1392,6 @@ export default function Home() {
                 >
                   Reset
                 </button>
-              </div>
-              <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-sand-700">
-                <label className="flex items-center gap-2">
-                  TIME_WAITING is in
-                  <select
-                    value={waitingUnit}
-                    onChange={(event) => setWaitingUnit(event.target.value as WaitingUnit)}
-                    className="rounded-md border border-sand-300 bg-white px-2 py-1"
-                  >
-                    <option value="weeks">weeks</option>
-                    <option value="days">days</option>
-                  </select>
-                </label>
-                <span className="text-sand-500">
-                  Set this to match your Excel export so time-to-target is correct.
-                </span>
               </div>
               <label className="mt-3 flex items-start gap-2 text-xs text-sand-700">
                 <input
@@ -1637,6 +1717,17 @@ export default function Home() {
             </div>
           </div>
 
+          {planningWarnings.length > 0 && (
+            <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+              <p className="font-semibold text-amber-900">Check before you rely on these slates</p>
+              <ul className="mt-2 list-disc pl-4">
+                {planningWarnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           <div className="mt-4 rounded-2xl border border-sand-200 bg-white/70 px-4 py-3 text-sm text-sand-800">
             <p className="font-semibold text-sand-900">Block length</p>
             <p className="mt-1">{blockMinutes} minutes</p>
@@ -1662,7 +1753,8 @@ export default function Home() {
             <div className="mt-6 flex flex-col gap-6">
               {slates.map((slate, slateIndex) => {
                 const orderedSlate = orderedSlates[slateIndex] ?? slate.selected;
-                const schedule = buildSchedule(orderedSlate, slateIndex);
+                const slateDate = slate.dateISO;
+                const schedule = buildSchedule(orderedSlate, slateDate);
                 const surgicalMinutes = orderedSlate.reduce(
                   (sum, item) => sum + item.estimatedDurationMin,
                   0
@@ -1684,7 +1776,7 @@ export default function Home() {
                           Slate {slateIndex + 1}
                         </p>
                         <h3 className="mt-1 text-lg font-semibold text-slateBlue-900">
-                          {orderedSlate.length} cases on {slateDates[slateIndex] || "unspecified date"}
+                          {orderedSlate.length} cases on {slateDate || "unspecified date"}
                         </h3>
                       </div>
                       <div className="flex flex-wrap gap-2">
@@ -1721,7 +1813,7 @@ export default function Home() {
                       <StatCard
                         label="Start Time"
                         value={formatMinutesToTime(
-                          getBlockStartMinutes(new Date(`${slateDates[slateIndex]}T00:00:00`))
+                          getBlockStartMinutes(new Date(`${slateDate}T00:00:00`))
                         )}
                         detail="Calculated from block rule"
                       />
@@ -2014,6 +2106,85 @@ export default function Home() {
             )}
           </div>
         </div>
+      </section>
+
+      <section className="card p-6">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-slateBlue-900">
+              Long-waiters — over target
+            </h2>
+            <p className="text-sm text-sand-700">
+              Every patient already past their target wait, grouped by urgency class (most overdue
+              first). These are guaranteed onto slates before any not-yet-overdue case.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={downloadLongWaitersPdf}
+              className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
+            >
+              Export long-waiters PDF
+            </button>
+            <button
+              type="button"
+              onClick={downloadLongWaitersCsv}
+              className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
+            >
+              Export long-waiters CSV
+            </button>
+          </div>
+        </div>
+
+        {longWaiters.total === 0 ? (
+          <div className="mt-4 rounded-2xl border border-dashed border-sand-300 bg-white/70 px-3 py-6 text-center text-xs text-sand-700">
+            No patients are over target.
+          </div>
+        ) : (
+          <div className="mt-4 grid gap-4 lg:grid-cols-5 sm:grid-cols-2">
+            {longWaiters.groups.map((group) => (
+              <div
+                key={group.label}
+                className="rounded-2xl border border-sand-200 bg-white/70 p-4"
+              >
+                <div className="flex items-center justify-between">
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-xs font-semibold ${urgencyChipClasses(
+                      group.weeks
+                    )}`}
+                  >
+                    {group.label}
+                  </span>
+                  <span className="text-sm font-semibold text-slateBlue-900">
+                    {group.cases.length}
+                  </span>
+                </div>
+                <div className="mt-3 flex flex-col gap-2">
+                  {group.cases.length === 0 && (
+                    <p className="text-xs text-sand-500">None over target.</p>
+                  )}
+                  {group.cases.slice(0, 8).map((item) => (
+                    <div key={item.caseId} className="text-xs">
+                      <p className="font-semibold text-slateBlue-900">{item.displayLabel}</p>
+                      <p className="text-rose-600">
+                        {Math.abs(item.timeToTargetDays)}d over target
+                      </p>
+                      {item.procedureName && (
+                        <p className="text-sand-600">{item.procedureName}</p>
+                      )}
+                    </div>
+                  ))}
+                  {group.cases.length > 8 && (
+                    <p className="text-xs text-sand-500">
+                      +{group.cases.length - 8} more (see export)
+                    </p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="card p-6">
