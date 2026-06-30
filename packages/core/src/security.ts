@@ -132,6 +132,18 @@ export function generateOfficeKey(): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(32));
 }
 
+/**
+ * A non-secret check value (SHA-256 of the office key) the server can store to
+ * authorize a recovery-code password reset without ever learning the key. The
+ * key is 256-bit random, so the digest reveals nothing useful.
+ */
+export async function keyCheckValue(officeKey: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", officeKey);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 /** Stable, non-reversible patient token = HMAC-SHA256(officeKey, normPHN). */
 export async function patientToken(officeKey: Uint8Array, phn: string): Promise<string> {
   const key = await crypto.subtle.importKey(

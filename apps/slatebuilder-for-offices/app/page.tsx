@@ -4,12 +4,12 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   SyncedState,
   buildCaseTokens,
-  emptySyncedState,
+  changePassword,
   fetchState,
   loginOffice,
   logoutOffice,
   putState,
-  signupOffice,
+  resetPassword,
 } from "../lib/sync";
 import * as XLSX from "xlsx";
 import {
@@ -373,9 +373,12 @@ export default function Home() {
   const [signedInId, setSignedInId] = useState<string | null>(null);
   const [caseTokens, setCaseTokens] = useState<Record<string, string>>({});
   const [planStatus, setPlanStatus] = useState<"draft" | "finalized">("draft");
-  const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string>("");
+  const [showReset, setShowReset] = useState(false);
+  const [showChangePw, setShowChangePw] = useState(false);
+  const [recoveryCodeInput, setRecoveryCodeInput] = useState("");
+  const [newPassword, setNewPassword] = useState("");
   const syncVersionRef = useRef(0);
   const lastSyncedJsonRef = useRef<string>("");
   const tokensReadyRef = useRef(false);
@@ -732,24 +735,44 @@ export default function Home() {
     setSyncStatus(`Synced · v${version} · ${state.plan.status}`);
   };
 
-  const handleSignup = async () => {
+  const handleReset = async () => {
     const id = officeIdInput.trim().toLowerCase();
-    if (!id || officePassword.length < 8) {
-      setSyncStatus("Enter an office name and an 8+ character password.");
+    if (!id || !recoveryCodeInput.trim() || newPassword.length < 8) {
+      setSyncStatus("Enter office, recovery code, and an 8+ character new password.");
       return;
     }
     setAuthBusy(true);
     try {
-      const { officeKey: key, recoveryCode: code } = await signupOffice(id, officePassword);
+      const key = await resetPassword(id, recoveryCodeInput, newPassword);
       setOfficeKey(key);
       setSignedInId(id);
-      setRecoveryCode(code);
+      setRecoveryCodeInput("");
+      setNewPassword("");
       setOfficePassword("");
-      syncVersionRef.current = 0;
+      setShowReset(false);
       lastSyncedJsonRef.current = "";
-      setSyncStatus("Office created · keep your recovery code safe");
+      setSyncStatus("Password reset · signed in · loading…");
     } catch (e) {
-      setSyncStatus(e instanceof Error ? e.message : "Sign-up failed.");
+      setSyncStatus(e instanceof Error ? e.message : "Reset failed.");
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleChangePassword = async () => {
+    if (!officeKey || newPassword.length < 8) {
+      setSyncStatus("Enter an 8+ character new password.");
+      return;
+    }
+    setAuthBusy(true);
+    try {
+      await changePassword(officeKey, officePassword, newPassword);
+      setOfficePassword("");
+      setNewPassword("");
+      setShowChangePw(false);
+      setSyncStatus("Password changed");
+    } catch (e) {
+      setSyncStatus(e instanceof Error ? e.message : "Could not change password.");
     } finally {
       setAuthBusy(false);
     }
@@ -766,7 +789,6 @@ export default function Home() {
       const key = await loginOffice(id, officePassword);
       setOfficeKey(key);
       setSignedInId(id);
-      setRecoveryCode(null);
       setOfficePassword("");
       setSyncStatus("Signed in · loading…");
       // State is applied once tokens are ready (see effect below).
@@ -782,7 +804,6 @@ export default function Home() {
     setOfficeKey(null);
     setSignedInId(null);
     setCaseTokens({});
-    setRecoveryCode(null);
     syncVersionRef.current = 0;
     lastSyncedJsonRef.current = "";
     setSyncStatus("Signed out");
@@ -1695,11 +1716,10 @@ export default function Home() {
             </button>
             <button
               type="button"
-              disabled={authBusy}
-              onClick={() => void handleSignup()}
-              className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700 disabled:opacity-50"
+              onClick={() => setShowReset((v) => !v)}
+              className="text-xs font-semibold text-slateBlue-700 underline"
             >
-              Create office
+              Forgot password?
             </button>
           </div>
         ) : (
@@ -1723,23 +1743,85 @@ export default function Home() {
             >
               {planStatus === "finalized" ? "Reopen as draft" : "Mark finalized"}
             </button>
-            {!officeKey && <span className="text-rose-600">Office key missing — sign in again.</span>}
+            <button
+              type="button"
+              onClick={() => setShowChangePw((v) => !v)}
+              className="font-semibold text-slateBlue-700 underline"
+            >
+              Change password
+            </button>
             {cases.length === 0 && (
               <span className="text-sand-500">Upload this month&apos;s waitlist to re-link saved work.</span>
             )}
           </div>
         )}
 
-        {recoveryCode && (
-          <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-900">
-            <p className="font-semibold">Save your recovery code</p>
-            <p className="mt-1">
-              This is the only way to recover your synced work if the password is lost. Store it
-              securely; it is not kept on the server.
-            </p>
-            <code className="mt-2 block break-all rounded bg-white/70 px-2 py-1 font-mono text-[11px]">
-              {recoveryCode}
-            </code>
+        {!signedInId && showReset && (
+          <div className="mt-4 rounded-xl border border-sand-200 bg-white/70 p-4">
+            <p className="text-xs font-semibold text-sand-900">Reset password with recovery code</p>
+            <div className="mt-3 flex flex-wrap items-end gap-3">
+              <label className="flex min-w-[220px] flex-1 flex-col gap-2 text-xs text-sand-700">
+                Recovery code
+                <input
+                  type="text"
+                  value={recoveryCodeInput}
+                  onChange={(event) => setRecoveryCodeInput(event.target.value)}
+                  placeholder="From your administrator"
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="flex min-w-[160px] flex-1 flex-col gap-2 text-xs text-sand-700">
+                New password
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <button
+                type="button"
+                disabled={authBusy}
+                onClick={() => void handleReset()}
+                className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+              >
+                Reset &amp; sign in
+              </button>
+            </div>
+          </div>
+        )}
+
+        {signedInId && showChangePw && (
+          <div className="mt-4 rounded-xl border border-sand-200 bg-white/70 p-4">
+            <p className="text-xs font-semibold text-sand-900">Change password</p>
+            <div className="mt-3 flex flex-wrap items-end gap-3">
+              <label className="flex min-w-[160px] flex-1 flex-col gap-2 text-xs text-sand-700">
+                Current password
+                <input
+                  type="password"
+                  value={officePassword}
+                  onChange={(event) => setOfficePassword(event.target.value)}
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="flex min-w-[160px] flex-1 flex-col gap-2 text-xs text-sand-700">
+                New password
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <button
+                type="button"
+                disabled={authBusy}
+                onClick={() => void handleChangePassword()}
+                className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+              >
+                Update password
+              </button>
+            </div>
           </div>
         )}
 

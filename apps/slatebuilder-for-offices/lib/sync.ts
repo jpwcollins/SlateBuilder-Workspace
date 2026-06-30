@@ -3,13 +3,12 @@ import {
   EncryptedEnvelope,
   PatientCase,
   SealedBlob,
-  generateOfficeKey,
   openSealed,
   patientToken,
   sealJson,
   unwrapOfficeKey,
   wrapOfficeKey,
-  bytesToBase64Url,
+  base64UrlToBytes,
 } from "@slatebuilder/core";
 
 // The end-to-end-encrypted working blob. Everything is keyed by patient token
@@ -52,21 +51,7 @@ export function emptySyncedState(): SyncedState {
 }
 
 // ---- Auth + key handling (office key never leaves the browser) -------------
-
-export async function signupOffice(
-  officeId: string,
-  password: string
-): Promise<{ officeKey: Uint8Array; recoveryCode: string }> {
-  const officeKey = generateOfficeKey();
-  const wrappedOfficeKey = await wrapOfficeKey(password, officeKey);
-  const res = await fetch("/api/auth/signup", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ officeId, password, wrappedOfficeKey }),
-  });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Sign-up failed.");
-  return { officeKey, recoveryCode: bytesToBase64Url(officeKey) };
-}
+// Offices are provisioned by the admin; there is no self-serve sign-up.
 
 export async function loginOffice(officeId: string, password: string): Promise<Uint8Array> {
   const res = await fetch("/api/auth/login", {
@@ -81,6 +66,38 @@ export async function loginOffice(officeId: string, password: string): Promise<U
 
 export async function logoutOffice(): Promise<void> {
   await fetch("/api/auth/logout", { method: "POST" });
+}
+
+/** Change password while signed in. Re-wraps the same office key (data preserved). */
+export async function changePassword(
+  officeKey: Uint8Array,
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
+  const newWrappedOfficeKey = await wrapOfficeKey(newPassword, officeKey);
+  const res = await fetch("/api/auth/change-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ currentPassword, newPassword, newWrappedOfficeKey }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Could not change password.");
+}
+
+/** Forgot-password reset using the recovery code. Returns the unlocked office key. */
+export async function resetPassword(
+  officeId: string,
+  recoveryCode: string,
+  newPassword: string
+): Promise<Uint8Array> {
+  const officeKey = base64UrlToBytes(recoveryCode.trim());
+  const newWrappedOfficeKey = await wrapOfficeKey(newPassword, officeKey);
+  const res = await fetch("/api/auth/reset-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ officeId, recoveryCode: recoveryCode.trim(), newPassword, newWrappedOfficeKey }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Reset failed.");
+  return officeKey;
 }
 
 // ---- State sync -----------------------------------------------------------
