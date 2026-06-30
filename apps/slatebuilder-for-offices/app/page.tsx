@@ -1412,7 +1412,7 @@ export default function Home() {
 
       <section className="grid gap-6 lg:grid-cols-[0.95fr_1.05fr]">
         <div className="card p-6">
-          <h2 className="text-lg font-semibold text-slateBlue-900">1. Load Office Waitlist</h2>
+          <h2 className="text-lg font-semibold text-slateBlue-900">Load Office Waitlist</h2>
           <p className="mt-1 text-sm text-sand-700">
             Import the office&apos;s own CSV or Excel waitlist. All calculations stay in the browser.
           </p>
@@ -1571,7 +1571,7 @@ export default function Home() {
         </div>
 
         <div className="card p-6">
-          <h2 className="text-lg font-semibold text-slateBlue-900">2. Configure Scheduling Rules</h2>
+          <h2 className="text-lg font-semibold text-slateBlue-900">Configure Scheduling Rules</h2>
           <div className="mt-4 grid gap-6">
             <div className="rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
               <p className="font-semibold text-sand-900">Priority rule</p>
@@ -1796,7 +1796,7 @@ export default function Home() {
         <div className="card p-6">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
-              <h2 className="text-lg font-semibold text-slateBlue-900">3. Suggested Slates</h2>
+              <h2 className="text-lg font-semibold text-slateBlue-900">Suggested Slates</h2>
               <p className="text-sm text-sand-700">
                 Reorder cases manually after optimization and adjust durations as needed.
               </p>
@@ -2062,7 +2062,7 @@ export default function Home() {
         <div className="card p-6">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
-              <h2 className="text-lg font-semibold text-slateBlue-900">4. Priority Waitlist</h2>
+              <h2 className="text-lg font-semibold text-slateBlue-900">Priority Waitlist</h2>
               <p className="text-sm text-sand-700">
                 Office-wide ranking with slated patients marked so staff can work directly from one
                 list.

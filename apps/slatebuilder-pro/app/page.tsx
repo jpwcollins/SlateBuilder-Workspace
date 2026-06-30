@@ -812,7 +812,7 @@ export default function Home() {
 
       <section className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
         <div className="card p-6">
-          <h2 className="text-lg font-semibold text-slateBlue-900">1. Load Waitlist</h2>
+          <h2 className="text-lg font-semibold text-slateBlue-900">Load Waitlist</h2>
           <div className="mt-4 flex flex-col gap-4">
             <div className="rounded-xl border border-dashed border-sand-300 bg-white/70 p-4">
               <input
@@ -987,7 +987,7 @@ export default function Home() {
         </div>
 
         <div className="card p-6">
-          <h2 className="text-lg font-semibold text-slateBlue-900">2. Select OR Days</h2>
+          <h2 className="text-lg font-semibold text-slateBlue-900">Select OR Days</h2>
           <div className="mt-4 flex flex-col gap-4">
             <label className="flex flex-col gap-2 text-sm text-sand-800">
               Number of slates (up to 3)
@@ -1044,7 +1044,7 @@ export default function Home() {
         <div className="card p-6">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
-              <h2 className="text-lg font-semibold text-slateBlue-900">3. Optimized Slates</h2>
+              <h2 className="text-lg font-semibold text-slateBlue-900">Optimized Slates</h2>
               <p className="text-sm text-sand-700">Drag to reorder for clinical priorities.</p>
             </div>
             <button
