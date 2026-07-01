@@ -23,11 +23,16 @@ export interface OfficeStore {
 
 const key = (officeId: string) => `office:${officeId}`;
 
+// Accept either the Upstash-native names or the legacy KV_REST_API_* names that
+// the Vercel Marketplace Upstash integration provisions.
+const REDIS_REST_URL = process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
+const REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
+
 // ---- Durable Upstash Redis store -------------------------------------------
 function redisStore(): OfficeStore {
   const redis = new Redis({
-    url: process.env.UPSTASH_REDIS_REST_URL as string,
-    token: process.env.UPSTASH_REDIS_REST_TOKEN as string,
+    url: REDIS_REST_URL as string,
+    token: REDIS_REST_TOKEN as string,
   });
   return {
     async get(officeId) {
@@ -68,5 +73,5 @@ const memoryStore: OfficeStore = {
 };
 
 export function getOfficeStore(): OfficeStore {
-  return process.env.UPSTASH_REDIS_REST_URL ? redisStore() : memoryStore;
+  return REDIS_REST_URL && REDIS_REST_TOKEN ? redisStore() : memoryStore;
 }
