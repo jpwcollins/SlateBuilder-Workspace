@@ -1488,7 +1488,9 @@ export default function Home() {
       <section className="card p-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-lg font-semibold text-slateBlue-900">Office account &amp; sync</h2>
+            <h2 className="text-lg font-semibold text-slateBlue-900">
+              Office Login: sign in to enable saving &amp; syncing
+            </h2>
             <p className="text-sm text-sand-700">
               Sign in to share draft slates across devices. Only pseudonymized, encrypted working
               data is stored in the cloud — names and PHNs never leave this device.
