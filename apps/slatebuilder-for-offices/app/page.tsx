@@ -36,10 +36,6 @@ import {
   reorderSlateByCaseIds,
   priorityScoreOf,
   toLocalDateOnly,
-  encryptJson,
-  decryptJson,
-  isEncryptedEnvelope,
-  EncryptedEnvelope,
   TURNAROUND_MINUTES,
 } from "@slatebuilder/core";
 
@@ -63,23 +59,8 @@ type OfficeSessionState = {
   orderedSlateCaseIds: string[][];
 };
 
-/**
- * What gets written to localStorage / exported to a file. The session state may
- * contain patient identifiers, so it is stored only as an encrypted envelope.
- * Name and savedAt are cleartext metadata so the list can render without the
- * passphrase.
- */
-type StoredOfficeSession = {
-  version: 2;
-  id: string;
-  name: string;
-  savedAt: string;
-  encrypted: EncryptedEnvelope;
-};
-
 type OfficeTab = "setup" | "slates" | "waitlist" | "long";
 const OFFICE_TAB_KEY = "slatebuilder-office-tab";
-const OFFICE_SAVED_SESSIONS_KEY = "slatebuilder-office-saved-sessions-v2";
 // Autosave lives in sessionStorage (cleared when the tab closes, never shared
 // with other tabs or written to disk) so unencrypted PHI is not left behind on
 // a shared clinic workstation.
@@ -87,20 +68,6 @@ const OFFICE_AUTOSAVE_KEY = "slatebuilder-office-autosave";
 
 function downloadFile(filename: string, contents: string) {
   const blob = new Blob([contents], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-function downloadJson(filename: string, value: unknown) {
-  const blob = new Blob([JSON.stringify(value, null, 2)], {
-    type: "application/json;charset=utf-8;",
-  });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -355,12 +322,7 @@ export default function Home() {
     null
   );
   const [orderedSlateCaseIds, setOrderedSlateCaseIds] = useState<string[][]>([]);
-  const [savedSessions, setSavedSessions] = useState<StoredOfficeSession[]>([]);
-  const [sessionName, setSessionName] = useState("");
-  const [saveStatus, setSaveStatus] = useState<string | null>(null);
-  const [passphrase, setPassphrase] = useState("");
   const [includeNamesInExports, setIncludeNamesInExports] = useState(false);
-  const [lastAutosaveAt, setLastAutosaveAt] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<OfficeTab>("setup");
   const [expandedCaseIds, setExpandedCaseIds] = useState<Record<string, boolean>>({});
   const [waitlistQuery, setWaitlistQuery] = useState("");
@@ -404,17 +366,6 @@ export default function Home() {
     }
   }, []);
 
-  useEffect(() => {
-    const storedSessions = window.localStorage.getItem(OFFICE_SAVED_SESSIONS_KEY);
-    if (storedSessions) {
-      try {
-        setSavedSessions(JSON.parse(storedSessions) as StoredOfficeSession[]);
-      } catch {
-        // ignore malformed saved sessions
-      }
-    }
-  }, []);
-
   // Restore the in-tab autosave (sessionStorage only) so a reload within the
   // same tab does not lose work. Nothing is read from disk.
   useEffect(() => {
@@ -422,7 +373,7 @@ export default function Home() {
     if (!auto) return;
     try {
       const state = JSON.parse(auto) as OfficeSessionState;
-      applySessionState(state, false);
+      applySessionState(state);
     } catch {
       // ignore malformed autosave
     }
@@ -895,10 +846,7 @@ export default function Home() {
     setOrderedSlates([]);
     setOrderedSlateCaseIds([]);
     setDragState(null);
-    setSessionName("");
     window.sessionStorage.removeItem(OFFICE_AUTOSAVE_KEY);
-    setLastAutosaveAt(null);
-    setSaveStatus("Workspace reset");
   };
 
   function buildSessionState(): OfficeSessionState {
@@ -916,7 +864,7 @@ export default function Home() {
     };
   }
 
-  function applySessionState(state: OfficeSessionState, persistMessage = true, name?: string) {
+  function applySessionState(state: OfficeSessionState) {
     setCsvText(state.csvText);
     setDurationOverrides(state.durationOverrides ?? {});
     setUnavailableOverrides(state.unavailableOverrides ?? {});
@@ -927,103 +875,7 @@ export default function Home() {
     setSlateCount(state.slateCount);
     setSlateDates(state.slateDates);
     setOrderedSlateCaseIds(state.orderedSlateCaseIds ?? []);
-    if (name !== undefined) setSessionName(name);
-    if (persistMessage && name !== undefined) {
-      setSaveStatus(`Loaded "${name}"`);
-    }
   }
-
-  function persistSavedSessions(nextSessions: StoredOfficeSession[]) {
-    setSavedSessions(nextSessions);
-    window.localStorage.setItem(OFFICE_SAVED_SESSIONS_KEY, JSON.stringify(nextSessions));
-  }
-
-  function requirePassphrase(): string | null {
-    const pass = passphrase.trim();
-    if (!pass) {
-      setSaveStatus("Enter a passphrase first — it locks and unlocks saved work.");
-      return null;
-    }
-    return pass;
-  }
-
-  const saveSession = async (nameOverride?: string) => {
-    const pass = requirePassphrase();
-    if (!pass) return;
-    const trimmedName = (nameOverride ?? sessionName).trim() || "Office Session";
-    const existing = savedSessions.find((session) => session.name === trimmedName);
-    try {
-      const encrypted = await encryptJson(pass, buildSessionState());
-      const nextSession: StoredOfficeSession = {
-        version: 2,
-        id: existing?.id ?? `${Date.now()}`,
-        name: trimmedName,
-        savedAt: new Date().toISOString(),
-        encrypted,
-      };
-      const nextSessions = [
-        nextSession,
-        ...savedSessions.filter((session) => session.id !== nextSession.id),
-      ];
-      persistSavedSessions(nextSessions);
-      setSessionName(trimmedName);
-      setSaveStatus(`Saved "${trimmedName}" (encrypted)`);
-    } catch {
-      setSaveStatus("Could not encrypt and save session");
-    }
-  };
-
-  const loadSession = async (session: StoredOfficeSession) => {
-    const pass = requirePassphrase();
-    if (!pass) return;
-    try {
-      const state = await decryptJson<OfficeSessionState>(pass, session.encrypted);
-      applySessionState(state, true, session.name);
-    } catch {
-      setSaveStatus(`Wrong passphrase for "${session.name}", or the data is corrupt.`);
-    }
-  };
-
-  const deleteSession = (id: string) => {
-    const nextSessions = savedSessions.filter((session) => session.id !== id);
-    persistSavedSessions(nextSessions);
-    setSaveStatus("Deleted saved session");
-  };
-
-  const clearAllSavedData = () => {
-    if (
-      !window.confirm(
-        "Delete ALL saved sessions and autosave from this browser? This cannot be undone."
-      )
-    ) {
-      return;
-    }
-    window.localStorage.removeItem(OFFICE_SAVED_SESSIONS_KEY);
-    window.sessionStorage.removeItem(OFFICE_AUTOSAVE_KEY);
-    setSavedSessions([]);
-    setLastAutosaveAt(null);
-    setSaveStatus("Cleared all saved sessions and autosave from this browser");
-  };
-
-  const exportSession = async () => {
-    const pass = requirePassphrase();
-    if (!pass) return;
-    const trimmedName = sessionName.trim() || "office-session";
-    try {
-      const encrypted = await encryptJson(pass, buildSessionState());
-      const payload: StoredOfficeSession = {
-        version: 2,
-        id: `${Date.now()}`,
-        name: trimmedName,
-        savedAt: new Date().toISOString(),
-        encrypted,
-      };
-      downloadJson(`${trimmedName.replace(/\s+/g, "-").toLowerCase()}.json`, payload);
-      setSaveStatus(`Exported "${trimmedName}" (encrypted)`);
-    } catch {
-      setSaveStatus("Could not encrypt and export session");
-    }
-  };
 
   // Autosave to sessionStorage only: it survives an in-tab reload but is cleared
   // when the tab closes and is never written to disk, so unencrypted PHI is not
@@ -1031,7 +883,6 @@ export default function Home() {
   useEffect(() => {
     if (!csvText && cases.length === 0) return;
     window.sessionStorage.setItem(OFFICE_AUTOSAVE_KEY, JSON.stringify(buildSessionState()));
-    setLastAutosaveAt(new Date().toLocaleTimeString());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     csvText,
@@ -1081,30 +932,6 @@ export default function Home() {
       setCsvText(text);
     };
     reader.readAsText(file);
-  };
-
-  const handleImportSession = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        const text = typeof reader.result === "string" ? reader.result : "";
-        const parsed = JSON.parse(text) as StoredOfficeSession;
-        if (!isEncryptedEnvelope(parsed.encrypted)) {
-          setSaveStatus("Unrecognized or unencrypted session file");
-          return;
-        }
-        const pass = requirePassphrase();
-        if (!pass) return;
-        const state = await decryptJson<OfficeSessionState>(pass, parsed.encrypted);
-        applySessionState(state, true, parsed.name);
-      } catch {
-        setSaveStatus("Could not import session — wrong passphrase or invalid file");
-      }
-    };
-    reader.readAsText(file);
-    event.target.value = "";
   };
 
   const handleDragStart = (slateIndex: number, caseId: string) => {
@@ -1649,7 +1476,7 @@ export default function Home() {
               Names &amp; PHNs stay on device
             </span>
             <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
-              Encrypted saves
+              Encrypted cloud sync
             </span>
             <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
               Up to 3 selectable OR dates
@@ -1868,111 +1695,6 @@ export default function Home() {
                   </span>
                 </span>
               </label>
-            </div>
-            <div className="rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <p className="font-semibold text-sand-900">Saved Work</p>
-                <div className="flex items-center gap-3">
-                  {lastAutosaveAt && (
-                    <span className="inline-flex items-center gap-1 text-xs text-emerald-700">
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                      All changes saved {lastAutosaveAt}
-                    </span>
-                  )}
-                  {saveStatus && <span className="text-xs text-sand-600">{saveStatus}</span>}
-                </div>
-              </div>
-              <div className="mt-3 flex flex-wrap items-end gap-3">
-                <label className="flex min-w-[200px] flex-1 flex-col gap-2 text-xs text-sand-700">
-                  Session name
-                  <input
-                    type="text"
-                    value={sessionName}
-                    onChange={(event) => setSessionName(event.target.value)}
-                    placeholder="March office slate draft"
-                    className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-                  />
-                </label>
-                <label className="flex min-w-[200px] flex-1 flex-col gap-2 text-xs text-sand-700">
-                  Passphrase
-                  <input
-                    type="password"
-                    value={passphrase}
-                    onChange={(event) => setPassphrase(event.target.value)}
-                    placeholder="Locks & unlocks saved work"
-                    className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-                  />
-                </label>
-                <button
-                  type="button"
-                  onClick={() => void saveSession()}
-                  className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
-                >
-                  Save
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void exportSession()}
-                  className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
-                >
-                  Export session
-                </button>
-                <label className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700">
-                  Import session
-                  <input
-                    type="file"
-                    accept=".json,application/json"
-                    onChange={handleImportSession}
-                    className="hidden"
-                  />
-                </label>
-                <button
-                  type="button"
-                  onClick={clearAllSavedData}
-                  className="rounded-full border border-rose-300 px-4 py-2 text-xs font-semibold text-rose-700"
-                >
-                  Clear all data
-                </button>
-              </div>
-              <p className="mt-3 text-xs text-sand-600">
-                Named saves and exported files are encrypted with your passphrase (which is never
-                stored) — keep it safe, as it cannot be recovered. Work is autosaved only for this
-                browser tab and is cleared when the tab closes.
-              </p>
-              <div className="mt-3 flex flex-col gap-2">
-                {savedSessions.length === 0 && (
-                  <div className="rounded-xl border border-dashed border-sand-300 bg-white px-3 py-4 text-xs text-sand-600">
-                    No named saves yet.
-                  </div>
-                )}
-                {savedSessions.map((session) => (
-                  <div
-                    key={session.id}
-                    className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-sand-200 bg-white px-3 py-3 text-xs text-sand-700"
-                  >
-                    <div>
-                      <p className="font-semibold text-sand-900">{session.name}</p>
-                      <p>Saved {new Date(session.savedAt).toLocaleString()}</p>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void loadSession(session)}
-                        className="rounded-full border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
-                      >
-                        Load
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => deleteSession(session.id)}
-                        className="rounded-full border border-sand-300 px-3 py-1 font-semibold text-sand-800"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
             </div>
 
             {warnings.length > 0 && (

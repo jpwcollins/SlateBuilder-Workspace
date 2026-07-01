@@ -144,20 +144,26 @@ export default function Guide() {
         </p>
       </Section>
 
-      <Section title="Saving your work">
+      <Section title="Saving &amp; sharing your work">
         <ul className="list-disc pl-5">
           <li>
-            Work is <span className="font-semibold">autosaved for the current tab only</span> and is
-            cleared when you close it.
+            <span className="font-semibold">Sign in</span> (Office account &amp; sync) to save your
+            work to the cloud and share draft slates across devices with your team. Only
+            pseudonymized, encrypted data is stored — never names, PHNs, or diagnoses.
           </li>
           <li>
-            <span className="font-semibold">Named saves</span> and exported session files are
-            encrypted with a passphrase you choose. The passphrase is never stored and{" "}
-            <span className="font-semibold">cannot be recovered</span> — keep it safe.
+            Once signed in, changes <span className="font-semibold">sync automatically</span>. Sign in
+            on another device and upload the same waitlist to pick up where you left off; mark a plan{" "}
+            <span className="font-semibold">finalized</span> when it&apos;s ready.
           </li>
           <li>
-            <span className="font-semibold">Clear all data</span> removes every saved session and the
-            autosave from this browser.
+            Unavailable dates and other edits <span className="font-semibold">persist across monthly
+            uploads</span>, so you don&apos;t re-enter them each time.
+          </li>
+          <li>
+            If you&apos;re not signed in, work is still{" "}
+            <span className="font-semibold">autosaved for the current browser tab</span> and cleared
+            when you close it.
           </li>
         </ul>
       </Section>
