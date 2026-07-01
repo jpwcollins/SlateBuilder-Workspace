@@ -22,12 +22,14 @@ export type SyncedState = {
       durationOverrideMin?: number;
       flagOverrides?: Partial<Record<ClinicalFlagKey, boolean>>;
       removed?: boolean;
+      removedFromWaitlist?: boolean;
     }
   >;
   plan: {
     status: "draft" | "finalized";
     slateDates: string[];
     assignments: Record<string, string[]>; // dateISO -> ordered patient tokens
+    lockedDates: string[]; // dateISO values whose slate composition is frozen
     updatedAt: string;
   };
   settings: {
@@ -41,7 +43,13 @@ export function emptySyncedState(): SyncedState {
   return {
     v: 1,
     patientState: {},
-    plan: { status: "draft", slateDates: [], assignments: {}, updatedAt: new Date().toISOString() },
+    plan: {
+      status: "draft",
+      slateDates: [],
+      assignments: {},
+      lockedDates: [],
+      updatedAt: new Date().toISOString(),
+    },
     settings: {
       defaultDurations: { hysteroscopy: 30, laparoscopy: 60, hysterectomy: 180, other: 90 },
       priorityMode: "urgency_then_ttt",

@@ -33,10 +33,12 @@ import {
   clinicalFlagDefinitions,
   serializeCsv,
   csvEscape,
-  reorderSlateByCaseIds,
   priorityScoreOf,
   toLocalDateOnly,
+  scoreCases,
+  isAvailableOnDate,
   TURNAROUND_MINUTES,
+  MAX_CASES_PER_SLATE,
 } from "@slatebuilder/core";
 
 type SpreadsheetRow = Record<string, string | number | boolean | null | undefined>;
@@ -47,6 +49,7 @@ type OfficeSessionState = {
   unavailableOverrides: Record<string, string>;
   flagOverrides: Record<string, Partial<Record<ClinicalFlagKey, boolean>>>;
   removedFromSlateSuggestions: Record<string, boolean>;
+  removedFromWaitlist: Record<string, boolean>;
   defaultDurations: {
     hysteroscopy: number;
     laparoscopy: number;
@@ -57,6 +60,22 @@ type OfficeSessionState = {
   slateCount: number;
   slateDates: string[];
   orderedSlateCaseIds: string[][];
+  lockedSlateDates: string[];
+};
+
+// A drag is either a case picked up from the waitlist, or a case picked up
+// from a specific slate (used to support cross-container drag-and-drop).
+type DragState = { kind: "slate"; slateIndex: number; caseId: string } | { kind: "waitlist"; caseId: string };
+
+type OptimizeReport = {
+  perSlate: {
+    slateIndex: number;
+    dateISO: string;
+    beforePct: number;
+    afterPct: number;
+    added: string[];
+    removed: string[];
+  }[];
 };
 
 type OfficeTab = "setup" | "slates" | "waitlist" | "long";
@@ -172,6 +191,25 @@ function UrgencyBadge({
         </span>
       )}
     </span>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      className="h-3.5 w-3.5"
+      aria-hidden="true"
+    >
+      <path
+        d="M4 6h12M8 6V4.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1V6m-7.5 0 .6 9.4a1.5 1.5 0 0 0 1.5 1.4h5.8a1.5 1.5 0 0 0 1.5-1.4L15.5 6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 
@@ -298,6 +336,7 @@ export default function Home() {
   const [removedFromSlateSuggestions, setRemovedFromSlateSuggestions] = useState<
     Record<string, boolean>
   >({});
+  const [removedFromWaitlist, setRemovedFromWaitlist] = useState<Record<string, boolean>>({});
   const [defaultDurations, setDefaultDurations] = useState({
     hysteroscopy: 30,
     laparoscopy: 60,
@@ -318,16 +357,20 @@ export default function Home() {
     });
   });
   const [orderedSlates, setOrderedSlates] = useState<ScoredCase[][]>([]);
-  const [dragState, setDragState] = useState<{ slateIndex: number; caseId: string } | null>(
-    null
-  );
+  const [dragState, setDragState] = useState<DragState | null>(null);
   const [orderedSlateCaseIds, setOrderedSlateCaseIds] = useState<string[][]>([]);
+  // Keyed by dateISO (not array position) so lock/collapse state stays attached
+  // to "the slate for that date" even if the results array shifts.
+  const [lockedSlates, setLockedSlates] = useState<Record<string, boolean>>({});
+  const [collapsedSlates, setCollapsedSlates] = useState<Record<string, boolean>>({});
+  const [waitlistPanelCollapsed, setWaitlistPanelCollapsed] = useState(true);
+  const [optimizeReport, setOptimizeReport] = useState<OptimizeReport | null>(null);
   const [includeNamesInExports, setIncludeNamesInExports] = useState(false);
   const [activeTab, setActiveTab] = useState<OfficeTab>("setup");
   const [expandedCaseIds, setExpandedCaseIds] = useState<Record<string, boolean>>({});
   const [waitlistQuery, setWaitlistQuery] = useState("");
   const [waitlistOverdueOnly, setWaitlistOverdueOnly] = useState(false);
-  const [waitlistUnslatedOnly, setWaitlistUnslatedOnly] = useState(false);
+  const [waitlistUnslatedOnly, setWaitlistUnslatedOnly] = useState(true);
   // Cloud sync (pseudonymized): officeKey lives only in memory.
   const [officeIdInput, setOfficeIdInput] = useState("");
   const [officePassword, setOfficePassword] = useState("");
@@ -344,6 +387,20 @@ export default function Home() {
   const syncVersionRef = useRef(0);
   const lastSyncedJsonRef = useRef<string>("");
   const tokensReadyRef = useRef(false);
+  // Tracks the last "structural" signature (case-id-set + active dates +
+  // priority mode) that the slate composition was auto-generated from, so
+  // manual edits (drag, lock, remove/restore, duration/flag tweaks) are never
+  // silently overwritten by the optimizer — only a real structural change
+  // (new upload, date/count change, or an explicit priority-mode toggle)
+  // regenerates the suggested composition.
+  const compositionSeedRef = useRef<string>("");
+  // Set synchronously by applySyncedState/applySessionState so the reseed
+  // effect below treats a just-loaded composition as already seeded rather
+  // than overwriting it.
+  const justSyncedRef = useRef(false);
+  // Holds a restored local (sessionStorage) session until `cases` is populated
+  // from the restored csvText, since rebuilding the slate composition needs it.
+  const pendingLocalRestoreRef = useRef<OfficeSessionState | null>(null);
 
   useEffect(() => {
     if (!csvText) return;
@@ -367,18 +424,31 @@ export default function Home() {
   }, []);
 
   // Restore the in-tab autosave (sessionStorage only) so a reload within the
-  // same tab does not lose work. Nothing is read from disk.
+  // same tab does not lose work. Nothing is read from disk. Restoring csvText
+  // here kicks off the parse effect that populates `cases`; the rest of the
+  // session (overrides, slate composition, locks) is applied once `cases` is
+  // actually available (see the effect below) since rebuilding the slate
+  // composition needs the parsed cases to look up each case's data.
   useEffect(() => {
     const auto = window.sessionStorage.getItem(OFFICE_AUTOSAVE_KEY);
     if (!auto) return;
     try {
       const state = JSON.parse(auto) as OfficeSessionState;
-      applySessionState(state);
+      pendingLocalRestoreRef.current = state;
+      setCsvText(state.csvText);
     } catch {
       // ignore malformed autosave
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const pending = pendingLocalRestoreRef.current;
+    if (!pending || cases.length === 0) return;
+    pendingLocalRestoreRef.current = null;
+    applySessionState(pending);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cases]);
 
   // Remember the last-viewed tab for this browser tab.
   useEffect(() => {
@@ -441,8 +511,17 @@ export default function Home() {
   }, [officeCases, durationOverrides]);
 
   const slateEligibleCases = useMemo(() => {
-    return officeCasesWithOverrides.filter((item) => !removedFromSlateSuggestions[item.caseId]);
-  }, [officeCasesWithOverrides, removedFromSlateSuggestions]);
+    return officeCasesWithOverrides.filter(
+      (item) => !removedFromSlateSuggestions[item.caseId] && !removedFromWaitlist[item.caseId]
+    );
+  }, [officeCasesWithOverrides, removedFromSlateSuggestions, removedFromWaitlist]);
+
+  // Cases still meaningfully "on the waitlist" — excludes patients explicitly
+  // removed from the waitlist entirely (they remain visible, greyed out, in the
+  // waitlist list itself, but shouldn't count toward stats/histograms/long-waiters).
+  const activeOfficeCases = useMemo(() => {
+    return officeCasesWithOverrides.filter((item) => !removedFromWaitlist[item.caseId]);
+  }, [officeCasesWithOverrides, removedFromWaitlist]);
 
   const officeSurgeons = useMemo(() => {
     return Array.from(new Set(officeCases.map((item) => item.surgeonId))).sort((a, b) =>
@@ -488,21 +567,47 @@ export default function Home() {
     return optimizeSlatesForDates(slateEligibleCases, dates);
   }, [slateEligibleCases, slateDates, slateCount]);
 
+  // A slate's composition is auto-generated only on a real structural change:
+  // a new upload (the case-id set changes), the configured dates/count change,
+  // or the priority-rule toggle. Any other edit (drag, lock, duration/flag
+  // tweaks, remove/restore) mutates orderedSlates/orderedSlateCaseIds directly
+  // and is never silently overwritten by re-running the optimizer.
+  const activeDatesKey = useMemo(
+    () => slateDates.slice(0, slateCount).filter(Boolean).join("|"),
+    [slateDates, slateCount]
+  );
+  const caseIdSetKey = useMemo(
+    () =>
+      officeCasesWithOverrides
+        .map((c) => c.caseId)
+        .sort()
+        .join(","),
+    [officeCasesWithOverrides]
+  );
+
   useEffect(() => {
+    const seedKey = `${caseIdSetKey}::${activeDatesKey}::${priorityMode}`;
+    if (justSyncedRef.current) {
+      // A cloud-sync load just set the composition explicitly; treat it as
+      // already seeded rather than overwriting it with a fresh auto-suggestion.
+      justSyncedRef.current = false;
+      compositionSeedRef.current = seedKey;
+      return;
+    }
+    if (seedKey === compositionSeedRef.current) return;
+    compositionSeedRef.current = seedKey;
+    setLockedSlates({});
+    setCollapsedSlates({});
     if (!slates) {
       setOrderedSlates([]);
       setOrderedSlateCaseIds([]);
       return;
     }
-    const nextOrdered = slates.map((item, index) =>
-      reorderSlateByCaseIds(sortForSlate(item.selected), orderedSlateCaseIds[index])
-    );
+    const nextOrdered = slates.map((item) => sortForSlate(item.selected));
     setOrderedSlates(nextOrdered);
     setOrderedSlateCaseIds(nextOrdered.map((slate) => slate.map((item) => item.caseId)));
-    // orderedSlateCaseIds is read only to preserve prior manual ordering; it is
-    // the value we write here, so it is intentionally not a dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slates, priorityMode]);
+  }, [caseIdSetKey, activeDatesKey, priorityMode, slates]);
 
   const selectedCaseIds = useMemo(() => {
     const ids = new Set<string>();
@@ -517,8 +622,10 @@ export default function Home() {
   }, [officeCasesWithOverrides, priorityMode]);
 
   const remainingByUrgency = useMemo(() => {
-    return orderedByUrgency.filter((item) => !selectedCaseIds.has(item.caseId));
-  }, [orderedByUrgency, selectedCaseIds]);
+    return orderedByUrgency.filter(
+      (item) => !selectedCaseIds.has(item.caseId) && !removedFromWaitlist[item.caseId]
+    );
+  }, [orderedByUrgency, selectedCaseIds, removedFromWaitlist]);
 
   const blockMinutes = useMemo(() => {
     if (!slateDates[0]) return 0;
@@ -527,19 +634,19 @@ export default function Home() {
   }, [slateDates]);
 
   const officeStats = useMemo(() => {
-    const overdue = officeCasesWithOverrides.filter((item) => item.timeToTargetDays < 0).length;
-    const totalMinutes = officeCasesWithOverrides.reduce(
+    const overdue = activeOfficeCases.filter((item) => item.timeToTargetDays < 0).length;
+    const totalMinutes = activeOfficeCases.reduce(
       (sum, item) => sum + item.estimatedDurationMin,
       0
     );
-    const urgent = officeCasesWithOverrides.filter((item) => item.benchmarkWeeks <= 6).length;
+    const urgent = activeOfficeCases.filter((item) => item.benchmarkWeeks <= 6).length;
     return {
-      totalCases: officeCasesWithOverrides.length,
+      totalCases: activeOfficeCases.length,
       overdue,
       urgent,
       totalHours: totalMinutes / 60,
     };
-  }, [officeCasesWithOverrides]);
+  }, [activeOfficeCases]);
 
   // Histogram data: per benchmark bucket, split patients into under-/over-target
   // bands at the ±50%-of-target threshold.
@@ -554,7 +661,7 @@ export default function Home() {
       total: 0,
     }));
     const indexOf = new Map(order.map((weeks, i) => [weeks, i]));
-    officeCasesWithOverrides.forEach((item) => {
+    activeOfficeCases.forEach((item) => {
       const i = indexOf.get(item.benchmarkWeeks);
       if (i === undefined) return;
       const bucket = buckets[i];
@@ -571,7 +678,7 @@ export default function Home() {
       bucket.total += 1;
     });
     return buckets;
-  }, [officeCasesWithOverrides]);
+  }, [activeOfficeCases]);
 
   // Long-waiters: every case past target, grouped by benchmark class, most
   // overdue first within each class.
@@ -583,7 +690,7 @@ export default function Home() {
       cases: [] as PatientCase[],
     }));
     const indexOf = new Map(order.map((weeks, i) => [weeks, i]));
-    officeCasesWithOverrides
+    activeOfficeCases
       .filter((c) => c.timeToTargetDays < 0)
       .forEach((c) => {
         const i = indexOf.get(c.benchmarkWeeks);
@@ -592,7 +699,7 @@ export default function Home() {
     groups.forEach((g) => g.cases.sort((a, b) => a.timeToTargetDays - b.timeToTargetDays));
     const total = groups.reduce((sum, g) => sum + g.cases.length, 0);
     return { groups, total };
-  }, [officeCasesWithOverrides]);
+  }, [activeOfficeCases]);
 
   // ---- Cloud sync (token-keyed, no PHI) ------------------------------------
 
@@ -631,6 +738,7 @@ export default function Home() {
       if (durationOverrides[caseId]) entry.durationOverrideMin = durationOverrides[caseId];
       if (flagOverrides[caseId]) entry.flagOverrides = flagOverrides[caseId];
       if (removedFromSlateSuggestions[caseId]) entry.removed = true;
+      if (removedFromWaitlist[caseId]) entry.removedFromWaitlist = true;
       if (Object.keys(entry).length > 0) patientState[token] = entry;
     });
     const activeDates = slateDates.slice(0, slateCount);
@@ -640,10 +748,17 @@ export default function Home() {
         .map((caseId) => caseTokens[caseId])
         .filter(Boolean);
     });
+    const lockedDates = activeDates.filter((date) => lockedSlates[date]);
     return {
       v: 1,
       patientState,
-      plan: { status: planStatus, slateDates: activeDates, assignments, updatedAt: new Date().toISOString() },
+      plan: {
+        status: planStatus,
+        slateDates: activeDates,
+        assignments,
+        lockedDates,
+        updatedAt: new Date().toISOString(),
+      },
       settings: { defaultDurations, priorityMode, slateCount },
     };
   };
@@ -658,6 +773,7 @@ export default function Home() {
     const unavail: Record<string, string> = {};
     const flags: Record<string, Partial<Record<ClinicalFlagKey, boolean>>> = {};
     const removed: Record<string, boolean> = {};
+    const removedWaitlist: Record<string, boolean> = {};
     Object.entries(state.patientState).forEach(([token, ps]) => {
       const caseId = t2c[token];
       if (!caseId) return;
@@ -665,17 +781,62 @@ export default function Home() {
       if (ps.durationOverrideMin) dur[caseId] = ps.durationOverrideMin;
       if (ps.flagOverrides) flags[caseId] = ps.flagOverrides;
       if (ps.removed) removed[caseId] = true;
+      if (ps.removedFromWaitlist) removedWaitlist[caseId] = true;
     });
     setDurationOverrides(dur);
     setUnavailableOverrides(unavail);
     setFlagOverrides(flags);
     setRemovedFromSlateSuggestions(removed);
+    setRemovedFromWaitlist(removedWaitlist);
     if (state.plan.slateDates.length > 0) setSlateDates(state.plan.slateDates);
-    setOrderedSlateCaseIds(
-      state.plan.slateDates.map((date) =>
-        (state.plan.assignments[date] ?? []).map((token) => t2c[token]).filter(Boolean)
+
+    const nextCaseIds = state.plan.slateDates.map((date) =>
+      (state.plan.assignments[date] ?? []).map((token) => t2c[token]).filter(Boolean)
+    );
+    setOrderedSlateCaseIds(nextCaseIds);
+
+    // Build the full slate composition from the synced case-id assignment
+    // directly off the raw parsed cases (not the memoized officeCasesWithOverrides,
+    // which won't reflect the overrides set just above until the next render),
+    // so manually-dragged/added cases the optimizer wouldn't independently pick
+    // are preserved rather than dropped.
+    const byId = new Map(cases.map((c) => [c.caseId, c]));
+    const settingsDurations = state.settings.defaultDurations;
+    const withAllOverrides = (item: PatientCase): PatientCase => {
+      const name = (item.procedureName ?? "").toLowerCase();
+      let defaultDuration = settingsDurations.other;
+      if (name.includes("hysterectomy")) defaultDuration = settingsDurations.hysterectomy;
+      else if (name.includes("hysteroscop")) defaultDuration = settingsDurations.hysteroscopy;
+      else if (name.includes("laparoscop")) defaultDuration = settingsDurations.laparoscopy;
+      return {
+        ...item,
+        estimatedDurationMin: dur[item.caseId] ?? defaultDuration,
+        flags: { ...item.flags, ...(flags[item.caseId] ?? {}) },
+        unavailableUntil:
+          unavail[item.caseId] !== undefined
+            ? normalizeDateOnly(unavail[item.caseId])
+            : item.unavailableUntil,
+      };
+    };
+    const nextOrderedSlates = nextCaseIds.map((ids) =>
+      sortForSlate(
+        scoreCases(
+          ids
+            .map((id) => byId.get(id))
+            .filter((c): c is PatientCase => Boolean(c))
+            .map(withAllOverrides)
+        )
       )
     );
+    setOrderedSlates(nextOrderedSlates);
+
+    const lockedMap: Record<string, boolean> = {};
+    (state.plan.lockedDates ?? []).forEach((d) => {
+      lockedMap[d] = true;
+    });
+    setLockedSlates(lockedMap);
+
+    justSyncedRef.current = true;
     lastSyncedJsonRef.current = JSON.stringify(state);
   };
 
@@ -833,6 +994,7 @@ export default function Home() {
     setUnavailableOverrides({});
     setFlagOverrides({});
     setRemovedFromSlateSuggestions({});
+    setRemovedFromWaitlist({});
     setPriorityMode("urgency_then_ttt");
     setSlateCount(2);
     setSlateDates(() => {
@@ -845,7 +1007,11 @@ export default function Home() {
     });
     setOrderedSlates([]);
     setOrderedSlateCaseIds([]);
+    setLockedSlates({});
+    setCollapsedSlates({});
+    setOptimizeReport(null);
     setDragState(null);
+    compositionSeedRef.current = "";
     window.sessionStorage.removeItem(OFFICE_AUTOSAVE_KEY);
   };
 
@@ -856,25 +1022,74 @@ export default function Home() {
       unavailableOverrides,
       flagOverrides,
       removedFromSlateSuggestions,
+      removedFromWaitlist,
       defaultDurations,
       priorityMode,
       slateCount,
       slateDates,
       orderedSlateCaseIds,
+      lockedSlateDates: Object.keys(lockedSlates).filter((d) => lockedSlates[d]),
     };
   }
 
   function applySessionState(state: OfficeSessionState) {
-    setCsvText(state.csvText);
     setDurationOverrides(state.durationOverrides ?? {});
     setUnavailableOverrides(state.unavailableOverrides ?? {});
     setFlagOverrides(state.flagOverrides ?? {});
     setRemovedFromSlateSuggestions(state.removedFromSlateSuggestions ?? {});
+    setRemovedFromWaitlist(state.removedFromWaitlist ?? {});
     setDefaultDurations(state.defaultDurations);
     setPriorityMode(state.priorityMode);
     setSlateCount(state.slateCount);
     setSlateDates(state.slateDates);
-    setOrderedSlateCaseIds(state.orderedSlateCaseIds ?? []);
+
+    const nextCaseIds = state.orderedSlateCaseIds ?? [];
+    setOrderedSlateCaseIds(nextCaseIds);
+
+    // Rebuild the full slate composition directly from the parsed cases (the
+    // officeCasesWithOverrides memo won't reflect these overrides until the
+    // next render), so manually-added cases the optimizer wouldn't
+    // independently pick are preserved rather than dropped.
+    const byId = new Map(cases.map((c) => [c.caseId, c]));
+    const dur = state.durationOverrides ?? {};
+    const unavail = state.unavailableOverrides ?? {};
+    const flags = state.flagOverrides ?? {};
+    const settingsDurations = state.defaultDurations;
+    const withAllOverrides = (item: PatientCase): PatientCase => {
+      const name = (item.procedureName ?? "").toLowerCase();
+      let defaultDuration = settingsDurations.other;
+      if (name.includes("hysterectomy")) defaultDuration = settingsDurations.hysterectomy;
+      else if (name.includes("hysteroscop")) defaultDuration = settingsDurations.hysteroscopy;
+      else if (name.includes("laparoscop")) defaultDuration = settingsDurations.laparoscopy;
+      return {
+        ...item,
+        estimatedDurationMin: dur[item.caseId] ?? defaultDuration,
+        flags: { ...item.flags, ...(flags[item.caseId] ?? {}) },
+        unavailableUntil:
+          unavail[item.caseId] !== undefined
+            ? normalizeDateOnly(unavail[item.caseId])
+            : item.unavailableUntil,
+      };
+    };
+    const nextOrderedSlates = nextCaseIds.map((ids) =>
+      sortForSlate(
+        scoreCases(
+          ids
+            .map((id) => byId.get(id))
+            .filter((c): c is PatientCase => Boolean(c))
+            .map(withAllOverrides)
+        )
+      )
+    );
+    setOrderedSlates(nextOrderedSlates);
+
+    const lockedMap: Record<string, boolean> = {};
+    (state.lockedSlateDates ?? []).forEach((d) => {
+      lockedMap[d] = true;
+    });
+    setLockedSlates(lockedMap);
+
+    justSyncedRef.current = true;
   }
 
   // Autosave to sessionStorage only: it survives an in-tab reload but is cleared
@@ -935,23 +1150,34 @@ export default function Home() {
   };
 
   const handleDragStart = (slateIndex: number, caseId: string) => {
-    setDragState({ slateIndex, caseId });
+    setDragState({ kind: "slate", slateIndex, caseId });
   };
 
+  const handleWaitlistDragStart = (caseId: string) => {
+    setDragState({ kind: "waitlist", caseId });
+  };
+
+  // Live same-slate reordering as the dragged row passes over a sibling.
   const handleDragOver = (
     event: React.DragEvent<HTMLDivElement>,
     slateIndex: number,
     caseId: string
   ) => {
     event.preventDefault();
-    if (!dragState || dragState.caseId === caseId || dragState.slateIndex !== slateIndex) {
+    const current = dragState;
+    if (
+      !current ||
+      current.kind !== "slate" ||
+      current.caseId === caseId ||
+      current.slateIndex !== slateIndex
+    ) {
       return;
     }
     setOrderedSlates((prev) => {
       const next = prev.map((slate) => [...slate]);
       const slate = next[slateIndex];
       if (!slate) return prev;
-      const fromIndex = slate.findIndex((item) => item.caseId === dragState.caseId);
+      const fromIndex = slate.findIndex((item) => item.caseId === current.caseId);
       const toIndex = slate.findIndex((item) => item.caseId === caseId);
       if (fromIndex < 0 || toIndex < 0) return prev;
       const [moved] = slate.splice(fromIndex, 1);
@@ -959,6 +1185,78 @@ export default function Home() {
       setOrderedSlateCaseIds(next.map((ordered) => ordered.map((item) => item.caseId)));
       return next;
     });
+  };
+
+  // Dropping onto a slate (from the waitlist, or from a different slate)
+  // either reorders in place (handled live above) or moves the case in,
+  // subject to the lock, availability, and capacity of the target slate.
+  const handleDropOnSlate = (event: React.DragEvent<HTMLDivElement>, targetSlateIndex: number) => {
+    event.preventDefault();
+    const current = dragState;
+    setDragState(null);
+    if (!current) return;
+    if (current.kind === "slate" && current.slateIndex === targetSlateIndex) return; // reorder already applied
+
+    const targetDateISO = slates?.[targetSlateIndex]?.dateISO ?? "";
+    if (lockedSlates[targetDateISO]) {
+      window.alert("This slate is locked; patients cannot be added to it.");
+      return;
+    }
+    if (current.kind === "slate" && lockedSlates[slates?.[current.slateIndex]?.dateISO ?? ""]) {
+      window.alert("That patient's slate is locked; patients cannot be removed from it.");
+      return;
+    }
+
+    const source = officeCasesWithOverrides.find((c) => c.caseId === current.caseId);
+    if (!source) return;
+    const blockMinutes = slates?.[targetSlateIndex]?.blockMinutes ?? 0;
+    if (
+      targetDateISO &&
+      !isAvailableOnDate(source.unavailableUntil, new Date(`${targetDateISO}T00:00:00`))
+    ) {
+      window.alert("This patient is marked unavailable on that slate's date.");
+      return;
+    }
+    const scored = scoreCases([source])[0];
+
+    setOrderedSlates((prev) => {
+      const withoutCase = prev.map((slate) => slate.filter((c) => c.caseId !== current.caseId));
+      const target = withoutCase[targetSlateIndex] ?? [];
+      const nextCount = target.length + 1;
+      const surgical = target.reduce((sum, c) => sum + c.estimatedDurationMin, 0) +
+        scored.estimatedDurationMin;
+      const occupied = surgical + TURNAROUND_MINUTES * (nextCount - 1);
+      if (nextCount > MAX_CASES_PER_SLATE || occupied > blockMinutes) {
+        window.alert("Not enough room in that slate for this patient.");
+        return prev;
+      }
+      const next = [...withoutCase];
+      next[targetSlateIndex] = sortForSlate([...target, scored]);
+      setOrderedSlateCaseIds(next.map((slate) => slate.map((c) => c.caseId)));
+      return next;
+    });
+    setRemovedFromSlateSuggestions((prev) => {
+      if (!prev[current.caseId]) return prev;
+      const next = { ...prev };
+      delete next[current.caseId];
+      return next;
+    });
+  };
+
+  // Dropping onto the waitlist removes the case from whichever slate it came
+  // from (a no-op if it was already just a waitlist case being repositioned).
+  const handleDropOnWaitlist = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const current = dragState;
+    setDragState(null);
+    if (!current || current.kind === "waitlist") return;
+    const sourceDateISO = slates?.[current.slateIndex]?.dateISO ?? "";
+    if (lockedSlates[sourceDateISO]) {
+      window.alert("This slate is locked; patients cannot be removed from it.");
+      return;
+    }
+    spliceCaseOutOfSlates(current.caseId);
+    setRemovedFromSlateSuggestions((prev) => ({ ...prev, [current.caseId]: true }));
   };
 
   const updateDuration = (slateIndex: number, caseId: string, value: string) => {
@@ -977,6 +1275,26 @@ export default function Home() {
     });
   };
 
+  // Patches a case's live copy inside whichever slate currently holds it (a
+  // no-op if it isn't slated). Needed because slate composition is no longer
+  // silently recomputed from officeCasesWithOverrides on every override edit.
+  const patchCaseInSlates = (caseId: string, updater: (item: ScoredCase) => ScoredCase) => {
+    setOrderedSlates((prev) => {
+      let changed = false;
+      const next = prev.map((slate) =>
+        slate.map((item) => {
+          if (item.caseId !== caseId) return item;
+          changed = true;
+          return updater(item);
+        })
+      );
+      return changed ? next : prev;
+    });
+  };
+
+  const findSlateIndexForCase = (caseId: string): number =>
+    orderedSlates.findIndex((slate) => slate.some((item) => item.caseId === caseId));
+
   const updateFlag = (caseId: string, flag: ClinicalFlagKey, value: boolean) => {
     setFlagOverrides((prev) => ({
       ...prev,
@@ -985,6 +1303,7 @@ export default function Home() {
         [flag]: value,
       },
     }));
+    patchCaseInSlates(caseId, (item) => ({ ...item, flags: { ...item.flags, [flag]: value } }));
   };
 
   const updateUnavailableUntil = (caseId: string, value: string) => {
@@ -992,29 +1311,128 @@ export default function Home() {
       ...prev,
       [caseId]: value,
     }));
+    patchCaseInSlates(caseId, (item) => ({ ...item, unavailableUntil: normalizeDateOnly(value) }));
+  };
+
+  // Splices a case out of whichever slate holds it (used by the button, drag
+  // handlers, and the waitlist "remove" action alike).
+  const spliceCaseOutOfSlates = (caseId: string) => {
+    setOrderedSlates((prev) => {
+      const next = prev.map((slate) => slate.filter((item) => item.caseId !== caseId));
+      setOrderedSlateCaseIds(next.map((slate) => slate.map((item) => item.caseId)));
+      return next;
+    });
   };
 
   const removeFromSuggestedSlates = (caseId: string) => {
+    const slateIndex = findSlateIndexForCase(caseId);
+    if (slateIndex !== -1) {
+      const dateISO = slates?.[slateIndex]?.dateISO ?? "";
+      if (lockedSlates[dateISO]) {
+        window.alert("This slate is locked. Unlock it to remove this patient.");
+        return;
+      }
+    }
     setRemovedFromSlateSuggestions((prev) => ({
       ...prev,
       [caseId]: true,
     }));
+    spliceCaseOutOfSlates(caseId);
   };
 
+  // Restoring a removed case re-slates it where its priority naturally places
+  // it: the first slot (in date order) it fits and is available for. If that
+  // natural slot is locked, the user is alerted and the case goes into the
+  // next available (unlocked) slot with room instead. If nothing fits, the
+  // case simply returns to the waitlist as "not yet slated".
   const restoreToSuggestedSlates = (caseId: string) => {
     setRemovedFromSlateSuggestions((prev) => {
       const next = { ...prev };
       delete next[caseId];
       return next;
     });
+
+    const source = officeCasesWithOverrides.find((c) => c.caseId === caseId);
+    if (!source || !slates || slates.length === 0) return;
+    const candidate = scoreCases([source])[0];
+
+    let alerted = false;
+    for (let i = 0; i < slates.length; i += 1) {
+      const dateISO = slates[i].dateISO;
+      const blockMinutes = slates[i].blockMinutes;
+      if (dateISO && !isAvailableOnDate(candidate.unavailableUntil, new Date(`${dateISO}T00:00:00`))) {
+        continue;
+      }
+      const current = orderedSlates[i] ?? [];
+      if (current.length >= MAX_CASES_PER_SLATE) continue;
+      const surgical = current.reduce((sum, item) => sum + item.estimatedDurationMin, 0) +
+        candidate.estimatedDurationMin;
+      const occupied = surgical + TURNAROUND_MINUTES * current.length;
+      if (occupied > blockMinutes) continue;
+
+      if (lockedSlates[dateISO]) {
+        if (!alerted) {
+          alerted = true;
+          window.alert(
+            `Slate ${i + 1}${dateISO ? ` (${dateISO})` : ""} is locked. Placing this patient in the next available slot instead.`
+          );
+        }
+        continue;
+      }
+
+      setOrderedSlates((prev) => {
+        const next = prev.map((slate, idx) =>
+          idx === i ? sortForSlate([...slate, candidate]) : slate
+        );
+        setOrderedSlateCaseIds(next.map((slate) => slate.map((item) => item.caseId)));
+        return next;
+      });
+      return;
+    }
+    // No unlocked slot had room; leave it on the waitlist as not-yet-slated.
+  };
+
+  // Removes a patient from the waitlist entirely: confirm, take them off any
+  // slate, grey them out (handled in rendering via removedFromWaitlist), and
+  // open a pre-filled email to booking requesting the removal.
+  const removeFromWaitlist = (caseId: string) => {
+    const item = officeCasesWithOverrides.find((c) => c.caseId === caseId);
+    if (!item) return;
+    if (
+      !window.confirm(
+        `Remove ${item.displayLabel} from the waitlist entirely? They will be taken off any slate.`
+      )
+    ) {
+      return;
+    }
+    setRemovedFromWaitlist((prev) => ({ ...prev, [caseId]: true }));
+    spliceCaseOutOfSlates(caseId);
+    const phn = item.patientRef?.trim();
+    const body = [
+      "Please remove the following patient from the waitlist.",
+      "",
+      `PHN: ${phn || "(PHN not available)"}`,
+    ].join("\n");
+    const mailto = `mailto:BCWHSSBooking@phsa.ca?subject=${encodeURIComponent(
+      "Please remove from waitlist"
+    )}&body=${encodeURIComponent(body)}`;
+    window.location.href = mailto;
   };
 
   const resetDurationOverrides = () => {
     setDurationOverrides({});
-    if (!slates) return;
-    const nextOrdered = slates.map((item) => sortForSlate(item.selected));
-    setOrderedSlates(nextOrdered);
-    setOrderedSlateCaseIds(nextOrdered.map((slate) => slate.map((item) => item.caseId)));
+    setOrderedSlates((prev) =>
+      prev.map((slate) =>
+        slate.map((item) => {
+          const name = (item.procedureName ?? "").toLowerCase();
+          let duration = defaultDurations.other;
+          if (name.includes("hysterectomy")) duration = defaultDurations.hysterectomy;
+          else if (name.includes("hysteroscop")) duration = defaultDurations.hysteroscopy;
+          else if (name.includes("laparoscop")) duration = defaultDurations.laparoscopy;
+          return { ...item, estimatedDurationMin: duration };
+        })
+      )
+    );
   };
 
   const saveDefaultDurations = () => {
@@ -1023,6 +1441,128 @@ export default function Home() {
       JSON.stringify(defaultDurations)
     );
     setDefaultsSavedAt(new Date().toLocaleTimeString());
+  };
+
+  // Rearranges every unlocked slate to pack in as much OR time as possible
+  // (first-fit-decreasing bin packing by case duration), ignoring priority
+  // order entirely. Locked slates are left untouched and excluded from the
+  // pool of movable cases. Confirms first, then reports what changed.
+  const runOptimizeUtilization = () => {
+    if (!slates || slates.length === 0) return;
+    const confirmed = window.confirm(
+      "Optimize Utilization will rearrange patients across unlocked slates to pack in as much OR " +
+        "time as possible. This may override the usual priority order. Locked slates are left " +
+        "untouched. Continue?"
+    );
+    if (!confirmed) return;
+
+    const unlockedIndices = slates
+      .map((_, i) => i)
+      .filter((i) => !lockedSlates[slates[i].dateISO]);
+    if (unlockedIndices.length === 0) {
+      window.alert("All slates are locked; there is nothing to optimize.");
+      return;
+    }
+
+    const lockedCaseIds = new Set<string>();
+    slates.forEach((slate, i) => {
+      if (lockedSlates[slate.dateISO]) {
+        (orderedSlates[i] ?? []).forEach((c) => lockedCaseIds.add(c.caseId));
+      }
+    });
+
+    const poolIds = new Set<string>();
+    unlockedIndices.forEach((i) => (orderedSlates[i] ?? []).forEach((c) => poolIds.add(c.caseId)));
+    slateEligibleCases.forEach((c) => {
+      if (!lockedCaseIds.has(c.caseId)) poolIds.add(c.caseId);
+    });
+    const pool = scoreCases(
+      officeCasesWithOverrides.filter((c) => poolIds.has(c.caseId) && !lockedCaseIds.has(c.caseId))
+    );
+
+    const beforeBySlate = new Map<number, { pct: number; caseIds: Set<string> }>();
+    unlockedIndices.forEach((i) => {
+      const blockMinutes = slates[i].blockMinutes;
+      const current = orderedSlates[i] ?? [];
+      const surgical = current.reduce((sum, c) => sum + c.estimatedDurationMin, 0);
+      const occupied = surgical + TURNAROUND_MINUTES * Math.max(0, current.length - 1);
+      beforeBySlate.set(i, {
+        pct: blockMinutes > 0 ? (occupied / blockMinutes) * 100 : 0,
+        caseIds: new Set(current.map((c) => c.caseId)),
+      });
+    });
+
+    type Bin = {
+      index: number;
+      dateISO: string;
+      date: Date;
+      blockMinutes: number;
+      cases: ScoredCase[];
+      surgicalMinutes: number;
+    };
+    const bins: Bin[] = unlockedIndices.map((i) => ({
+      index: i,
+      dateISO: slates[i].dateISO,
+      date: new Date(`${slates[i].dateISO}T00:00:00`),
+      blockMinutes: slates[i].blockMinutes,
+      cases: [],
+      surgicalMinutes: 0,
+    }));
+
+    // First-fit-decreasing: largest cases first, placed into whichever bin
+    // leaves the least room (tightest fit), maximizing total time packed.
+    const sortedPool = [...pool].sort((a, b) => b.estimatedDurationMin - a.estimatedDurationMin);
+    for (const item of sortedPool) {
+      let best: Bin | null = null;
+      let bestRemaining = Infinity;
+      for (const bin of bins) {
+        if (bin.cases.length >= MAX_CASES_PER_SLATE) continue;
+        if (bin.dateISO && !isAvailableOnDate(item.unavailableUntil, bin.date)) continue;
+        const nextCount = bin.cases.length + 1;
+        const occupied = bin.surgicalMinutes + item.estimatedDurationMin + TURNAROUND_MINUTES * (nextCount - 1);
+        if (occupied > bin.blockMinutes) continue;
+        const remaining = bin.blockMinutes - occupied;
+        if (remaining < bestRemaining) {
+          bestRemaining = remaining;
+          best = bin;
+        }
+      }
+      if (best) {
+        best.cases.push(item);
+        best.surgicalMinutes += item.estimatedDurationMin;
+      }
+    }
+
+    setOrderedSlates((prev) => {
+      const next = [...prev];
+      bins.forEach((bin) => {
+        next[bin.index] = sortForSlate(bin.cases);
+      });
+      setOrderedSlateCaseIds(next.map((slate) => slate.map((c) => c.caseId)));
+      return next;
+    });
+
+    const perSlate = bins.map((bin) => {
+      const before = beforeBySlate.get(bin.index) ?? { pct: 0, caseIds: new Set<string>() };
+      const afterIds = new Set(bin.cases.map((c) => c.caseId));
+      const added = bin.cases
+        .filter((c) => !before.caseIds.has(c.caseId))
+        .map((c) => c.displayLabel);
+      const removed = (orderedSlates[bin.index] ?? [])
+        .filter((c) => before.caseIds.has(c.caseId) && !afterIds.has(c.caseId))
+        .map((c) => c.displayLabel);
+      const afterOccupied =
+        bin.surgicalMinutes + TURNAROUND_MINUTES * Math.max(0, bin.cases.length - 1);
+      return {
+        slateIndex: bin.index,
+        dateISO: bin.dateISO,
+        beforePct: before.pct,
+        afterPct: bin.blockMinutes > 0 ? (afterOccupied / bin.blockMinutes) * 100 : 0,
+        added,
+        removed,
+      };
+    });
+    setOptimizeReport({ perSlate });
   };
 
   const buildSchedule = (items: ScoredCase[], dateISO: string) => {
@@ -1376,6 +1916,146 @@ export default function Home() {
       )}). This tool is intended for one surgeon's office — slates and the surgeon name on exports will mix surgeons.`
     );
   }
+
+  // Shared row renderer used by both the dedicated Priority Waitlist tab and
+  // the embedded panel at the bottom of Suggested Slates, so remove/restore/
+  // drag/trash behavior stays identical in both places.
+  const renderWaitlistRow = (item: PatientCase, rank: number) => {
+    const expanded = Boolean(expandedCaseIds[item.caseId]);
+    const removed = Boolean(removedFromWaitlist[item.caseId]);
+    const slated = selectedCaseIds.has(item.caseId);
+    return (
+      <div
+        key={item.caseId}
+        draggable={!removed}
+        onDragStart={() => handleWaitlistDragStart(item.caseId)}
+        className={`rounded-xl border border-sand-200 ${removed ? "bg-sand-100/70 opacity-60" : "bg-white/70"}`}
+      >
+        <button
+          type="button"
+          onClick={() => toggleExpanded(item.caseId)}
+          className="flex w-full items-center gap-3 px-3 py-2 text-left"
+        >
+          <span className="w-6 shrink-0 text-xs font-semibold text-sand-500">{rank}</span>
+          <span className="min-w-0 flex-1">
+            <span
+              className={`block truncate font-semibold ${
+                removed ? "text-sand-500 line-through" : "text-slateBlue-900"
+              }`}
+            >
+              {item.displayLabel}
+              <span className="ml-1.5 text-[10px] uppercase tracking-wider text-sand-400">
+                {item.caseId}
+              </span>
+            </span>
+            {item.procedureName && (
+              <span className="block truncate text-xs text-sand-600">{item.procedureName}</span>
+            )}
+          </span>
+          <UrgencyBadge benchmarkWeeks={item.benchmarkWeeks} timeToTargetDays={item.timeToTargetDays} />
+          <span className="hidden shrink-0 text-xs text-sand-600 sm:inline">
+            {item.estimatedDurationMin}m
+          </span>
+          {removed ? (
+            <span className="shrink-0 rounded-full bg-sand-200 px-2 py-0.5 text-[11px] text-sand-600">
+              Removed
+            </span>
+          ) : slated ? (
+            <span className="shrink-0 rounded-full bg-slateBlue-100 px-2 py-0.5 text-[11px] text-slateBlue-700">
+              Slated
+            </span>
+          ) : (
+            <span className="shrink-0 rounded-full bg-sand-100 px-2 py-0.5 text-[11px] text-sand-600">
+              Waiting
+            </span>
+          )}
+          <span className="shrink-0 text-sand-400">{expanded ? "▾" : "▸"}</span>
+        </button>
+
+        {expanded && (
+          <div className="border-t border-sand-200 px-3 py-3 text-xs text-sand-700">
+            <div className="text-sand-600">
+              TTT {item.timeToTargetDays}d · Surgeon ID {item.surgeonId}
+              {item.unavailableUntil ? ` · unavailable until ${item.unavailableUntil}` : ""}
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {clinicalFlagDefinitions
+                .filter((flag) => item.flags?.[flag.key])
+                .map((flag) => (
+                  <span
+                    key={`${item.caseId}-${flag.key}`}
+                    className="rounded-full bg-sand-100 px-2 py-1 text-sand-800"
+                  >
+                    {flag.label}
+                  </span>
+                ))}
+              {item.inpatient && (
+                <span className="rounded-full bg-sand-200 px-2 py-1 text-sand-800">Inpatient</span>
+              )}
+              {removedFromSlateSuggestions[item.caseId] && (
+                <span className="rounded-full bg-sand-200 px-2 py-1 text-sand-800">
+                  Removed from suggestions
+                </span>
+              )}
+            </div>
+
+            {!removed && (
+              <>
+                <div className="mt-2 flex flex-wrap gap-3">
+                  {clinicalFlagDefinitions.map((flag) => (
+                    <label key={`${item.caseId}-${flag.key}`} className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(item.flags?.[flag.key])}
+                        onChange={(event) => updateFlag(item.caseId, flag.key, event.target.checked)}
+                      />
+                      {flag.label}
+                    </label>
+                  ))}
+                  <label className="flex items-center gap-2">
+                    Patient unavailable until
+                    <input
+                      type="date"
+                      value={item.unavailableUntil ?? ""}
+                      onChange={(event) => updateUnavailableUntil(item.caseId, event.target.value)}
+                      className="rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
+                    />
+                  </label>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  {removedFromSlateSuggestions[item.caseId] ? (
+                    <button
+                      type="button"
+                      onClick={() => restoreToSuggestedSlates(item.caseId)}
+                      className="rounded-full border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
+                    >
+                      Restore to suggested slates
+                    </button>
+                  ) : slated ? (
+                    <button
+                      type="button"
+                      onClick={() => removeFromSuggestedSlates(item.caseId)}
+                      className="rounded-full border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
+                    >
+                      Remove from suggested slates
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => removeFromWaitlist(item.caseId)}
+                    className="flex items-center gap-1.5 rounded-full border border-rose-300 px-3 py-1 font-semibold text-rose-700"
+                  >
+                    <TrashIcon />
+                    Remove from waitlist
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <main className="relative mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-6 py-12">
@@ -1945,13 +2625,22 @@ export default function Home() {
             </div>
             <div className="flex flex-wrap gap-2">
               {slates && slates.length > 0 && (
-                <button
-                  type="button"
-                  onClick={downloadAllSlatesPdfFile}
-                  className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
-                >
-                  Export all slates (PDF)
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={runOptimizeUtilization}
+                    className="rounded-full bg-emerald-700 px-4 py-2 text-xs font-semibold text-white"
+                  >
+                    Optimize Utilization
+                  </button>
+                  <button
+                    type="button"
+                    onClick={downloadAllSlatesPdfFile}
+                    className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
+                  >
+                    Export all slates (PDF)
+                  </button>
+                </>
               )}
               <button
                 type="button"
@@ -2010,6 +2699,8 @@ export default function Home() {
                 const occupiedMinutes = surgicalMinutes + turnaroundMinutes;
                 const utilizationPct =
                   slate.blockMinutes > 0 ? (occupiedMinutes / slate.blockMinutes) * 100 : 0;
+                const isLocked = Boolean(lockedSlates[slateDate]);
+                const isCollapsed = Boolean(collapsedSlates[slateDate]);
 
                 return (
                   <div
@@ -2017,15 +2708,45 @@ export default function Home() {
                     className="rounded-2xl border border-sand-200 bg-white/70 p-5"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-4">
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.2em] text-sand-600">
-                          Slate {slateIndex + 1}
-                        </p>
-                        <h3 className="mt-1 text-lg font-semibold text-slateBlue-900">
-                          {orderedSlate.length} cases on {slateDate || "unspecified date"}
-                        </h3>
+                      <div className="flex items-start gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCollapsedSlates((prev) => ({ ...prev, [slateDate]: !prev[slateDate] }))
+                          }
+                          aria-label={isCollapsed ? "Expand slate" : "Collapse slate"}
+                          className="mt-0.5 rounded-full border border-sand-300 bg-white px-2 py-1 text-xs text-sand-600"
+                        >
+                          {isCollapsed ? "▸" : "▾"}
+                        </button>
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.2em] text-sand-600">
+                            Slate {slateIndex + 1}
+                          </p>
+                          <h3 className="mt-1 text-lg font-semibold text-slateBlue-900">
+                            {orderedSlate.length} cases on {slateDate || "unspecified date"}
+                          </h3>
+                        </div>
+                        {isLocked && (
+                          <span className="mt-0.5 rounded-full bg-amber-100 px-2 py-1 text-[11px] font-semibold text-amber-800">
+                            🔒 Locked
+                          </span>
+                        )}
                       </div>
                       <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setLockedSlates((prev) => ({ ...prev, [slateDate]: !prev[slateDate] }))
+                          }
+                          className={`rounded-full border px-4 py-2 text-xs font-semibold ${
+                            isLocked
+                              ? "border-amber-300 bg-amber-50 text-amber-800"
+                              : "border-slateBlue-200 text-slateBlue-700"
+                          }`}
+                        >
+                          {isLocked ? "Unlock slate" : "Lock slate"}
+                        </button>
                         <button
                           type="button"
                           onClick={() => downloadSlatePdfFile(slateIndex)}
@@ -2050,6 +2771,8 @@ export default function Home() {
                       </div>
                     </div>
 
+                    {!isCollapsed && (
+                    <>
                     <div className="mt-4 grid gap-3 sm:grid-cols-2">
                       <StatCard
                         label="Utilization"
@@ -2073,7 +2796,11 @@ export default function Home() {
                       </p>
                     </div>
 
-                    <div className="mt-4 flex flex-col gap-3">
+                    <div
+                      className="mt-4 flex min-h-[3rem] flex-col gap-3"
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => handleDropOnSlate(event, slateIndex)}
+                    >
                       {schedule.map(({ item, start, end, tatAfter, tatEnd }, index) => (
                         <Fragment key={item.caseId}>
                         <div
@@ -2169,13 +2896,19 @@ export default function Home() {
                                 className="rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
                               />
                             </label>
-                            <button
-                              type="button"
-                              onClick={() => removeFromSuggestedSlates(item.caseId)}
-                              className="rounded-full border border-sand-300 bg-white px-3 py-1 text-xs font-semibold text-sand-800"
-                            >
-                              Remove from suggested slates
-                            </button>
+                            {isLocked ? (
+                              <span className="rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
+                                🔒 Locked — unlock slate to remove
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => removeFromSuggestedSlates(item.caseId)}
+                                className="rounded-full border border-sand-300 bg-white px-3 py-1 text-xs font-semibold text-sand-800"
+                              >
+                                Remove from suggested slates
+                              </button>
+                            )}
                           </div>
                         </div>
                         {tatAfter && (
@@ -2190,9 +2923,116 @@ export default function Home() {
                         </Fragment>
                       ))}
                     </div>
+                    </>
+                    )}
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {optimizeReport && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+              <div className="w-full max-w-2xl max-h-[80vh] overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-semibold text-slateBlue-900">
+                    Optimize Utilization — Summary
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={() => setOptimizeReport(null)}
+                    className="rounded-full border border-sand-300 px-3 py-1 text-xs font-semibold text-slateBlue-700"
+                  >
+                    Close
+                  </button>
+                </div>
+                <div className="mt-4 flex flex-col gap-3 text-sm text-sand-800">
+                  {optimizeReport.perSlate.map((s) => (
+                    <div key={s.slateIndex} className="rounded-xl border border-sand-200 p-3">
+                      <p className="font-semibold text-slateBlue-900">
+                        Slate {s.slateIndex + 1} · {s.dateISO || "unspecified date"}
+                      </p>
+                      <p className="text-xs text-sand-700">
+                        Utilization {s.beforePct.toFixed(1)}% → {s.afterPct.toFixed(1)}%
+                      </p>
+                      {s.added.length > 0 && (
+                        <p className="mt-1 text-xs text-emerald-700">Added: {s.added.join(", ")}</p>
+                      )}
+                      {s.removed.length > 0 && (
+                        <p className="mt-1 text-xs text-rose-700">Removed: {s.removed.join(", ")}</p>
+                      )}
+                      {s.added.length === 0 && s.removed.length === 0 && (
+                        <p className="mt-1 text-xs text-sand-500">No changes.</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="card p-6">
+          <button
+            type="button"
+            onClick={() => setWaitlistPanelCollapsed((v) => !v)}
+            className="flex w-full items-center justify-between gap-4 text-left"
+          >
+            <div>
+              <h2 className="text-lg font-semibold text-slateBlue-900">Priority Waitlist</h2>
+              <p className="text-sm text-sand-700">
+                Drag patients onto a slate to add them, or off a slate to send them back here.
+              </p>
+            </div>
+            <span className="shrink-0 rounded-full border border-sand-300 bg-white px-3 py-1 text-xs font-semibold text-slateBlue-700">
+              {waitlistPanelCollapsed ? "Show ▸" : "Hide ▾"}
+            </span>
+          </button>
+
+          {!waitlistPanelCollapsed && (
+            <div className="mt-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="search"
+                  value={waitlistQuery}
+                  onChange={(event) => setWaitlistQuery(event.target.value)}
+                  placeholder="Search name, code or procedure…"
+                  className="min-w-[200px] flex-1 rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+                <label className="flex items-center gap-1.5 text-xs text-sand-700">
+                  <input
+                    type="checkbox"
+                    checked={waitlistOverdueOnly}
+                    onChange={(event) => setWaitlistOverdueOnly(event.target.checked)}
+                  />
+                  Overdue only
+                </label>
+                <label className="flex items-center gap-1.5 text-xs text-sand-700">
+                  <input
+                    type="checkbox"
+                    checked={waitlistUnslatedOnly}
+                    onChange={(event) => setWaitlistUnslatedOnly(event.target.checked)}
+                  />
+                  Not yet slated
+                </label>
+              </div>
+              <p className="mt-2 text-xs text-sand-600">
+                Showing {filteredWaitlist.length} of {orderedByUrgency.length}
+              </p>
+              <div
+                className="mt-2 flex min-h-[3rem] flex-col gap-1.5 text-sm"
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={handleDropOnWaitlist}
+              >
+                {filteredWaitlist.map(({ item, rank }) => renderWaitlistRow(item, rank))}
+                {filteredWaitlist.length === 0 && (
+                  <div className="rounded-2xl border border-dashed border-sand-300 bg-white/70 px-3 py-6 text-center text-xs text-sand-700">
+                    {orderedByUrgency.length === 0
+                      ? "No office waitlist loaded yet."
+                      : "No patients match the filter."}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -2271,131 +3111,12 @@ export default function Home() {
             Showing {filteredWaitlist.length} of {orderedByUrgency.length}
           </p>
 
-          <div className="mt-2 flex flex-col gap-1.5 text-sm">
-            {filteredWaitlist.map(({ item, rank }) => {
-              const expanded = Boolean(expandedCaseIds[item.caseId]);
-              return (
-                <div key={item.caseId} className="rounded-xl border border-sand-200 bg-white/70">
-                  <button
-                    type="button"
-                    onClick={() => toggleExpanded(item.caseId)}
-                    className="flex w-full items-center gap-3 px-3 py-2 text-left"
-                  >
-                    <span className="w-6 shrink-0 text-xs font-semibold text-sand-500">{rank}</span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate font-semibold text-slateBlue-900">
-                        {item.displayLabel}
-                        <span className="ml-1.5 text-[10px] uppercase tracking-wider text-sand-400">
-                          {item.caseId}
-                        </span>
-                      </span>
-                      {item.procedureName && (
-                        <span className="block truncate text-xs text-sand-600">
-                          {item.procedureName}
-                        </span>
-                      )}
-                    </span>
-                    <UrgencyBadge
-                      benchmarkWeeks={item.benchmarkWeeks}
-                      timeToTargetDays={item.timeToTargetDays}
-                    />
-                    <span className="hidden shrink-0 text-xs text-sand-600 sm:inline">
-                      {item.estimatedDurationMin}m
-                    </span>
-                    {selectedCaseIds.has(item.caseId) ? (
-                      <span className="shrink-0 rounded-full bg-slateBlue-100 px-2 py-0.5 text-[11px] text-slateBlue-700">
-                        Slated
-                      </span>
-                    ) : (
-                      <span className="shrink-0 rounded-full bg-sand-100 px-2 py-0.5 text-[11px] text-sand-600">
-                        Waiting
-                      </span>
-                    )}
-                    <span className="shrink-0 text-sand-400">{expanded ? "▾" : "▸"}</span>
-                  </button>
-
-                  {expanded && (
-                    <div className="border-t border-sand-200 px-3 py-3 text-xs text-sand-700">
-                      <div className="text-sand-600">
-                        TTT {item.timeToTargetDays}d · Surgeon ID {item.surgeonId}
-                        {item.unavailableUntil
-                          ? ` · unavailable until ${item.unavailableUntil}`
-                          : ""}
-                      </div>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {clinicalFlagDefinitions
-                          .filter((flag) => item.flags?.[flag.key])
-                          .map((flag) => (
-                            <span
-                              key={`${item.caseId}-${flag.key}`}
-                              className="rounded-full bg-sand-100 px-2 py-1 text-sand-800"
-                            >
-                              {flag.label}
-                            </span>
-                          ))}
-                        {item.inpatient && (
-                          <span className="rounded-full bg-sand-200 px-2 py-1 text-sand-800">
-                            Inpatient
-                          </span>
-                        )}
-                        {removedFromSlateSuggestions[item.caseId] && (
-                          <span className="rounded-full bg-sand-200 px-2 py-1 text-sand-800">
-                            Removed from suggestions
-                          </span>
-                        )}
-                      </div>
-                      <div className="mt-2 flex flex-wrap gap-3">
-                        {clinicalFlagDefinitions.map((flag) => (
-                          <label
-                            key={`${item.caseId}-${flag.key}`}
-                            className="flex items-center gap-2"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={Boolean(item.flags?.[flag.key])}
-                              onChange={(event) =>
-                                updateFlag(item.caseId, flag.key, event.target.checked)
-                              }
-                            />
-                            {flag.label}
-                          </label>
-                        ))}
-                        <label className="flex items-center gap-2">
-                          Patient unavailable until
-                          <input
-                            type="date"
-                            value={item.unavailableUntil ?? ""}
-                            onChange={(event) =>
-                              updateUnavailableUntil(item.caseId, event.target.value)
-                            }
-                            className="rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
-                          />
-                        </label>
-                      </div>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {removedFromSlateSuggestions[item.caseId] ? (
-                          <button
-                            type="button"
-                            onClick={() => restoreToSuggestedSlates(item.caseId)}
-                            className="rounded-full border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
-                          >
-                            Restore to suggested slates
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => removeFromSuggestedSlates(item.caseId)}
-                            className="rounded-full border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
-                          >
-                            Remove from suggested slates
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+          <div
+            className="mt-2 flex min-h-[3rem] flex-col gap-1.5 text-sm"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={handleDropOnWaitlist}
+          >
+            {filteredWaitlist.map(({ item, rank }) => renderWaitlistRow(item, rank))}
 
             {filteredWaitlist.length === 0 && (
               <div className="rounded-2xl border border-dashed border-sand-300 bg-white/70 px-3 py-6 text-center text-xs text-sand-700">
