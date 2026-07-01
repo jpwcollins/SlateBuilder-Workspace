@@ -17,7 +17,7 @@ import {
   priorityScoreOf,
   TURNAROUND_MINUTES,
 } from "@slatebuilder/core";
-import { downloadWaitlistPdf, WaitlistPdfRow } from "./slatePdf";
+import { downloadWaitlistPdf, WaitlistPdfRow } from "@slatebuilder/core/slatePdf";
 
 type ProTab = "setup" | "slates" | "waitlist" | "long";
 const PRO_TAB_KEY = "slatebuilder-pro-tab";

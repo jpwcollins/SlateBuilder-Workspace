@@ -19,7 +19,7 @@ import {
   SlatePdfCase,
   SlatePdfOptions,
   WaitlistPdfRow,
-} from "./slatePdf";
+} from "@slatebuilder/core/slatePdf";
 import {
   ClinicalFlagKey,
   formatMinutesToTime,
