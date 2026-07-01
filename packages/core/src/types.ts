@@ -31,6 +31,11 @@ export type PatientCase = {
   sourceKey: string;
   /** Human-readable label shown on screen to staff (may contain PHI). */
   displayLabel: string;
+  /**
+   * Stable patient reference (the PHN) used only in the browser to derive the
+   * pseudonymized cloud-sync token. Never exported and never sent to the server.
+   */
+  patientRef?: string;
   benchmarkWeeks: BenchmarkWeeks;
   timeToTargetDays: number;
   estimatedDurationMin: number;

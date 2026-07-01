@@ -1,6 +1,16 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import {
+  SyncedState,
+  buildCaseTokens,
+  changePassword,
+  fetchState,
+  loginOffice,
+  logoutOffice,
+  putState,
+  resetPassword,
+} from "../lib/sync";
 import * as XLSX from "xlsx";
 import {
   downloadSlatePdf,
@@ -105,6 +115,7 @@ function normalizeOfficeWorkbookToCsv(rows: SpreadsheetRow[]): string {
   // Office exports always express TARGET_TIME and TIME_WAITING in weeks.
   const headers = [
     "source_key",
+    "patient_ref",
     "benchmark",
     "time_waiting_weeks",
     "estimated_duration_min",
@@ -125,8 +136,11 @@ function normalizeOfficeWorkbookToCsv(rows: SpreadsheetRow[]): string {
     const timeWaiting = String(row["TIME_WAITING"] ?? "").trim();
 
     const sourceKey = patientName || phn || `Office row ${index + 2}`;
+    // patient_ref (PHN) is the stable key for cloud-sync tokens; it stays in the
+    // browser and is never written to slate/mapping/priority exports.
     const values = [
       sourceKey,
+      phn,
       targetTime,
       timeWaiting,
       "",
@@ -352,6 +366,22 @@ export default function Home() {
   const [waitlistQuery, setWaitlistQuery] = useState("");
   const [waitlistOverdueOnly, setWaitlistOverdueOnly] = useState(false);
   const [waitlistUnslatedOnly, setWaitlistUnslatedOnly] = useState(false);
+  // Cloud sync (pseudonymized): officeKey lives only in memory.
+  const [officeIdInput, setOfficeIdInput] = useState("");
+  const [officePassword, setOfficePassword] = useState("");
+  const [officeKey, setOfficeKey] = useState<Uint8Array | null>(null);
+  const [signedInId, setSignedInId] = useState<string | null>(null);
+  const [caseTokens, setCaseTokens] = useState<Record<string, string>>({});
+  const [planStatus, setPlanStatus] = useState<"draft" | "finalized">("draft");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<string>("");
+  const [showReset, setShowReset] = useState(false);
+  const [showChangePw, setShowChangePw] = useState(false);
+  const [recoveryCodeInput, setRecoveryCodeInput] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const syncVersionRef = useRef(0);
+  const lastSyncedJsonRef = useRef<string>("");
+  const tokensReadyRef = useRef(false);
 
   useEffect(() => {
     if (!csvText) return;
@@ -612,6 +642,223 @@ export default function Home() {
     const total = groups.reduce((sum, g) => sum + g.cases.length, 0);
     return { groups, total };
   }, [officeCasesWithOverrides]);
+
+  // ---- Cloud sync (token-keyed, no PHI) ------------------------------------
+
+  const tokenToCaseId = useMemo(() => {
+    const map: Record<string, string> = {};
+    Object.entries(caseTokens).forEach(([caseId, token]) => {
+      map[token] = caseId;
+    });
+    return map;
+  }, [caseTokens]);
+
+  // Recompute patient tokens whenever the office key or the uploaded cases change.
+  useEffect(() => {
+    if (!officeKey || cases.length === 0) {
+      setCaseTokens({});
+      tokensReadyRef.current = false;
+      return;
+    }
+    let cancelled = false;
+    buildCaseTokens(officeKey, cases).then((map) => {
+      if (!cancelled) {
+        setCaseTokens(map);
+        tokensReadyRef.current = true;
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [officeKey, cases]);
+
+  const buildSyncedState = (): SyncedState => {
+    const patientState: SyncedState["patientState"] = {};
+    Object.entries(caseTokens).forEach(([caseId, token]) => {
+      const entry: SyncedState["patientState"][string] = {};
+      if (unavailableOverrides[caseId]) entry.unavailableUntil = unavailableOverrides[caseId];
+      if (durationOverrides[caseId]) entry.durationOverrideMin = durationOverrides[caseId];
+      if (flagOverrides[caseId]) entry.flagOverrides = flagOverrides[caseId];
+      if (removedFromSlateSuggestions[caseId]) entry.removed = true;
+      if (Object.keys(entry).length > 0) patientState[token] = entry;
+    });
+    const activeDates = slateDates.slice(0, slateCount);
+    const assignments: Record<string, string[]> = {};
+    activeDates.forEach((date, i) => {
+      assignments[date] = (orderedSlateCaseIds[i] ?? [])
+        .map((caseId) => caseTokens[caseId])
+        .filter(Boolean);
+    });
+    return {
+      v: 1,
+      patientState,
+      plan: { status: planStatus, slateDates: activeDates, assignments, updatedAt: new Date().toISOString() },
+      settings: { defaultDurations, priorityMode, slateCount },
+    };
+  };
+
+  const applySyncedState = (state: SyncedState, t2c: Record<string, string>) => {
+    setDefaultDurations(state.settings.defaultDurations);
+    setPriorityMode(state.settings.priorityMode);
+    setSlateCount(state.settings.slateCount || 2);
+    setPlanStatus(state.plan.status);
+
+    const dur: Record<string, number> = {};
+    const unavail: Record<string, string> = {};
+    const flags: Record<string, Partial<Record<ClinicalFlagKey, boolean>>> = {};
+    const removed: Record<string, boolean> = {};
+    Object.entries(state.patientState).forEach(([token, ps]) => {
+      const caseId = t2c[token];
+      if (!caseId) return;
+      if (ps.unavailableUntil) unavail[caseId] = ps.unavailableUntil;
+      if (ps.durationOverrideMin) dur[caseId] = ps.durationOverrideMin;
+      if (ps.flagOverrides) flags[caseId] = ps.flagOverrides;
+      if (ps.removed) removed[caseId] = true;
+    });
+    setDurationOverrides(dur);
+    setUnavailableOverrides(unavail);
+    setFlagOverrides(flags);
+    setRemovedFromSlateSuggestions(removed);
+    if (state.plan.slateDates.length > 0) setSlateDates(state.plan.slateDates);
+    setOrderedSlateCaseIds(
+      state.plan.slateDates.map((date) =>
+        (state.plan.assignments[date] ?? []).map((token) => t2c[token]).filter(Boolean)
+      )
+    );
+    lastSyncedJsonRef.current = JSON.stringify(state);
+  };
+
+  const loadFromCloud = async (key: Uint8Array, t2c: Record<string, string>) => {
+    const { state, version } = await fetchState(key);
+    syncVersionRef.current = version;
+    applySyncedState(state, t2c);
+    setSyncStatus(`Synced · v${version} · ${state.plan.status}`);
+  };
+
+  const handleReset = async () => {
+    const id = officeIdInput.trim().toLowerCase();
+    if (!id || !recoveryCodeInput.trim() || newPassword.length < 8) {
+      setSyncStatus("Enter office, recovery code, and an 8+ character new password.");
+      return;
+    }
+    setAuthBusy(true);
+    try {
+      const key = await resetPassword(id, recoveryCodeInput, newPassword);
+      setOfficeKey(key);
+      setSignedInId(id);
+      setRecoveryCodeInput("");
+      setNewPassword("");
+      setOfficePassword("");
+      setShowReset(false);
+      lastSyncedJsonRef.current = "";
+      setSyncStatus("Password reset · signed in · loading…");
+    } catch (e) {
+      setSyncStatus(e instanceof Error ? e.message : "Reset failed.");
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleChangePassword = async () => {
+    if (!officeKey || newPassword.length < 8) {
+      setSyncStatus("Enter an 8+ character new password.");
+      return;
+    }
+    setAuthBusy(true);
+    try {
+      await changePassword(officeKey, officePassword, newPassword);
+      setOfficePassword("");
+      setNewPassword("");
+      setShowChangePw(false);
+      setSyncStatus("Password changed");
+    } catch (e) {
+      setSyncStatus(e instanceof Error ? e.message : "Could not change password.");
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleLogin = async () => {
+    const id = officeIdInput.trim().toLowerCase();
+    if (!id || !officePassword) {
+      setSyncStatus("Enter your office name and password.");
+      return;
+    }
+    setAuthBusy(true);
+    try {
+      const key = await loginOffice(id, officePassword);
+      setOfficeKey(key);
+      setSignedInId(id);
+      setOfficePassword("");
+      setSyncStatus("Signed in · loading…");
+      // State is applied once tokens are ready (see effect below).
+    } catch (e) {
+      setSyncStatus(e instanceof Error ? e.message : "Sign-in failed.");
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    await logoutOffice();
+    setOfficeKey(null);
+    setSignedInId(null);
+    setCaseTokens({});
+    syncVersionRef.current = 0;
+    lastSyncedJsonRef.current = "";
+    setSyncStatus("Signed out");
+  };
+
+  // Once signed in and tokens are computed, pull the office's cloud state.
+  useEffect(() => {
+    if (!officeKey || !signedInId || Object.keys(caseTokens).length === 0) return;
+    if (lastSyncedJsonRef.current) return; // already loaded this session
+    loadFromCloud(officeKey, tokenToCaseId).catch(() => setSyncStatus("Could not load cloud state."));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [officeKey, signedInId, caseTokens]);
+
+  // Debounced auto-save of the (non-PHI) working state. A dirty check on the
+  // serialized state prevents save loops; version refs drive optimistic concurrency.
+  useEffect(() => {
+    if (!officeKey || !signedInId || Object.keys(caseTokens).length === 0) return;
+    const handle = setTimeout(async () => {
+      const next = buildSyncedState();
+      const json = JSON.stringify(next);
+      if (json === lastSyncedJsonRef.current) return;
+      setSyncStatus("Saving…");
+      try {
+        const result = await putState(officeKey, next, syncVersionRef.current);
+        if ("conflict" in result) {
+          const { state, version } = await fetchState(officeKey);
+          syncVersionRef.current = version;
+          applySyncedState(state, tokenToCaseId);
+          setSyncStatus("Loaded a newer version from another device");
+        } else {
+          syncVersionRef.current = result.version;
+          lastSyncedJsonRef.current = json;
+          setSyncStatus(`Synced · v${result.version} · ${next.plan.status}`);
+        }
+      } catch {
+        setSyncStatus("Offline — changes not synced");
+      }
+    }, 1200);
+    return () => clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    officeKey,
+    signedInId,
+    caseTokens,
+    unavailableOverrides,
+    durationOverrides,
+    flagOverrides,
+    removedFromSlateSuggestions,
+    slateDates,
+    slateCount,
+    orderedSlateCaseIds,
+    defaultDurations,
+    priorityMode,
+    planStatus,
+  ]);
 
   const updateSlateDate = (index: number, value: string) => {
     setSlateDates((prev) => {
@@ -1384,9 +1631,10 @@ export default function Home() {
             block is then filled to complete as many further cases as possible.
           </p>
           <p className="mt-3 max-w-3xl text-xs leading-6 text-sand-600">
-            Patient data never leaves this device. Each case gets an opaque code (e.g. C-001);
-            exports use that code unless you opt to include names. Saved work is encrypted with your
-            passphrase, and autosave is cleared when you close the tab.
+            Patient names and PHNs never leave this device. Each case gets an opaque code (e.g.
+            C-001); exports use that code unless you opt to include names. When you sign in, only
+            pseudonymized, end-to-end-encrypted working data is synced to the cloud — never names,
+            PHNs, or diagnoses.
           </p>
           <div className="mt-6 flex flex-wrap items-center gap-3 text-xs text-sand-700">
             <a
@@ -1398,7 +1646,7 @@ export default function Home() {
               User guide ↗
             </a>
             <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
-              Local browser processing only
+              Names &amp; PHNs stay on device
             </span>
             <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
               Encrypted saves
@@ -1409,6 +1657,176 @@ export default function Home() {
           </div>
         </div>
       </header>
+
+      <section className="card p-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-slateBlue-900">Office account &amp; sync</h2>
+            <p className="text-sm text-sand-700">
+              Sign in to share draft slates across devices. Only pseudonymized, encrypted working
+              data is stored in the cloud — names and PHNs never leave this device.
+            </p>
+          </div>
+          {signedInId && (
+            <div className="flex items-center gap-3">
+              <span className="inline-flex items-center gap-1.5 text-xs text-emerald-700">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                {signedInId}
+              </span>
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="rounded-full border border-sand-300 px-3 py-1 text-xs font-semibold text-sand-800"
+              >
+                Sign out
+              </button>
+            </div>
+          )}
+        </div>
+
+        {!signedInId ? (
+          <div className="mt-4 flex flex-wrap items-end gap-3">
+            <label className="flex min-w-[180px] flex-1 flex-col gap-2 text-xs text-sand-700">
+              Office name
+              <input
+                type="text"
+                value={officeIdInput}
+                onChange={(event) => setOfficeIdInput(event.target.value)}
+                placeholder="e.g. bcwh-gyne-collins"
+                className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="flex min-w-[180px] flex-1 flex-col gap-2 text-xs text-sand-700">
+              Password
+              <input
+                type="password"
+                value={officePassword}
+                onChange={(event) => setOfficePassword(event.target.value)}
+                placeholder="Shared office password"
+                className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={authBusy}
+              onClick={() => void handleLogin()}
+              className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+            >
+              Sign in
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowReset((v) => !v)}
+              className="text-xs font-semibold text-slateBlue-700 underline"
+            >
+              Forgot password?
+            </button>
+          </div>
+        ) : (
+          <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-sand-700">
+            <span className="font-semibold text-sand-900">
+              Draft status:
+              <span
+                className={`ml-2 rounded-full px-2 py-0.5 ${
+                  planStatus === "finalized"
+                    ? "bg-emerald-100 text-emerald-700"
+                    : "bg-amber-100 text-amber-800"
+                }`}
+              >
+                {planStatus}
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setPlanStatus(planStatus === "finalized" ? "draft" : "finalized")}
+              className="rounded-full border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
+            >
+              {planStatus === "finalized" ? "Reopen as draft" : "Mark finalized"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowChangePw((v) => !v)}
+              className="font-semibold text-slateBlue-700 underline"
+            >
+              Change password
+            </button>
+            {cases.length === 0 && (
+              <span className="text-sand-500">Upload this month&apos;s waitlist to re-link saved work.</span>
+            )}
+          </div>
+        )}
+
+        {!signedInId && showReset && (
+          <div className="mt-4 rounded-xl border border-sand-200 bg-white/70 p-4">
+            <p className="text-xs font-semibold text-sand-900">Reset password with recovery code</p>
+            <div className="mt-3 flex flex-wrap items-end gap-3">
+              <label className="flex min-w-[220px] flex-1 flex-col gap-2 text-xs text-sand-700">
+                Recovery code
+                <input
+                  type="text"
+                  value={recoveryCodeInput}
+                  onChange={(event) => setRecoveryCodeInput(event.target.value)}
+                  placeholder="From your administrator"
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="flex min-w-[160px] flex-1 flex-col gap-2 text-xs text-sand-700">
+                New password
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <button
+                type="button"
+                disabled={authBusy}
+                onClick={() => void handleReset()}
+                className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+              >
+                Reset &amp; sign in
+              </button>
+            </div>
+          </div>
+        )}
+
+        {signedInId && showChangePw && (
+          <div className="mt-4 rounded-xl border border-sand-200 bg-white/70 p-4">
+            <p className="text-xs font-semibold text-sand-900">Change password</p>
+            <div className="mt-3 flex flex-wrap items-end gap-3">
+              <label className="flex min-w-[160px] flex-1 flex-col gap-2 text-xs text-sand-700">
+                Current password
+                <input
+                  type="password"
+                  value={officePassword}
+                  onChange={(event) => setOfficePassword(event.target.value)}
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="flex min-w-[160px] flex-1 flex-col gap-2 text-xs text-sand-700">
+                New password
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <button
+                type="button"
+                disabled={authBusy}
+                onClick={() => void handleChangePassword()}
+                className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+              >
+                Update password
+              </button>
+            </div>
+          </div>
+        )}
+
+        {syncStatus && <p className="mt-3 text-xs text-sand-600">{syncStatus}</p>}
+      </section>
 
       <section className="grid gap-6 lg:grid-cols-[0.95fr_1.05fr]">
         <div className="card p-6">

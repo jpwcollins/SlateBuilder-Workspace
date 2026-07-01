@@ -10,6 +10,8 @@ const headerAliases: Record<string, string> = {
   sourcekey: "source_key",
   patient_key: "source_key",
   patient_identifier: "source_key",
+  patient_ref: "patient_ref",
+  phn: "patient_ref",
   benchmark: "benchmark",
   benchmark_weeks: "benchmark",
   benchmark_time: "benchmark",
@@ -157,11 +159,13 @@ export function parseCsv(text: string): ParseResult {
       }
     }
 
+    const patientRef = record["patient_ref"] || undefined;
     caseSeq += 1;
     cases.push({
       caseId: `C-${String(caseSeq).padStart(3, "0")}`,
       sourceKey,
       displayLabel,
+      patientRef,
       benchmarkWeeks,
       timeToTargetDays: roundedTimeToTargetDays,
       estimatedDurationMin,
