@@ -1,4 +1,4 @@
-import { createClient } from "@vercel/kv";
+import { Redis } from "@upstash/redis";
 import type { EncryptedEnvelope, SealedBlob } from "@slatebuilder/core";
 
 // Per-office server record. Holds only auth material, the wrapped office key
@@ -23,28 +23,25 @@ export interface OfficeStore {
 
 const key = (officeId: string) => `office:${officeId}`;
 
-// ---- Durable Vercel KV (Upstash) store -------------------------------------
-function kvStore(): OfficeStore {
-  const kv = createClient({
-    url: process.env.KV_REST_API_URL as string,
-    token: process.env.KV_REST_API_TOKEN as string,
+// ---- Durable Upstash Redis store -------------------------------------------
+function redisStore(): OfficeStore {
+  const redis = new Redis({
+    url: process.env.UPSTASH_REDIS_REST_URL as string,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN as string,
   });
   return {
     async get(officeId) {
-      return (await kv.get<OfficeRecord>(key(officeId))) ?? null;
+      return (await redis.get<OfficeRecord>(key(officeId))) ?? null;
     },
     async create(record, overwrite = false) {
-      if (!overwrite) {
-        const ok = await kv.set(key(record.officeId), record, { nx: true });
-        return ok === "OK";
-      }
-      await kv.set(key(record.officeId), record);
-      return true;
+      // SET with NX creates only if absent; returns "OK" or null.
+      const ok = await redis.set(key(record.officeId), record, overwrite ? undefined : { nx: true });
+      return ok === "OK";
     },
     async update(officeId, patch) {
-      const existing = await kv.get<OfficeRecord>(key(officeId));
+      const existing = await redis.get<OfficeRecord>(key(officeId));
       if (!existing) return;
-      await kv.set(key(officeId), { ...existing, ...patch, updatedAt: new Date().toISOString() });
+      await redis.set(key(officeId), { ...existing, ...patch, updatedAt: new Date().toISOString() });
     },
   };
 }
@@ -71,5 +68,5 @@ const memoryStore: OfficeStore = {
 };
 
 export function getOfficeStore(): OfficeStore {
-  return process.env.KV_REST_API_URL ? kvStore() : memoryStore;
+  return process.env.UPSTASH_REDIS_REST_URL ? redisStore() : memoryStore;
 }

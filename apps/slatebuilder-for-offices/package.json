@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@slatebuilder/core": "file:../../packages/core",
-    "@vercel/kv": "^3.0.0",
+    "@upstash/redis": "^1.38.0",
     "jspdf": "^4.2.1",
     "next": "^16.1.6",
     "react": "18.3.1",
