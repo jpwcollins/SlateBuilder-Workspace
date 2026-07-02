@@ -36,17 +36,12 @@ export async function PUT(req: NextRequest) {
   }
 
   const store = getOfficeStore();
-  const office = await store.get(officeId);
-  if (!office) return NextResponse.json({ error: "Unknown office." }, { status: 404 });
-
-  if (office.stateVersion !== expectedVersion) {
-    return NextResponse.json(
-      { error: "conflict", version: office.stateVersion },
-      { status: 409 }
-    );
+  const result = await store.casState(officeId, expectedVersion, ciphertext);
+  if (!result.ok) {
+    if (result.version === null) {
+      return NextResponse.json({ error: "Unknown office." }, { status: 404 });
+    }
+    return NextResponse.json({ error: "conflict", version: result.version }, { status: 409 });
   }
-
-  const nextVersion = office.stateVersion + 1;
-  await store.update(officeId, { stateCiphertext: ciphertext, stateVersion: nextVersion });
-  return NextResponse.json({ version: nextVersion });
+  return NextResponse.json({ version: result.version });
 }

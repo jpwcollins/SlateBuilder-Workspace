@@ -48,13 +48,19 @@ export function readSessionToken(token: string | undefined): string | null {
   }
 }
 
+// Secure is skipped only for local (non-production) dev over plain HTTP —
+// production is always served over HTTPS, so the cookie must never be sent
+// in the clear there.
+const COOKIE_SECURITY_FLAGS =
+  process.env.NODE_ENV === "production" ? "; HttpOnly; Secure; SameSite=Lax" : "; HttpOnly; SameSite=Lax";
+
 export const sessionCookie = {
   name: SESSION_COOKIE,
   serialize(value: string): string {
     const maxAge = Math.floor(SESSION_TTL_MS / 1000);
-    return `${SESSION_COOKIE}=${value}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
+    return `${SESSION_COOKIE}=${value}${COOKIE_SECURITY_FLAGS}; Path=/; Max-Age=${maxAge}`;
   },
   clear(): string {
-    return `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`;
+    return `${SESSION_COOKIE}=${COOKIE_SECURITY_FLAGS}; Path=/; Max-Age=0`;
   },
 };
