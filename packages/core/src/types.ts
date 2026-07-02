@@ -1,5 +1,19 @@
 export type BenchmarkWeeks = 2 | 4 | 6 | 12 | 26;
 
+/** Canonical most-urgent-to-least-urgent ordering of the benchmark classes. */
+export const BENCHMARK_WEEKS_ORDER: BenchmarkWeeks[] = [2, 4, 6, 12, 26];
+
+/** "ttt" sorts purely by time-to-target; "urgency_then_ttt" uses the composite priority score. */
+export type PriorityMode = "ttt" | "urgency_then_ttt";
+
+/** Per-procedure-bucket default case durations (minutes), editable per office/surgeon. */
+export type DefaultDurations = {
+  hysteroscopy: number;
+  laparoscopy: number;
+  hysterectomy: number;
+  other: number;
+};
+
 export const clinicalFlagDefinitions = [
   { key: "osa", label: "OSA", csvColumn: "osa" },
   { key: "diabetes", label: "Diabetes", csvColumn: "diabetes" },
