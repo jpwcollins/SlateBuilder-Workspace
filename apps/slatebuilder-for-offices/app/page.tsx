@@ -86,6 +86,12 @@ type OptimizeReport = {
     added: string[];
     removed: string[];
   }[];
+  // Over-target cases that could not be fit into any unlocked slate during
+  // this pass (e.g. every slate is already full). Optimize Utilization never
+  // bumps an over-target case in favor of a not-yet-overdue one, but a case
+  // this large/constrained genuinely not fitting anywhere is still possible
+  // and must be surfaced, not left for staff to notice later on their own.
+  unplacedOverdue: string[];
 };
 
 type OfficeTab = "setup" | "slates" | "waitlist" | "long";
@@ -1617,15 +1623,26 @@ export default function Home() {
     setDefaultsSavedAt(new Date().toLocaleTimeString());
   };
 
-  // Rearranges every unlocked slate to pack in as much OR time as possible
-  // (first-fit-decreasing bin packing by case duration), ignoring priority
-  // order entirely. Locked slates are left untouched and excluded from the
-  // pool of movable cases. Confirms first, then reports what changed.
+  // Rearranges every unlocked slate to pack in as much OR time as possible.
+  // Over-target ("anchored") cases are placed first, most urgent first, into
+  // whichever unlocked slate fits them tightest -- mirroring the anchored-
+  // hybrid guarantee the rest of the app makes (Long-waiters: "guaranteed
+  // onto slates before any not-yet-overdue case"). Only once every anchored
+  // case that can fit somewhere has been placed does the remaining room get
+  // filled with not-yet-overdue cases via first-fit-decreasing bin packing.
+  // This still reorders which slate an anchored case lands on and can bump
+  // not-yet-overdue cases entirely, but it will never bump an overdue case
+  // in favor of one that isn't. Locked slates are left untouched and
+  // excluded from the pool of movable cases. Confirms first, then reports
+  // what changed (including any overdue case that still couldn't be fit
+  // anywhere, which is called out separately rather than left for staff to
+  // notice on their own).
   const runOptimizeUtilization = () => {
     if (slateSlots.length === 0) return;
     const confirmed = window.confirm(
       "Optimize Utilization will rearrange patients across unlocked slates to pack in as much OR " +
-        "time as possible. This may override the usual priority order. Locked slates are left " +
+        "time as possible. Overdue patients are placed first and are never bumped in favor of a " +
+        "not-yet-overdue one, though which slate they land on may change. Locked slates are left " +
         "untouched. Continue?"
     );
     if (!confirmed) return;
@@ -1683,10 +1700,10 @@ export default function Home() {
       surgicalMinutes: 0,
     }));
 
-    // First-fit-decreasing: largest cases first, placed into whichever bin
-    // leaves the least room (tightest fit), maximizing total time packed.
-    const sortedPool = [...pool].sort((a, b) => b.estimatedDurationMin - a.estimatedDurationMin);
-    for (const item of sortedPool) {
+    // Places one case into whichever eligible bin leaves the least room
+    // (tightest fit), maximizing total time packed. Returns whether it found
+    // a home.
+    const placeInTightestBin = (item: ScoredCase): boolean => {
       let best: Bin | null = null;
       let bestRemaining = Infinity;
       for (const bin of bins) {
@@ -1702,11 +1719,30 @@ export default function Home() {
           best = bin;
         }
       }
-      if (best) {
-        best.cases.push(item);
-        best.surgicalMinutes += item.estimatedDurationMin;
-      }
-    }
+      if (!best) return false;
+      best.cases.push(item);
+      best.surgicalMinutes += item.estimatedDurationMin;
+      return true;
+    };
+
+    // Phase 1 — anchor every over-target case first, most urgent (highest
+    // priority score) first, so a shorter/better-fitting not-yet-overdue
+    // case can never take a slot from a longer-waiting one.
+    const anchored = pool
+      .filter((c) => c.timeToTargetDays < 0)
+      .sort((a, b) => b.priorityScore - a.priorityScore);
+    const unplacedOverdue: string[] = [];
+    anchored.forEach((item) => {
+      if (!placeInTightestBin(item)) unplacedOverdue.push(item.displayLabel);
+    });
+
+    // Phase 2 — fill remaining room with not-yet-overdue cases via
+    // first-fit-decreasing (largest first), same packing heuristic as before.
+    const notYetOverdue = pool.filter((c) => c.timeToTargetDays >= 0);
+    const sortedRemainder = [...notYetOverdue].sort(
+      (a, b) => b.estimatedDurationMin - a.estimatedDurationMin
+    );
+    sortedRemainder.forEach((item) => placeInTightestBin(item));
 
     setOrderedSlates((prev) => {
       const next = [...prev];
@@ -1737,7 +1773,7 @@ export default function Home() {
         removed,
       };
     });
-    setOptimizeReport({ perSlate });
+    setOptimizeReport({ perSlate, unplacedOverdue });
   };
 
   const downloadSlateCsv = (slateIndex: number) => {
@@ -3191,6 +3227,20 @@ export default function Home() {
                     Close
                   </button>
                 </div>
+                {optimizeReport.unplacedOverdue.length > 0 && (
+                  <div className="mt-4 rounded-xl border border-rose-300 bg-rose-50 p-3 text-sm text-rose-800">
+                    <p className="font-semibold">
+                      {optimizeReport.unplacedOverdue.length === 1
+                        ? "1 overdue patient could not be fit into any unlocked slate:"
+                        : `${optimizeReport.unplacedOverdue.length} overdue patients could not be fit into any unlocked slate:`}
+                    </p>
+                    <p className="mt-1">{optimizeReport.unplacedOverdue.join(", ")}</p>
+                    <p className="mt-1 text-xs">
+                      They were not bumped by a not-yet-overdue case — there simply wasn&apos;t room
+                      anywhere unlocked. They&apos;re back on the Priority Waitlist as not-yet-slated.
+                    </p>
+                  </div>
+                )}
                 <div className="mt-4 flex flex-col gap-3 text-sm text-sand-800">
                   {optimizeReport.perSlate.map((s) => (
                     <div key={s.slateIndex} className="rounded-xl border border-sand-200 p-3">

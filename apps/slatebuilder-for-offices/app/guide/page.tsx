@@ -110,6 +110,23 @@ export default function Guide() {
             freed time is offered to the next patient. Restore it from the Priority Waitlist.
           </li>
           <li>
+            <span className="font-semibold">Lock slate</span> freezes a slate&apos;s composition —
+            patients can&apos;t be added or removed (drag is rejected), though durations and flags on
+            existing cases can still be edited. Locked slates and their patients are skipped entirely
+            by Optimize Utilization below.
+          </li>
+          <li>
+            <span className="font-semibold">Optimize Utilization</span> repacks every{" "}
+            <span className="font-semibold">unlocked</span> slate to fit in as much OR time as
+            possible. Over-target patients are placed first, most overdue first, and are never bumped
+            in favor of a not-yet-overdue one — though which slate an over-target patient lands on can
+            change. A not-yet-overdue patient can still be bumped back to the waitlist if a
+            better-fitting mix of cases packs the block tighter. The summary that follows lists exactly
+            who was added or removed per slate, and separately flags any over-target patient who
+            couldn&apos;t be fit into any unlocked slate at all (they return to the waitlist as
+            not-yet-slated rather than being silently dropped).
+          </li>
+          <li>
             Export each slate as a one-page <span className="font-semibold">PDF</span> (surgeon and
             date prominent, room for handwritten notes), as a <span className="font-semibold">CSV</span>,
             or all slates at once. <span className="font-semibold">Export all slates (PDF)</span> is at
