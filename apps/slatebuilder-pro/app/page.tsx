@@ -2,34 +2,34 @@
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 import {
+  applyDefaultDuration,
+  applyFlagOverrides,
+  applyUnavailableOverrides,
+  BENCHMARK_WEEKS_ORDER,
+  buildCaseSchedule,
   ClinicalFlagKey,
+  DefaultDurations,
   formatMinutesToTime,
   getBlockMinutes,
   getBlockStartMinutes,
-  normalizeDateOnly,
   optimizeSlatesForDates,
   parseCsv,
   PatientCase,
+  PriorityMode,
   ScoredCase,
   clinicalFlagDefinitions,
   serializeCsv,
   reorderSlateByCaseIds,
-  priorityScoreOf,
+  sortForSlate,
+  sortForWaitlist,
+  toLocalDateOnly,
+  urgencyChipClasses,
   TURNAROUND_MINUTES,
 } from "@slatebuilder/core";
 import { downloadWaitlistPdf, WaitlistPdfRow } from "@slatebuilder/core/slatePdf";
 
 type ProTab = "setup" | "slates" | "waitlist" | "long";
 const PRO_TAB_KEY = "slatebuilder-pro-tab";
-
-// Urgency tint keyed by benchmark class (most urgent = red).
-function urgencyChipClasses(weeks: number): string {
-  if (weeks <= 2) return "bg-rose-100 text-rose-700";
-  if (weeks <= 4) return "bg-orange-100 text-orange-700";
-  if (weeks <= 6) return "bg-amber-100 text-amber-800";
-  if (weeks <= 12) return "bg-sky-100 text-sky-700";
-  return "bg-slate-100 text-slate-600";
-}
 
 function downloadFile(filename: string, contents: string) {
   const blob = new Blob([contents], { type: "text/csv;charset=utf-8;" });
@@ -60,7 +60,7 @@ export default function Home() {
   const [newGroupSurgeons, setNewGroupSurgeons] = useState<Record<string, boolean>>({});
   const [waitlistScope, setWaitlistScope] = useState<"surgeon" | "group">("surgeon");
   const [selectedGroup, setSelectedGroup] = useState("");
-  const [defaultDurations, setDefaultDurations] = useState({
+  const [defaultDurations, setDefaultDurations] = useState<DefaultDurations>({
     hysteroscopy: 30,
     laparoscopy: 60,
     hysterectomy: 180,
@@ -68,16 +68,16 @@ export default function Home() {
   });
   const [defaultsSavedAt, setDefaultsSavedAt] = useState<string | null>(null);
   const [showMetrics, setShowMetrics] = useState(false);
-  const [priorityMode, setPriorityMode] = useState<"ttt" | "urgency_then_ttt">(
-    "urgency_then_ttt"
-  );
+  const [priorityMode, setPriorityMode] = useState<PriorityMode>("urgency_then_ttt");
   const [slateCount, setSlateCount] = useState(1);
   const [slateDates, setSlateDates] = useState<string[]>(() => {
     const today = new Date();
+    // toLocalDateOnly (not toISOString, which is UTC) so the default OR dates
+    // land on the browser's actual calendar day regardless of time zone.
     const dates = [0, 1, 2].map((offset) => {
       const next = new Date(today);
       next.setDate(today.getDate() + offset);
-      return next.toISOString().slice(0, 10);
+      return toLocalDateOnly(next);
     });
     return dates;
   });
@@ -127,43 +127,12 @@ export default function Home() {
   }, []);
 
 
-  const applyDefaultDuration = (item: PatientCase): PatientCase => {
-    const name = (item.procedureName ?? "").toLowerCase();
-    let duration = defaultDurations.other;
-    if (name.includes("hysterectomy")) {
-      duration = defaultDurations.hysterectomy;
-    } else if (name.includes("hysteroscop")) {
-      duration = defaultDurations.hysteroscopy;
-    } else if (name.includes("laparoscop")) {
-      duration = defaultDurations.laparoscopy;
-    }
-    return { ...item, estimatedDurationMin: duration };
-  };
-
-  const applyFlagOverrides = (item: PatientCase): PatientCase => {
-    const override = flagOverrides[item.caseId];
-    if (!override) return item;
-    return {
-      ...item,
-      flags: {
-        ...item.flags,
-        ...override,
-      },
-    };
-  };
-
-  const applyUnavailableOverrides = (item: PatientCase): PatientCase => {
-    const override = unavailableOverrides[item.caseId];
-    if (override === undefined) return item;
-    return {
-      ...item,
-      unavailableUntil: normalizeDateOnly(override),
-    };
-  };
-
   const casesWithDefaults = useMemo(() => {
     return cases.map((item) =>
-      applyUnavailableOverrides(applyFlagOverrides(applyDefaultDuration(item)))
+      applyUnavailableOverrides(
+        applyFlagOverrides(applyDefaultDuration(item, defaultDurations), flagOverrides),
+        unavailableOverrides
+      )
     );
   }, [cases, defaultDurations, flagOverrides, unavailableOverrides]);
 
@@ -254,33 +223,9 @@ export default function Home() {
     });
   }, [waitlistCases, durationOverrides]);
 
-  const sortForWaitlist = (items: PatientCase[]) => {
-    return [...items].sort((a, b) => {
-      if (priorityMode === "ttt") {
-        return a.timeToTargetDays - b.timeToTargetDays;
-      }
-      // Composite priority (same score the slate uses), longest wait breaks ties.
-      const diff = priorityScoreOf(b) - priorityScoreOf(a);
-      if (diff !== 0) return diff;
-      return a.timeToTargetDays - b.timeToTargetDays;
-    });
-  };
+  const sortWaitlistByPriority = (items: PatientCase[]) => sortForWaitlist(items, priorityMode);
 
-  const sortForSlate = (items: ScoredCase[]) => {
-    const order = [2, 4, 6, 12, 26];
-    return [...items].sort((a, b) => {
-      const aFlag = a.flags?.diabetes ? 0 : a.flags?.osa ? 1 : 2;
-      const bFlag = b.flags?.diabetes ? 0 : b.flags?.osa ? 1 : 2;
-      if (aFlag !== bFlag) return aFlag - bFlag;
-      if (priorityMode === "ttt") {
-        return a.timeToTargetDays - b.timeToTargetDays;
-      }
-      const aGroup = order.indexOf(a.benchmarkWeeks);
-      const bGroup = order.indexOf(b.benchmarkWeeks);
-      if (aGroup !== bGroup) return aGroup - bGroup;
-      return a.timeToTargetDays - b.timeToTargetDays;
-    });
-  };
+  const sortSlateByPriority = (items: ScoredCase[]) => sortForSlate(items, priorityMode);
 
   const slates = useMemo(() => {
     if (slateEligibleCases.length === 0) return null;
@@ -299,7 +244,7 @@ export default function Home() {
       return;
     }
     const nextOrdered = slates.map((item, index) =>
-      reorderSlateByCaseIds(sortForSlate(item.selected), orderedSlateCaseIds[index])
+      reorderSlateByCaseIds(sortSlateByPriority(item.selected), orderedSlateCaseIds[index])
     );
     setOrderedSlates(nextOrdered);
     setOrderedSlateCaseIds(nextOrdered.map((slate) => slate.map((item) => item.caseId)));
@@ -319,21 +264,6 @@ export default function Home() {
     const date = new Date(`${slateDates[0]}T00:00:00`);
     return getBlockStartMinutes(date);
   }, [slateDates]);
-
-  const buildSchedule = (items: ScoredCase[], dateISO: string) => {
-    const date = new Date(`${dateISO}T00:00:00`);
-    let cursor = getBlockStartMinutes(date);
-    return items.map((item, index) => {
-      const start = cursor;
-      const end = cursor + Math.round(item.estimatedDurationMin);
-      cursor = end;
-      // Every case but the last is followed by a 30-min turnaround.
-      const tatAfter = index < items.length - 1;
-      const tatEnd = tatAfter ? end + TURNAROUND_MINUTES : end;
-      if (tatAfter) cursor = tatEnd;
-      return { item, start, end, tatAfter, tatEnd };
-    });
-  };
 
   const updateSlateDate = (index: number, value: string) => {
     setSlateDates((prev) => {
@@ -432,7 +362,7 @@ export default function Home() {
   const resetDurationOverrides = () => {
     setDurationOverrides({});
     if (!slates) return;
-    const nextOrdered = slates.map((item) => sortForSlate(item.selected));
+    const nextOrdered = slates.map((item) => sortSlateByPriority(item.selected));
     setOrderedSlates(nextOrdered);
     setOrderedSlateCaseIds(nextOrdered.map((slate) => slate.map((item) => item.caseId)));
   };
@@ -513,7 +443,7 @@ export default function Home() {
   };
 
   const orderedByUrgency = useMemo(() => {
-    return sortForWaitlist(waitlistCasesWithOverrides);
+    return sortWaitlistByPriority(waitlistCasesWithOverrides);
   }, [waitlistCasesWithOverrides, priorityMode]);
 
   const selectedCaseIds = useMemo(() => {
@@ -527,13 +457,12 @@ export default function Home() {
   // Long-waiters: every in-scope case past target, grouped by benchmark class,
   // most overdue first within each class.
   const longWaiters = useMemo(() => {
-    const order = [2, 4, 6, 12, 26] as const;
-    const groups = order.map((weeks) => ({
+    const groups = BENCHMARK_WEEKS_ORDER.map((weeks) => ({
       weeks,
       label: `${weeks}w`,
       cases: [] as PatientCase[],
     }));
-    const indexOf = new Map(order.map((weeks, i) => [weeks, i]));
+    const indexOf = new Map(BENCHMARK_WEEKS_ORDER.map((weeks, i) => [weeks, i]));
     waitlistCasesWithOverrides
       .filter((c) => c.timeToTargetDays < 0)
       .forEach((c) => {
@@ -1085,7 +1014,7 @@ export default function Home() {
               {slates.map((slate, slateIndex) => {
                 const orderedSlate = orderedSlates[slateIndex] ?? slate.selected;
                 const slateDate = slate.dateISO;
-                const schedule = buildSchedule(orderedSlate, slateDate);
+                const schedule = buildCaseSchedule(orderedSlate, slateDate);
                 const slateStart = slateDate
                   ? getBlockStartMinutes(new Date(`${slateDate}T00:00:00`))
                   : blockStartMinutes;
