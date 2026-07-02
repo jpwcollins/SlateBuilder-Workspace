@@ -96,7 +96,15 @@ export default function Guide() {
         <ul className="list-disc pl-5">
           <li>The capacity bar shows time used vs. the block, including turnaround.</li>
           <li>Drag cases to reorder them; the order is the running order for the day.</li>
-          <li>Edit a case&apos;s duration or clinical flags, or set a date a patient is unavailable until.</li>
+          <li>
+            Edit a case&apos;s duration or clinical flags, or set a date a patient is{" "}
+            <span className="font-semibold">unavailable until</span>. If that date falls on or after a
+            slate the patient is already on, they&apos;re automatically pulled off that slate and placed
+            on the next later slate that has room (skipping any locked slate); if nothing fits, they
+            drop back to the waitlist as not-yet-slated. Use the{" "}
+            <span className="font-semibold">Clear</span> button next to the date to remove the
+            unavailability entirely — this does not automatically re-slate the patient.
+          </li>
           <li>
             <span className="font-semibold">Remove from suggested slates</span> takes a case off; the
             freed time is offered to the next patient. Restore it from the Priority Waitlist.
@@ -116,6 +124,22 @@ export default function Guide() {
           <span className="font-semibold">Slated</span> or <span className="font-semibold">Waiting</span>,
           so staff can work from one list. Export it as a PDF or CSV.
         </p>
+        <ul className="list-disc pl-5">
+          <li>
+            <span className="font-semibold">Remove from waitlist</span> (trash icon) takes a patient off
+            the list entirely, off any slate, and opens a pre-filled email to booking asking for them to
+            be removed from the source system. The row stays visible, greyed out and struck through, so
+            the removal is auditable. Click <span className="font-semibold">Restore to waitlist</span>{" "}
+            on that row to reverse it — the patient reappears as not-yet-slated (you&apos;ll need to
+            drag them onto a slate again if needed).
+          </li>
+          <li>
+            A <span className="font-semibold">Patients with a period of unavailability</span> panel sits
+            at the bottom of the waitlist, listing everyone with an unavailable-until date, soonest
+            first, with a one-click <span className="font-semibold">Clear</span>. They remain in the
+            main list above too — this panel is just a quick way to see who has an upcoming hold.
+          </li>
+        </ul>
       </Section>
 
       <Section title="Office snapshot & waitlist overview">
@@ -165,7 +189,83 @@ export default function Guide() {
             <span className="font-semibold">autosaved for the current browser tab</span> and cleared
             when you close it.
           </li>
+          <li>
+            On a shared office computer, use the{" "}
+            <span className="font-semibold">Sign out &amp; reset</span> /{" "}
+            <span className="font-semibold">Reset device data</span> button in the top bar (visible on
+            every tab, signed in or not) before walking away. It clears everything held on this device —
+            the uploaded list, every edit, and the tab autosave — and signs you out if you were signed
+            in. It does not delete anything already saved to the cloud.
+          </li>
         </ul>
+      </Section>
+
+      <Section title="Privacy &amp; security, in plain language">
+        <p>
+          The short version: <span className="font-semibold">patient names, PHNs, and diagnoses never
+          leave your computer</span>. Only your browser ever sees them. What gets saved to the cloud (so
+          your team can share drafts across devices) is a scrambled, locked version of your working
+          data that the server itself cannot read.
+        </p>
+        <p className="font-semibold text-sand-900">How a patient is identified in the cloud</p>
+        <p>
+          When you sign in, your office password unlocks a secret &quot;office key&quot; that only ever
+          exists in your browser&apos;s memory — it is never sent to the server, even in encrypted form
+          that could later be unlocked there. Each patient&apos;s PHN is combined with that office key
+          and run through a one-way scrambling function (the same family of math banks use to store
+          passwords). The result is a meaningless string of characters — a &quot;patient token&quot;.
+          It&apos;s consistent from month to month (so re-uploading the waitlist still recognizes the
+          same patient), but there is no mathematical way to run it backwards to recover the PHN. Only
+          someone who already has your office key and the original PHN could reproduce the same token —
+          the server, which never has the office key, cannot.
+        </p>
+        <p className="font-semibold text-sand-900">How your working data is protected</p>
+        <p>
+          Everything else — durations, flags, unavailable dates, which patient is on which slate — is
+          bundled up and locked with the same office key using a standard, widely-audited encryption
+          method (AES-256, the same class of encryption used for online banking). What lands on the
+          server is an opaque, locked blob plus your password&apos;s hash (never the password itself,
+          and hashed in a deliberately slow way designed to resist guessing). The server stores the box;
+          it does not hold the key.
+        </p>
+        <p className="font-semibold text-sand-900">
+          Worst case: what if the database itself was hacked?
+        </p>
+        <p>
+          If an attacker broke into the cloud database directly, here is exactly what they would find,
+          and what it would get them:
+        </p>
+        <ul className="list-disc pl-5">
+          <li>
+            <span className="font-semibold">Locked working-data blobs</span> — unreadable without the
+            office key, which was never stored there. The attacker would see ciphertext, not case
+            details.
+          </li>
+          <li>
+            <span className="font-semibold">Patient tokens</span> inside those blobs — even once
+            decrypted (which they can&apos;t be), these are one-way scrambled values, not PHNs or names.
+            There is no feasible way to reverse them back to a real patient.
+          </li>
+          <li>
+            <span className="font-semibold">Password hashes</span>, not passwords — cracking one to
+            recover the real office password would take a deliberately impractical amount of computing
+            time, especially for a reasonably strong password.
+          </li>
+          <li>
+            <span className="font-semibold">Office keys, but wrapped (double-locked)</span> — the office
+            key itself is also stored only in an encrypted form that requires the office password to
+            open. Without the password, it&apos;s just as unreadable as everything else.
+          </li>
+        </ul>
+        <p>
+          In short: a full database breach would hand an attacker a pile of locked boxes and
+          scrambled labels, with no names, PHNs, or diagnoses anywhere in it, and no practical way to
+          unlock any of it without also separately compromising an office&apos;s actual password. The
+          one thing worth taking seriously from this: choose a real office password (not something
+          guessable), since it is the one piece that, combined with a breach, is the theoretical weak
+          point. Everything else in the design assumes the server itself may someday be compromised, and
+          is built so that a breach alone still isn&apos;t enough to expose a patient.
+        </p>
       </Section>
 
       <Section title="Tips & troubleshooting">

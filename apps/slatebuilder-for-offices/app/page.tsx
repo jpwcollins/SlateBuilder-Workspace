@@ -523,6 +523,15 @@ export default function Home() {
     return officeCasesWithOverrides.filter((item) => !removedFromWaitlist[item.caseId]);
   }, [officeCasesWithOverrides, removedFromWaitlist]);
 
+  // Patients with a period of unavailability, for the sub-list at the bottom
+  // of the Priority Waitlist. They stay in the main waitlist too — this is
+  // purely a visibility grouping so staff can spot upcoming holds at a glance.
+  const unavailableOfficeCases = useMemo(() => {
+    return activeOfficeCases
+      .filter((item) => Boolean(item.unavailableUntil))
+      .sort((a, b) => (a.unavailableUntil ?? "").localeCompare(b.unavailableUntil ?? ""));
+  }, [activeOfficeCases]);
+
   const officeSurgeons = useMemo(() => {
     return Array.from(new Set(officeCases.map((item) => item.surgeonId))).sort((a, b) =>
       a.localeCompare(b)
@@ -980,13 +989,10 @@ export default function Home() {
     });
   };
 
-  const resetWorkspace = () => {
-    if (
-      (csvText || cases.length > 0) &&
-      !window.confirm("Clear the current workspace? Unsaved changes in this tab will be lost.")
-    ) {
-      return;
-    }
+  // Clears every trace of the current workspace from memory and sessionStorage.
+  // Shared by the Setup-tab "Reset" button and the always-visible full reset
+  // below — neither leaves unencrypted PHI sitting around after the click.
+  const clearWorkspaceState = () => {
     setCsvText("");
     setCases([]);
     setWarnings([]);
@@ -1013,6 +1019,38 @@ export default function Home() {
     setDragState(null);
     compositionSeedRef.current = "";
     window.sessionStorage.removeItem(OFFICE_AUTOSAVE_KEY);
+  };
+
+  const resetWorkspace = () => {
+    if (
+      (csvText || cases.length > 0) &&
+      !window.confirm("Clear the current workspace? Unsaved changes in this tab will be lost.")
+    ) {
+      return;
+    }
+    clearWorkspaceState();
+  };
+
+  // Always-visible "walk away from a shared computer" control: clears all
+  // local data (in-memory state + sessionStorage autosave) and, if signed in,
+  // signs out too. This is the only way to wipe data in guest mode, since
+  // there is nothing else to "sign out" of before a login exists.
+  const handleFullReset = async () => {
+    const hasAnything = Boolean(csvText || cases.length > 0 || signedInId);
+    if (
+      hasAnything &&
+      !window.confirm(
+        signedInId
+          ? "Reset SlateBuilder? This signs you out and clears all data from this device. Work already synced to the cloud is not deleted."
+          : "Reset SlateBuilder? This clears all data from this device. This cannot be undone."
+      )
+    ) {
+      return;
+    }
+    if (signedInId) {
+      await handleSignOut();
+    }
+    clearWorkspaceState();
   };
 
   function buildSessionState(): OfficeSessionState {
@@ -1306,13 +1344,93 @@ export default function Home() {
     patchCaseInSlates(caseId, (item) => ({ ...item, flags: { ...item.flags, [flag]: value } }));
   };
 
+  // Setting (or clearing) an unavailable-until date can invalidate a slate the
+  // patient is already sitting on. If so, pull them off it and look for the
+  // first later, unlocked slate with room (same search order as
+  // restoreToSuggestedSlates); if nothing fits, they fall back to the
+  // waitlist as not-yet-slated rather than staying on a slate they can't
+  // attend.
   const updateUnavailableUntil = (caseId: string, value: string) => {
+    const normalized = normalizeDateOnly(value);
     setUnavailableOverrides((prev) => ({
       ...prev,
       [caseId]: value,
     }));
-    patchCaseInSlates(caseId, (item) => ({ ...item, unavailableUntil: normalizeDateOnly(value) }));
+
+    // Deliberately built from the configured slate dates (slateDates/slateCount),
+    // not the `slates` optimizer memo: that memo only contains as many entries
+    // as it needs to place the current cases, so a trailing configured date can
+    // be entirely absent from it until something actually lands there. Relying
+    // on its length here would silently drop a patient instead of moving them.
+    const activeSlateDates = slateDates.slice(0, slateCount);
+    const slateIndex = findSlateIndexForCase(caseId);
+    const currentDateISO = slateIndex !== -1 ? normalizeDateOnly(activeSlateDates[slateIndex]) ?? "" : "";
+    const stillFits =
+      !currentDateISO || isAvailableOnDate(normalized, new Date(`${currentDateISO}T00:00:00`));
+
+    if (slateIndex === -1 || stillFits) {
+      patchCaseInSlates(caseId, (item) => ({ ...item, unavailableUntil: normalized }));
+      return;
+    }
+
+    const source = officeCasesWithOverrides.find((c) => c.caseId === caseId);
+    if (!source) return;
+
+    if (lockedSlates[currentDateISO]) {
+      window.alert(
+        `${source.displayLabel} is on a locked slate (${currentDateISO}) that falls before the new unavailable-until date. Unlock the slate to move them.`
+      );
+      patchCaseInSlates(caseId, (item) => ({ ...item, unavailableUntil: normalized }));
+      return;
+    }
+
+    spliceCaseOutOfSlates(caseId);
+    const candidate = scoreCases([{ ...source, unavailableUntil: normalized }])[0];
+
+    let alerted = false;
+    for (let i = 0; i < activeSlateDates.length; i += 1) {
+      const rawDate = activeSlateDates[i];
+      if (!rawDate) continue;
+      const dateISO = normalizeDateOnly(rawDate) ?? rawDate;
+      const date = new Date(`${rawDate}T00:00:00`);
+      if (!isAvailableOnDate(normalized, date)) continue;
+      const blockMinutes = getBlockMinutes(date);
+      const current = (orderedSlates[i] ?? []).filter((item) => item.caseId !== caseId);
+      if (current.length >= MAX_CASES_PER_SLATE) continue;
+      const surgical =
+        current.reduce((sum, item) => sum + item.estimatedDurationMin, 0) +
+        candidate.estimatedDurationMin;
+      const occupied = surgical + TURNAROUND_MINUTES * current.length;
+      if (occupied > blockMinutes) continue;
+
+      if (lockedSlates[dateISO]) {
+        if (!alerted) {
+          alerted = true;
+          window.alert(
+            `Slate ${i + 1}${dateISO ? ` (${dateISO})` : ""} is locked. Placing this patient in the next available slot instead.`
+          );
+        }
+        continue;
+      }
+
+      setOrderedSlates((prev) => {
+        const next = [...prev];
+        while (next.length <= i) next.push([]);
+        next[i] = sortForSlate([...next[i], candidate]);
+        setOrderedSlateCaseIds(next.map((slate) => slate.map((item) => item.caseId)));
+        return next;
+      });
+      window.alert(
+        `${source.displayLabel} was moved off the ${currentDateISO} slate (now before their unavailable-until date) and placed on ${dateISO}.`
+      );
+      return;
+    }
+    window.alert(
+      `${source.displayLabel} was taken off the ${currentDateISO} slate (now before their unavailable-until date). No later slate had room, so they're back on the waitlist as not-yet-slated.`
+    );
   };
+
+  const clearUnavailableUntil = (caseId: string) => updateUnavailableUntil(caseId, "");
 
   // Splices a case out of whichever slate holds it (used by the button, drag
   // handlers, and the waitlist "remove" action alike).
@@ -1353,16 +1471,23 @@ export default function Home() {
     });
 
     const source = officeCasesWithOverrides.find((c) => c.caseId === caseId);
-    if (!source || !slates || slates.length === 0) return;
+    if (!source) return;
     const candidate = scoreCases([source])[0];
 
+    // Built from the configured slate dates, not the `slates` optimizer memo:
+    // that memo only contains as many entries as it needs to place the cases
+    // it currently knows about, so a trailing configured date can be missing
+    // from it entirely until something lands there. Looping over it directly
+    // would silently skip a later slate this candidate could actually fill.
+    const activeSlateDates = slateDates.slice(0, slateCount);
     let alerted = false;
-    for (let i = 0; i < slates.length; i += 1) {
-      const dateISO = slates[i].dateISO;
-      const blockMinutes = slates[i].blockMinutes;
-      if (dateISO && !isAvailableOnDate(candidate.unavailableUntil, new Date(`${dateISO}T00:00:00`))) {
-        continue;
-      }
+    for (let i = 0; i < activeSlateDates.length; i += 1) {
+      const rawDate = activeSlateDates[i];
+      if (!rawDate) continue;
+      const dateISO = normalizeDateOnly(rawDate) ?? rawDate;
+      const date = new Date(`${rawDate}T00:00:00`);
+      if (!isAvailableOnDate(candidate.unavailableUntil, date)) continue;
+      const blockMinutes = getBlockMinutes(date);
       const current = orderedSlates[i] ?? [];
       if (current.length >= MAX_CASES_PER_SLATE) continue;
       const surgical = current.reduce((sum, item) => sum + item.estimatedDurationMin, 0) +
@@ -1381,9 +1506,9 @@ export default function Home() {
       }
 
       setOrderedSlates((prev) => {
-        const next = prev.map((slate, idx) =>
-          idx === i ? sortForSlate([...slate, candidate]) : slate
-        );
+        const next = [...prev];
+        while (next.length <= i) next.push([]);
+        next[i] = sortForSlate([...next[i], candidate]);
         setOrderedSlateCaseIds(next.map((slate) => slate.map((item) => item.caseId)));
         return next;
       });
@@ -1417,6 +1542,18 @@ export default function Home() {
       "Please remove from waitlist"
     )}&body=${encodeURIComponent(body)}`;
     window.location.href = mailto;
+  };
+
+  // Reverses removeFromWaitlist: the patient reappears as "not yet slated" in
+  // the active waitlist and stats. Deliberately does not re-slate them —
+  // that's a separate, explicit action (drag onto a slate, or "Restore to
+  // suggested slates" once they're eligible again).
+  const restoreToWaitlist = (caseId: string) => {
+    setRemovedFromWaitlist((prev) => {
+      const next = { ...prev };
+      delete next[caseId];
+      return next;
+    });
   };
 
   const resetDurationOverrides = () => {
@@ -1999,7 +2136,17 @@ export default function Home() {
               )}
             </div>
 
-            {!removed && (
+            {removed ? (
+              <div className="mt-2">
+                <button
+                  type="button"
+                  onClick={() => restoreToWaitlist(item.caseId)}
+                  className="rounded-full border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
+                >
+                  Restore to waitlist
+                </button>
+              </div>
+            ) : (
               <>
                 <div className="mt-2 flex flex-wrap gap-3">
                   {clinicalFlagDefinitions.map((flag) => (
@@ -2020,6 +2167,15 @@ export default function Home() {
                       onChange={(event) => updateUnavailableUntil(item.caseId, event.target.value)}
                       className="rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
                     />
+                    {item.unavailableUntil && (
+                      <button
+                        type="button"
+                        onClick={() => clearUnavailableUntil(item.caseId)}
+                        className="rounded-full border border-sand-300 bg-white px-2 py-1 text-[11px] font-semibold text-sand-700"
+                      >
+                        Clear
+                      </button>
+                    )}
                   </label>
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -2057,6 +2213,52 @@ export default function Home() {
     );
   };
 
+  // Sub-list at the bottom of the Priority Waitlist: patients with a period
+  // of unavailability, soonest-first. Purely a visibility aid — these
+  // patients are still counted in the main waitlist above.
+  const renderUnavailableSubList = () => (
+    <div className="mt-4 border-t border-sand-200 pt-4">
+      <p className="text-xs font-semibold uppercase tracking-wide text-sand-500">
+        Patients with a period of unavailability ({unavailableOfficeCases.length})
+      </p>
+      {unavailableOfficeCases.length === 0 ? (
+        <p className="mt-2 text-xs text-sand-500">No patients currently have an unavailable-until date.</p>
+      ) : (
+        <div className="mt-2 flex flex-col gap-1.5">
+          {unavailableOfficeCases.map((item) => {
+            const slated = selectedCaseIds.has(item.caseId);
+            return (
+              <div
+                key={item.caseId}
+                className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50/60 px-3 py-2 text-xs text-sand-800"
+              >
+                <span className="font-semibold text-slateBlue-900">{item.displayLabel}</span>
+                <span className="text-[10px] uppercase tracking-wider text-sand-400">{item.caseId}</span>
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-800">
+                  Unavailable until {item.unavailableUntil}
+                </span>
+                <span
+                  className={`rounded-full px-2 py-0.5 ${
+                    slated ? "bg-slateBlue-100 text-slateBlue-700" : "bg-sand-100 text-sand-600"
+                  }`}
+                >
+                  {slated ? "Slated" : "Waiting"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => clearUnavailableUntil(item.caseId)}
+                  className="ml-auto rounded-full border border-sand-300 bg-white px-2 py-1 font-semibold text-sand-700"
+                >
+                  Clear
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <main className="relative mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-6 py-12">
       <div className="sticky top-0 z-30 -mx-6 mb-2 bg-sand-50/95 px-6 pt-3 backdrop-blur">
@@ -2064,7 +2266,7 @@ export default function Home() {
           <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-sand-500">
             SlateBuilder for Offices
           </p>
-          <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5">
             <span>
               Cases <span className="font-semibold text-slateBlue-900">{officeStats.totalCases}</span>
             </span>
@@ -2078,6 +2280,14 @@ export default function Home() {
               Waiting{" "}
               <span className="font-semibold text-slateBlue-900">{remainingByUrgency.length}</span>
             </span>
+            <button
+              type="button"
+              onClick={() => void handleFullReset()}
+              title="Clear all local data from this device (and sign out, if signed in)"
+              className="rounded-full border border-rose-300 px-3 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-50"
+            >
+              {signedInId ? "Sign out & reset" : "Reset device data"}
+            </button>
           </div>
         </div>
         <nav className="mt-2 flex gap-1 overflow-x-auto border-b border-sand-300" aria-label="Sections">
@@ -2895,6 +3105,15 @@ export default function Home() {
                                 }
                                 className="rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
                               />
+                              {item.unavailableUntil && (
+                                <button
+                                  type="button"
+                                  onClick={() => clearUnavailableUntil(item.caseId)}
+                                  className="rounded-full border border-sand-300 bg-white px-2 py-1 text-[11px] font-semibold text-sand-700"
+                                >
+                                  Clear
+                                </button>
+                              )}
                             </label>
                             {isLocked ? (
                               <span className="rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
@@ -3033,6 +3252,7 @@ export default function Home() {
                   </div>
                 )}
               </div>
+              {renderUnavailableSubList()}
             </div>
           )}
         </div>
@@ -3126,6 +3346,7 @@ export default function Home() {
               </div>
             )}
           </div>
+          {renderUnavailableSubList()}
         </div>
       </section>
       )}
