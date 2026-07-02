@@ -1288,13 +1288,15 @@ export default function Home() {
     const current = dragState;
     setDragState(null);
     if (!current || current.kind === "waitlist") return;
-    const sourceDateISO = slates?.[current.slateIndex]?.dateISO ?? "";
+    const sourceDateISO =
+      normalizeDateOnly(slateDates.slice(0, slateCount)[current.slateIndex]) ?? "";
     if (lockedSlates[sourceDateISO]) {
       window.alert("This slate is locked; patients cannot be removed from it.");
       return;
     }
     spliceCaseOutOfSlates(current.caseId);
     setRemovedFromSlateSuggestions((prev) => ({ ...prev, [current.caseId]: true }));
+    backfillSlate(current.slateIndex, current.caseId);
   };
 
   const updateDuration = (slateIndex: number, caseId: string, value: string) => {
@@ -1385,6 +1387,7 @@ export default function Home() {
     }
 
     spliceCaseOutOfSlates(caseId);
+    backfillSlate(slateIndex, caseId);
     const candidate = scoreCases([{ ...source, unavailableUntil: normalized }])[0];
 
     let alerted = false;
@@ -1442,10 +1445,71 @@ export default function Home() {
     });
   };
 
+  // Whenever a case leaves a slate without a specific replacement in mind
+  // (removed, dragged to the waitlist, or bumped by a new unavailable-until
+  // date), pull the next-highest-priority still-waiting, available patients
+  // into the capacity that just opened up — greedily, in priority order —
+  // so a slate never sits under-filled just because one patient left it.
+  // Deliberately scoped to this one slate: it doesn't touch other slates'
+  // existing occupants or reshuffle anything (that broader sweep is what the
+  // explicit "Optimize Utilization" action is for). Call this AFTER the case
+  // has already been removed from orderedSlates (e.g. via spliceCaseOutOfSlates).
+  // `excludeCaseId` is the case that just vacated this slate, if any. It must
+  // be excluded explicitly rather than via removedFromSlateSuggestions /
+  // removedFromWaitlist: those flags are set via setState just before this
+  // runs, and this function closes over the pre-update value of that state
+  // (React doesn't rebind closures mid-event-handler) — so without this,
+  // the very case that was just removed could immediately backfill its own
+  // vacated spot, since it's still the highest-priority "candidate" around.
+  const backfillSlate = (slateIndex: number, excludeCaseId?: string) => {
+    const activeSlateDates = slateDates.slice(0, slateCount);
+    const rawDate = activeSlateDates[slateIndex];
+    if (!rawDate) return;
+    const dateISO = normalizeDateOnly(rawDate) ?? rawDate;
+    if (lockedSlates[dateISO]) return;
+    const date = new Date(`${rawDate}T00:00:00`);
+    const blockMinutes = getBlockMinutes(date);
+
+    setOrderedSlates((prev) => {
+      const current = prev[slateIndex] ?? [];
+      if (current.length >= MAX_CASES_PER_SLATE) return prev;
+
+      const placedIds = new Set(prev.flatMap((slate) => slate.map((item) => item.caseId)));
+      const candidates = sortForWaitlist(
+        officeCasesWithOverrides.filter(
+          (item) =>
+            item.caseId !== excludeCaseId &&
+            !placedIds.has(item.caseId) &&
+            !removedFromSlateSuggestions[item.caseId] &&
+            !removedFromWaitlist[item.caseId] &&
+            isAvailableOnDate(item.unavailableUntil, date)
+        )
+      );
+
+      let surgical = current.reduce((sum, item) => sum + item.estimatedDurationMin, 0);
+      let count = current.length;
+      const additions: ScoredCase[] = [];
+      for (const candidate of candidates) {
+        if (count >= MAX_CASES_PER_SLATE) break;
+        const occupied = surgical + candidate.estimatedDurationMin + TURNAROUND_MINUTES * count;
+        if (occupied > blockMinutes) continue;
+        additions.push(scoreCases([candidate])[0]);
+        surgical += candidate.estimatedDurationMin;
+        count += 1;
+      }
+      if (additions.length === 0) return prev;
+
+      const next = [...prev];
+      next[slateIndex] = sortForSlate([...current, ...additions]);
+      setOrderedSlateCaseIds(next.map((slate) => slate.map((item) => item.caseId)));
+      return next;
+    });
+  };
+
   const removeFromSuggestedSlates = (caseId: string) => {
     const slateIndex = findSlateIndexForCase(caseId);
     if (slateIndex !== -1) {
-      const dateISO = slates?.[slateIndex]?.dateISO ?? "";
+      const dateISO = normalizeDateOnly(slateDates.slice(0, slateCount)[slateIndex]) ?? "";
       if (lockedSlates[dateISO]) {
         window.alert("This slate is locked. Unlock it to remove this patient.");
         return;
@@ -1456,6 +1520,7 @@ export default function Home() {
       [caseId]: true,
     }));
     spliceCaseOutOfSlates(caseId);
+    if (slateIndex !== -1) backfillSlate(slateIndex, caseId);
   };
 
   // Restoring a removed case re-slates it where its priority naturally places
@@ -1530,8 +1595,10 @@ export default function Home() {
     ) {
       return;
     }
+    const slateIndex = findSlateIndexForCase(caseId);
     setRemovedFromWaitlist((prev) => ({ ...prev, [caseId]: true }));
     spliceCaseOutOfSlates(caseId);
+    if (slateIndex !== -1) backfillSlate(slateIndex, caseId);
     const phn = item.patientRef?.trim();
     const body = [
       "Please remove the following patient from the waitlist.",
