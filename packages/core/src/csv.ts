@@ -92,7 +92,10 @@ export function parseCsv(text: string): ParseResult {
     // out of React keys, the optimizer, and default exports. caseId (assigned
     // below) is the opaque, non-identifying handle used everywhere internally.
     const displayLabel = `Patient ${rawId}`;
-    const sourceKey = displayLabel;
+    // sourceKey is the raw value exactly as it appeared in the uploaded file
+    // (see the PatientCase.sourceKey docstring) -- not the "Patient <id>"
+    // display label, which is a separate presentational string.
+    const sourceKey = rawId;
     const benchmarkRaw =
       record["benchmark"] || record["target_time_weeks"] || record["target_time"];
     if (!benchmarkRaw && !record["time_to_target_days"] && !record["time_waiting_days"] && !record["time_waiting_weeks"]) {
@@ -236,6 +239,12 @@ function parseBenchmarkWeeks(value: string | undefined): BenchmarkWeeks | null {
   if (hasDaysUnit || weeks > 26) {
     weeks = weeks / 7;
   }
+  // A value more than double the longest real benchmark class (26w) is almost
+  // certainly not a benchmark at all (e.g. a PHN or stray number that landed
+  // in the wrong CSV column). Snapping it to the nearest class would silently
+  // assign a plausible-looking but wrong urgency; treat it as unrecognized so
+  // the caller warns and skips the row instead.
+  if (!Number.isFinite(weeks) || weeks > 52) return null;
   const allowed: BenchmarkWeeks[] = [2, 4, 6, 12, 26];
   const nearest = allowed.reduce((best, current) =>
     Math.abs(current - weeks) < Math.abs(best - weeks) ? current : best

@@ -36,4 +36,21 @@ describe("parseCsv", () => {
     // 6*7 - 8*7 = -14 (overdue by two weeks)
     expect(cases[0].timeToTargetDays).toBe(-14);
   });
+
+  it("keeps sourceKey as the raw uploaded identifier, distinct from displayLabel", () => {
+    const csv = ["source_key,benchmark,time_to_target_days", "Jane Doe,2w,5"].join("\n");
+    const { cases } = parseCsv(csv);
+    expect(cases[0].sourceKey).toBe("Jane Doe");
+    expect(cases[0].displayLabel).toBe("Patient Jane Doe");
+  });
+
+  it("warns and skips a row whose benchmark value is not a real benchmark", () => {
+    const csv = [
+      "source_key,benchmark,time_to_target_days",
+      "A,9876543210,5",
+    ].join("\n");
+    const { cases, warnings } = parseCsv(csv);
+    expect(cases).toHaveLength(0);
+    expect(warnings.some((w) => w.includes("unrecognized benchmark"))).toBe(true);
+  });
 });
