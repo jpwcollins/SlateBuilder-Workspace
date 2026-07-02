@@ -335,6 +335,11 @@ export default function Home() {
   const [csvText, setCsvText] = useState("");
   const [cases, setCases] = useState<PatientCase[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
+  // Confirms a fresh upload succeeded ("✓ N patients loaded"); only set right
+  // after handleUpload, never after the sessionStorage-restore path re-parses
+  // the same csvText on reload (see justUploadedRef below).
+  const [uploadSummary, setUploadSummary] = useState<string | null>(null);
+  const justUploadedRef = useRef(false);
   const [durationOverrides, setDurationOverrides] = useState<Record<string, number>>({});
   const [unavailableOverrides, setUnavailableOverrides] = useState<Record<string, string>>({});
   const [flagOverrides, setFlagOverrides] = useState<
@@ -355,10 +360,10 @@ export default function Home() {
   const [slateCount, setSlateCount] = useState(2);
   const [slateDates, setSlateDates] = useState<string[]>(() => {
     const today = new Date();
-    return [0, 7, 14].map((offset) => {
+    return [21, 35, 49].map((offset) => {
       const next = new Date(today);
       next.setDate(today.getDate() + offset);
-      return next.toISOString().slice(0, 10);
+      return toLocalDateOnly(next);
     });
   });
   const [orderedSlates, setOrderedSlates] = useState<ScoredCase[][]>([]);
@@ -417,6 +422,11 @@ export default function Home() {
     const result = parseCsv(csvText);
     setCases(result.cases);
     setWarnings(result.warnings);
+    if (justUploadedRef.current) {
+      justUploadedRef.current = false;
+      const skipped = result.warnings.length > 0 ? ` · ${result.warnings.length} row${result.warnings.length === 1 ? "" : "s"} skipped or flagged, see below` : "";
+      setUploadSummary(`✓ ${result.cases.length} patient${result.cases.length === 1 ? "" : "s"} loaded${skipped}`);
+    }
   }, [csvText]);
 
   useEffect(() => {
@@ -1010,6 +1020,7 @@ export default function Home() {
     setCsvText("");
     setCases([]);
     setWarnings([]);
+    setUploadSummary(null);
     setDurationOverrides({});
     setUnavailableOverrides({});
     setFlagOverrides({});
@@ -1019,10 +1030,10 @@ export default function Home() {
     setSlateCount(2);
     setSlateDates(() => {
       const today = new Date();
-      return [0, 7, 14].map((offset) => {
+      return [21, 35, 49].map((offset) => {
         const next = new Date(today);
         next.setDate(today.getDate() + offset);
-        return next.toISOString().slice(0, 10);
+        return toLocalDateOnly(next);
       });
     });
     setOrderedSlates([]);
@@ -1161,6 +1172,8 @@ export default function Home() {
   const handleUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    setUploadSummary(null);
+    justUploadedRef.current = true;
     const lowerName = file.name.toLowerCase();
 
     if (lowerName.endsWith(".xlsx") || lowerName.endsWith(".xls")) {
@@ -2170,7 +2183,7 @@ export default function Home() {
         {expanded && (
           <div className="border-t border-sand-200 px-3 py-3 text-xs text-sand-700">
             <div className="text-sand-600">
-              TTT {item.timeToTargetDays}d · Surgeon ID {item.surgeonId}
+              Time to target {item.timeToTargetDays}d · Surgeon ID {item.surgeonId}
               {item.unavailableUntil ? ` · unavailable until ${item.unavailableUntil}` : ""}
             </div>
             <div className="mt-2 flex flex-wrap gap-2">
@@ -2348,7 +2361,8 @@ export default function Home() {
             </button>
           </div>
         </div>
-        <nav className="mt-2 flex gap-1 overflow-x-auto border-b border-sand-300" aria-label="Sections">
+        <div className="relative">
+          <nav className="mt-2 flex gap-1 overflow-x-auto border-b border-sand-300" aria-label="Sections">
           {tabs.map((tab) => {
             const active = activeTab === tab.id;
             return (
@@ -2380,7 +2394,12 @@ export default function Home() {
               </button>
             );
           })}
-        </nav>
+          </nav>
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-sand-50 to-transparent sm:hidden"
+          />
+        </div>
       </div>
 
       {activeTab === "setup" && (
@@ -2398,12 +2417,9 @@ export default function Home() {
             a Priority Waitlist that clearly shows which patients are already slated and which are
             still waiting.
           </p>
-          <p className="mt-3 max-w-3xl rounded-xl border border-sand-200 bg-white/70 px-4 py-3 text-xs leading-6 text-sand-700">
-            <span className="font-semibold text-sand-900">How the priority score works:</span> each
-            case scores its benchmark urgency weight (2w = 5, 4w = 4, 6w = 3, 12w = 2, 26w = 1)
-            multiplied by how far it has waited toward target (the score climbs every day and keeps
-            rising once past target). Patients already past target are slated first; the rest of the
-            block is then filled to complete as many further cases as possible.
+          <p className="mt-3 max-w-3xl text-xs leading-6 text-sand-700">
+            Higher priority scores mean more urgent — patients past their target date are always
+            slated first. See the <a href="/guide" target="_blank" rel="noopener noreferrer" className="font-semibold text-slateBlue-700 underline">user guide</a> for exactly how the score is calculated.
           </p>
           <p className="mt-3 max-w-3xl text-xs leading-6 text-sand-600">
             Patient names and PHNs never leave this device. Each case gets an opaque code (e.g.
@@ -2433,178 +2449,6 @@ export default function Home() {
         </div>
       </header>
 
-      <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-semibold text-slateBlue-900">
-              Office Login: sign in to enable saving &amp; syncing
-            </h2>
-            <p className="text-sm text-sand-700">
-              Sign in to share draft slates across devices. Only pseudonymized, encrypted working
-              data is stored in the cloud — names and PHNs never leave this device.
-            </p>
-          </div>
-          {signedInId && (
-            <div className="flex items-center gap-3">
-              <span className="inline-flex items-center gap-1.5 text-xs text-emerald-700">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                {signedInId}
-              </span>
-              <button
-                type="button"
-                onClick={handleSignOut}
-                className="rounded-full border border-sand-300 px-3 py-1 text-xs font-semibold text-sand-800"
-              >
-                Sign out
-              </button>
-            </div>
-          )}
-        </div>
-
-        {!signedInId ? (
-          <div className="mt-4 flex flex-wrap items-end gap-3">
-            <label className="flex min-w-[180px] flex-1 flex-col gap-2 text-xs text-sand-700">
-              Office name
-              <input
-                type="text"
-                value={officeIdInput}
-                onChange={(event) => setOfficeIdInput(event.target.value)}
-                placeholder="e.g. bcwh-gyne-collins"
-                className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-              />
-            </label>
-            <label className="flex min-w-[180px] flex-1 flex-col gap-2 text-xs text-sand-700">
-              Password
-              <input
-                type="password"
-                value={officePassword}
-                onChange={(event) => setOfficePassword(event.target.value)}
-                placeholder="Shared office password"
-                className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-              />
-            </label>
-            <button
-              type="button"
-              disabled={authBusy}
-              onClick={() => void handleLogin()}
-              className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
-            >
-              Sign in
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowReset((v) => !v)}
-              className="text-xs font-semibold text-slateBlue-700 underline"
-            >
-              Forgot password?
-            </button>
-          </div>
-        ) : (
-          <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-sand-700">
-            <span className="font-semibold text-sand-900">
-              Draft status:
-              <span
-                className={`ml-2 rounded-full px-2 py-0.5 ${
-                  planStatus === "finalized"
-                    ? "bg-emerald-100 text-emerald-700"
-                    : "bg-amber-100 text-amber-800"
-                }`}
-              >
-                {planStatus}
-              </span>
-            </span>
-            <button
-              type="button"
-              onClick={() => setPlanStatus(planStatus === "finalized" ? "draft" : "finalized")}
-              className="rounded-full border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
-            >
-              {planStatus === "finalized" ? "Reopen as draft" : "Mark finalized"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowChangePw((v) => !v)}
-              className="font-semibold text-slateBlue-700 underline"
-            >
-              Change password
-            </button>
-            {cases.length === 0 && (
-              <span className="text-sand-500">Upload this month&apos;s waitlist to re-link saved work.</span>
-            )}
-          </div>
-        )}
-
-        {!signedInId && showReset && (
-          <div className="mt-4 rounded-xl border border-sand-200 bg-white/70 p-4">
-            <p className="text-xs font-semibold text-sand-900">Reset password with recovery code</p>
-            <div className="mt-3 flex flex-wrap items-end gap-3">
-              <label className="flex min-w-[220px] flex-1 flex-col gap-2 text-xs text-sand-700">
-                Recovery code
-                <input
-                  type="text"
-                  value={recoveryCodeInput}
-                  onChange={(event) => setRecoveryCodeInput(event.target.value)}
-                  placeholder="From your administrator"
-                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-                />
-              </label>
-              <label className="flex min-w-[160px] flex-1 flex-col gap-2 text-xs text-sand-700">
-                New password
-                <input
-                  type="password"
-                  value={newPassword}
-                  onChange={(event) => setNewPassword(event.target.value)}
-                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-                />
-              </label>
-              <button
-                type="button"
-                disabled={authBusy}
-                onClick={() => void handleReset()}
-                className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
-              >
-                Reset &amp; sign in
-              </button>
-            </div>
-          </div>
-        )}
-
-        {signedInId && showChangePw && (
-          <div className="mt-4 rounded-xl border border-sand-200 bg-white/70 p-4">
-            <p className="text-xs font-semibold text-sand-900">Change password</p>
-            <div className="mt-3 flex flex-wrap items-end gap-3">
-              <label className="flex min-w-[160px] flex-1 flex-col gap-2 text-xs text-sand-700">
-                Current password
-                <input
-                  type="password"
-                  value={officePassword}
-                  onChange={(event) => setOfficePassword(event.target.value)}
-                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-                />
-              </label>
-              <label className="flex min-w-[160px] flex-1 flex-col gap-2 text-xs text-sand-700">
-                New password
-                <input
-                  type="password"
-                  value={newPassword}
-                  onChange={(event) => setNewPassword(event.target.value)}
-                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-                />
-              </label>
-              <button
-                type="button"
-                disabled={authBusy}
-                onClick={() => void handleChangePassword()}
-                className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
-              >
-                Update password
-              </button>
-            </div>
-          </div>
-        )}
-
-        {syncStatus && <p className="mt-3 text-xs text-sand-600">{syncStatus}</p>}
-      </section>
-
       <section className="grid gap-6 lg:grid-cols-[0.95fr_1.05fr]">
         <div className="card p-6">
           <h2 className="text-lg font-semibold text-slateBlue-900">Load Office Waitlist</h2>
@@ -2623,9 +2467,10 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={resetWorkspace}
+                  title="Clears the uploaded waitlist and all edits on this device"
                   className="rounded-full border border-sand-300 bg-white px-4 py-2 text-xs font-semibold text-sand-800"
                 >
-                  Reset
+                  Clear waitlist
                 </button>
               </div>
               <label className="mt-3 flex items-start gap-2 text-xs text-sand-700">
@@ -2646,6 +2491,12 @@ export default function Home() {
                 </span>
               </label>
             </div>
+
+            {uploadSummary && (
+              <div className="rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs font-semibold text-emerald-800">
+                {uploadSummary}
+              </div>
+            )}
 
             {warnings.length > 0 && (
               <div className="rounded-2xl border border-sand-200 bg-sand-50 px-4 py-3 text-xs text-sand-800">
@@ -2783,6 +2634,10 @@ export default function Home() {
 
             <div className="rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
               <p className="font-semibold text-sand-900">OR slate dates</p>
+              <p className="mt-1 text-xs text-sand-600">
+                Defaults to 3, 5, and 7 weeks from today — confirm these match your actual OR block
+                dates before finalizing a slate.
+              </p>
               <div className="mt-3 flex flex-col gap-4">
                 <label className="flex flex-col gap-2">
                   Number of slates
@@ -2816,6 +2671,182 @@ export default function Home() {
             </div>
           </div>
         </div>
+      </section>
+
+
+      <section className="card p-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-slateBlue-900">
+              Office Login: sign in to enable saving &amp; syncing
+            </h2>
+            <p className="text-sm text-sand-700">
+              Sign in to share draft slates across devices. Only pseudonymized, encrypted working
+              data is stored in the cloud — names and PHNs never leave this device.
+            </p>
+          </div>
+          {signedInId && (
+            <div className="flex items-center gap-3">
+              <span className="inline-flex items-center gap-1.5 text-xs text-emerald-700">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                {signedInId}
+              </span>
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="rounded-full border border-sand-300 px-3 py-1 text-xs font-semibold text-sand-800"
+              >
+                Sign out
+              </button>
+            </div>
+          )}
+        </div>
+
+        {!signedInId ? (
+          <div className="mt-4 flex flex-wrap items-end gap-3">
+            <label className="flex min-w-[180px] flex-1 flex-col gap-2 text-xs text-sand-700">
+              Office name
+              <input
+                type="text"
+                value={officeIdInput}
+                onChange={(event) => setOfficeIdInput(event.target.value)}
+                placeholder="e.g. bcwh-gyne-collins"
+                className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="flex min-w-[180px] flex-1 flex-col gap-2 text-xs text-sand-700">
+              Password
+              <input
+                type="password"
+                value={officePassword}
+                onChange={(event) => setOfficePassword(event.target.value)}
+                placeholder="Shared office password"
+                className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={authBusy}
+              onClick={() => void handleLogin()}
+              className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+            >
+              Sign in
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowReset((v) => !v)}
+              className="text-xs font-semibold text-slateBlue-700 underline"
+            >
+              Forgot password?
+            </button>
+            <p className="basis-full text-xs text-sand-600">
+              New office? Ask your SlateBuilder admin for shared login credentials.
+            </p>
+          </div>
+        ) : (
+          <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-sand-700">
+            <span className="font-semibold text-sand-900">
+              Draft status:
+              <span
+                className={`ml-2 rounded-full px-2 py-0.5 ${
+                  planStatus === "finalized"
+                    ? "bg-emerald-100 text-emerald-700"
+                    : "bg-amber-100 text-amber-800"
+                }`}
+              >
+                {planStatus}
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setPlanStatus(planStatus === "finalized" ? "draft" : "finalized")}
+              className="rounded-full border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
+            >
+              {planStatus === "finalized" ? "Reopen as draft" : "Mark finalized"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowChangePw((v) => !v)}
+              className="font-semibold text-slateBlue-700 underline"
+            >
+              Change password
+            </button>
+            {cases.length === 0 && (
+              <span className="text-sand-500">Upload this month&apos;s waitlist to re-link saved work.</span>
+            )}
+          </div>
+        )}
+
+        {!signedInId && showReset && (
+          <div className="mt-4 rounded-xl border border-sand-200 bg-white/70 p-4">
+            <p className="text-xs font-semibold text-sand-900">Reset password with recovery code</p>
+            <div className="mt-3 flex flex-wrap items-end gap-3">
+              <label className="flex min-w-[220px] flex-1 flex-col gap-2 text-xs text-sand-700">
+                Recovery code
+                <input
+                  type="text"
+                  value={recoveryCodeInput}
+                  onChange={(event) => setRecoveryCodeInput(event.target.value)}
+                  placeholder="From your administrator"
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="flex min-w-[160px] flex-1 flex-col gap-2 text-xs text-sand-700">
+                New password
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <button
+                type="button"
+                disabled={authBusy}
+                onClick={() => void handleReset()}
+                className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+              >
+                Reset &amp; sign in
+              </button>
+            </div>
+          </div>
+        )}
+
+        {signedInId && showChangePw && (
+          <div className="mt-4 rounded-xl border border-sand-200 bg-white/70 p-4">
+            <p className="text-xs font-semibold text-sand-900">Change password</p>
+            <div className="mt-3 flex flex-wrap items-end gap-3">
+              <label className="flex min-w-[160px] flex-1 flex-col gap-2 text-xs text-sand-700">
+                Current password
+                <input
+                  type="password"
+                  value={officePassword}
+                  onChange={(event) => setOfficePassword(event.target.value)}
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="flex min-w-[160px] flex-1 flex-col gap-2 text-xs text-sand-700">
+                New password
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <button
+                type="button"
+                disabled={authBusy}
+                onClick={() => void handleChangePassword()}
+                className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+              >
+                Update password
+              </button>
+            </div>
+          </div>
+        )}
+
+        {syncStatus && <p className="mt-3 text-xs text-sand-600">{syncStatus}</p>}
       </section>
 
       <section className="card p-6">
@@ -3036,9 +3067,10 @@ export default function Home() {
                         <button
                           type="button"
                           onClick={() => downloadMappingCsv(slateIndex)}
+                          title="Confidential: opaque case code → patient name, for re-identifying the deidentified slate/CSV exports"
                           className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
                         >
-                          Export case mapping
+                          Export name key (confidential)
                         </button>
                       </div>
                     </div>
@@ -3096,7 +3128,7 @@ export default function Home() {
                               />
                             </div>
                             <p className="mt-1 text-xs text-sand-700">
-                              TTT {item.timeToTargetDays}d · {item.estimatedDurationMin}m
+                              Time to target {item.timeToTargetDays}d · {item.estimatedDurationMin}m
                             </p>
                             <p className="text-xs text-sand-600">Surgeon ID: {item.surgeonId}</p>
                             {item.unavailableUntil && (
@@ -3126,7 +3158,10 @@ export default function Home() {
                                   Inpatient
                                 </span>
                               )}
-                              <span className="rounded-full bg-slateBlue-50 px-2 py-1 text-slateBlue-700">
+                              <span
+                                title="Priority score: higher means more urgent. Used to rank and auto-fill the waitlist — not shown to patients."
+                                className="rounded-full bg-slateBlue-50 px-2 py-1 text-slateBlue-700"
+                              >
                                 Priority {item.priorityScore.toFixed(2)}
                               </span>
                             </div>
@@ -3512,9 +3547,11 @@ export default function Home() {
       <section className="card p-6">
         <h2 className="text-lg font-semibold text-slateBlue-900">About</h2>
         <p className="mt-2 text-sm text-sand-800">
-          SlateBuilder for Offices was designed by Dr Jonathan Collins for BC Women&apos;s Hospital
-          Surgical Services use only. It was built using an AI tool, and the designer takes no
-          responsibility for any errors or omissions in outputs.
+          &copy; 2026 Dr. Jonathan Collins. All rights reserved. SlateBuilder for Offices was
+          developed by Dr. Jonathan Collins for BC Women&apos;s Hospital Surgical Services pilot
+          use, with AI-assisted development tools. It is provided as a scheduling aid for pilot
+          evaluation only — always verify case details, priority scores, and slate assignments
+          before relying on them clinically.
         </p>
       </section>
       )}
