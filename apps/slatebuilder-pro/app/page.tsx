@@ -1615,9 +1615,11 @@ export default function Home() {
       <section id="about" className="card p-6 scroll-mt-24">
         <h2 className="text-lg font-semibold text-slateBlue-900">About</h2>
         <p className="mt-2 text-sm text-sand-800">
-          SlateBuilder Pro was designed by Dr Jonathan Collins for BC Women&apos;s Hospital Surgical
-          Services use only. It was built using an AI tool, and the designer takes no responsibility
-          for any errors or omissions in outputs.
+          &copy; 2026 Dr. Jonathan Collins. All rights reserved. SlateBuilder Pro was developed by
+          Dr. Jonathan Collins for BC Women&apos;s Hospital Surgical Services pilot use, with
+          AI-assisted development tools. It is provided as a scheduling aid for pilot evaluation
+          only — always verify case details, priority scores, and slate assignments before relying
+          on them clinically.
         </p>
       </section>
         </>
