@@ -368,6 +368,15 @@ export default function Home() {
   });
   const [orderedSlates, setOrderedSlates] = useState<ScoredCase[][]>([]);
   const [dragState, setDragState] = useState<DragState | null>(null);
+  // UI-only drag feedback: which drop zone is currently hovered, and which
+  // case is being lifted. Not persisted — purely visual affordance.
+  const [dragOverTarget, setDragOverTarget] = useState<
+    { kind: "slate"; slateIndex: number } | { kind: "waitlist" } | null
+  >(null);
+  const [draggingCaseId, setDraggingCaseId] = useState<string | null>(null);
+  // Case IDs the user has manually repositioned via drag (cross-slate move or
+  // intra-slate reorder), so their card can show a "moved from suggestion" hint.
+  const [movedCaseIds, setMovedCaseIds] = useState<Record<string, true>>({});
   const [orderedSlateCaseIds, setOrderedSlateCaseIds] = useState<string[][]>([]);
   // Keyed by dateISO (not array position) so lock/collapse state stays attached
   // to "the slate for that date" even if the results array shifts.
@@ -1042,6 +1051,9 @@ export default function Home() {
     setCollapsedSlates({});
     setOptimizeReport(null);
     setDragState(null);
+    setDragOverTarget(null);
+    setDraggingCaseId(null);
+    setMovedCaseIds({});
     compositionSeedRef.current = "";
     window.sessionStorage.removeItem(OFFICE_AUTOSAVE_KEY);
   };
@@ -1209,10 +1221,20 @@ export default function Home() {
 
   const handleDragStart = (slateIndex: number, caseId: string) => {
     setDragState({ kind: "slate", slateIndex, caseId });
+    setDraggingCaseId(caseId);
   };
 
   const handleWaitlistDragStart = (caseId: string) => {
     setDragState({ kind: "waitlist", caseId });
+    setDraggingCaseId(caseId);
+  };
+
+  // Fires once the drag gesture ends, whether or not it landed on a valid
+  // drop zone — clears all transient drag-feedback state so nothing sticks.
+  const handleDragEnd = () => {
+    setDragState(null);
+    setDraggingCaseId(null);
+    setDragOverTarget(null);
   };
 
   // Live same-slate reordering as the dragged row passes over a sibling.
@@ -1241,6 +1263,9 @@ export default function Home() {
       const [moved] = slate.splice(fromIndex, 1);
       slate.splice(toIndex, 0, moved);
       setOrderedSlateCaseIds(next.map((ordered) => ordered.map((item) => item.caseId)));
+      setMovedCaseIds((prevMoved) =>
+        prevMoved[current.caseId] ? prevMoved : { ...prevMoved, [current.caseId]: true }
+      );
       return next;
     });
   };
@@ -1252,6 +1277,7 @@ export default function Home() {
     event.preventDefault();
     const current = dragState;
     setDragState(null);
+    setDragOverTarget(null);
     if (!current) return;
     if (current.kind === "slate" && current.slateIndex === targetSlateIndex) return; // reorder already applied
 
@@ -1290,6 +1316,7 @@ export default function Home() {
       setOrderedSlateCaseIds(next.map((slate) => slate.map((c) => c.caseId)));
       return next;
     });
+    setMovedCaseIds((prev) => (prev[current.caseId] ? prev : { ...prev, [current.caseId]: true }));
     setRemovedFromSlateSuggestions((prev) => {
       if (!prev[current.caseId]) return prev;
       const next = { ...prev };
@@ -1304,6 +1331,7 @@ export default function Home() {
     event.preventDefault();
     const current = dragState;
     setDragState(null);
+    setDragOverTarget(null);
     if (!current || current.kind === "waitlist") return;
     const sourceDateISO = activeSlateDates[current.slateIndex] ?? "";
     if (lockedSlates[sourceDateISO]) {
@@ -1787,6 +1815,7 @@ export default function Home() {
       };
     });
     setOptimizeReport({ perSlate, unplacedOverdue });
+    setMovedCaseIds({});
   };
 
   const downloadSlateCsv = (slateIndex: number) => {
@@ -2137,7 +2166,10 @@ export default function Home() {
         key={item.caseId}
         draggable={!removed}
         onDragStart={() => handleWaitlistDragStart(item.caseId)}
-        className={`rounded-xl border border-sand-200 ${removed ? "bg-sand-100/70 opacity-60" : "bg-white/70"}`}
+        onDragEnd={handleDragEnd}
+        className={`rounded-xl border border-sand-200 ${!removed ? "cursor-grab active:cursor-grabbing" : ""} ${
+          draggingCaseId === item.caseId ? "opacity-40" : ""
+        } ${removed ? "bg-sand-100/70 opacity-60" : "bg-white/70"}`}
       >
         <button
           type="button"
@@ -3004,6 +3036,8 @@ export default function Home() {
                   slot.blockMinutes > 0 ? (occupiedMinutes / slot.blockMinutes) * 100 : 0;
                 const isLocked = Boolean(lockedSlates[slateDate]);
                 const isCollapsed = Boolean(collapsedSlates[slateDate]);
+                const isDragOverThisSlate =
+                  dragOverTarget?.kind === "slate" && dragOverTarget.slateIndex === slateIndex;
 
                 return (
                   <div
@@ -3101,8 +3135,19 @@ export default function Home() {
                     </div>
 
                     <div
-                      className="mt-4 flex min-h-[3rem] flex-col gap-3"
-                      onDragOver={(event) => event.preventDefault()}
+                      className={`mt-4 flex min-h-[3rem] flex-col gap-3 rounded-2xl border-2 border-dashed p-1 transition-colors ${
+                        isDragOverThisSlate
+                          ? "border-slateBlue-400 bg-slateBlue-50/60"
+                          : "border-transparent"
+                      }`}
+                      onDragEnter={(event) => {
+                        event.preventDefault();
+                        setDragOverTarget({ kind: "slate", slateIndex });
+                      }}
+                      onDragOver={(event) => {
+                        event.preventDefault();
+                        setDragOverTarget({ kind: "slate", slateIndex });
+                      }}
                       onDrop={(event) => handleDropOnSlate(event, slateIndex)}
                     >
                       {schedule.map(({ item, start, end, tatAfter, tatEnd }, index) => (
@@ -3111,7 +3156,10 @@ export default function Home() {
                           draggable
                           onDragStart={() => handleDragStart(slateIndex, item.caseId)}
                           onDragOver={(event) => handleDragOver(event, slateIndex, item.caseId)}
-                          className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-sand-200 bg-white px-4 py-3 text-sm shadow-sm"
+                          onDragEnd={handleDragEnd}
+                          className={`flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-sand-200 bg-white px-4 py-3 text-sm shadow-sm cursor-grab active:cursor-grabbing ${
+                            draggingCaseId === item.caseId ? "opacity-40" : ""
+                          }`}
                         >
                           <div>
                             <p className="text-xs uppercase tracking-[0.2em] text-sand-500">
@@ -3156,6 +3204,14 @@ export default function Home() {
                               {item.inpatient && (
                                 <span className="rounded-full bg-sand-200 px-2 py-1 text-sand-800">
                                   Inpatient
+                                </span>
+                              )}
+                              {movedCaseIds[item.caseId] && (
+                                <span
+                                  title="Manually repositioned from the suggested order"
+                                  className="rounded-full bg-amber-100 px-2 py-1 text-amber-800"
+                                >
+                                  ↕ Moved
                                 </span>
                               )}
                               <span
@@ -3350,8 +3406,19 @@ export default function Home() {
                 Showing {filteredWaitlist.length} of {orderedByUrgency.length}
               </p>
               <div
-                className="mt-2 flex min-h-[3rem] flex-col gap-1.5 text-sm"
-                onDragOver={(event) => event.preventDefault()}
+                className={`mt-2 flex min-h-[3rem] flex-col gap-1.5 rounded-2xl border-2 border-dashed p-1 text-sm transition-colors ${
+                  dragOverTarget?.kind === "waitlist"
+                    ? "border-slateBlue-400 bg-slateBlue-50/60"
+                    : "border-transparent"
+                }`}
+                onDragEnter={(event) => {
+                  event.preventDefault();
+                  setDragOverTarget({ kind: "waitlist" });
+                }}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  setDragOverTarget({ kind: "waitlist" });
+                }}
                 onDrop={handleDropOnWaitlist}
               >
                 {filteredWaitlist.map(({ item, rank }) => renderWaitlistRow(item, rank))}
@@ -3443,8 +3510,17 @@ export default function Home() {
           </p>
 
           <div
-            className="mt-2 flex min-h-[3rem] flex-col gap-1.5 text-sm"
-            onDragOver={(event) => event.preventDefault()}
+            className={`mt-2 flex min-h-[3rem] flex-col gap-1.5 rounded-2xl border-2 border-dashed p-1 text-sm transition-colors ${
+              dragOverTarget?.kind === "waitlist" ? "border-slateBlue-400 bg-slateBlue-50/60" : "border-transparent"
+            }`}
+            onDragEnter={(event) => {
+              event.preventDefault();
+              setDragOverTarget({ kind: "waitlist" });
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDragOverTarget({ kind: "waitlist" });
+            }}
             onDrop={handleDropOnWaitlist}
           >
             {filteredWaitlist.map(({ item, rank }) => renderWaitlistRow(item, rank))}

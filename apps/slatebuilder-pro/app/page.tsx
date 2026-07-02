@@ -88,6 +88,11 @@ export default function Home() {
   const [dragState, setDragState] = useState<{ slateIndex: number; caseId: string } | null>(
     null
   );
+  // UI-only drag feedback: which case is currently lifted, purely visual.
+  const [draggingCaseId, setDraggingCaseId] = useState<string | null>(null);
+  // Case IDs the user has manually reordered via drag, so their card can show
+  // a "moved from suggestion" hint.
+  const [movedCaseIds, setMovedCaseIds] = useState<Record<string, true>>({});
   const [activeTab, setActiveTab] = useState<ProTab>("setup");
   const [expandedCaseIds, setExpandedCaseIds] = useState<Record<string, boolean>>({});
   const [waitlistQuery, setWaitlistQuery] = useState("");
@@ -286,6 +291,14 @@ export default function Home() {
 
   const handleDragStart = (slateIndex: number, caseId: string) => {
     setDragState({ slateIndex, caseId });
+    setDraggingCaseId(caseId);
+  };
+
+  // Fires once the drag gesture ends, whether or not it landed on a valid
+  // drop target — clears all transient drag-feedback state so nothing sticks.
+  const handleDragEnd = () => {
+    setDragState(null);
+    setDraggingCaseId(null);
   };
 
   const handleDragOver = (
@@ -307,6 +320,9 @@ export default function Home() {
       const [moved] = slate.splice(fromIndex, 1);
       slate.splice(toIndex, 0, moved);
       setOrderedSlateCaseIds(next.map((ordered) => ordered.map((item) => item.caseId)));
+      setMovedCaseIds((prevMoved) =>
+        prevMoved[dragState.caseId] ? prevMoved : { ...prevMoved, [dragState.caseId]: true }
+      );
       return next;
     });
   };
@@ -1101,7 +1117,10 @@ export default function Home() {
                           draggable
                           onDragStart={() => handleDragStart(slateIndex, item.caseId)}
                           onDragOver={(event) => handleDragOver(event, slateIndex, item.caseId)}
-                          className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-sand-200 bg-white px-4 py-3 text-sm shadow-sm"
+                          onDragEnd={handleDragEnd}
+                          className={`flex flex-wrap items-center justify-between gap-4 rounded-xl border border-sand-200 bg-white px-4 py-3 text-sm shadow-sm cursor-grab active:cursor-grabbing ${
+                            draggingCaseId === item.caseId ? "opacity-40" : ""
+                          }`}
                         >
                           <div>
                             <p className="text-xs uppercase tracking-[0.2em] text-sand-500">
@@ -1142,6 +1161,14 @@ export default function Home() {
                               {item.inpatient && (
                                 <span className="rounded-full bg-sand-200 px-2 py-1 text-sand-800">
                                   Inpatient
+                                </span>
+                              )}
+                              {movedCaseIds[item.caseId] && (
+                                <span
+                                  title="Manually repositioned from the suggested order"
+                                  className="rounded-full bg-amber-100 px-2 py-1 text-amber-800"
+                                >
+                                  ↕ Moved
                                 </span>
                               )}
                             </div>
