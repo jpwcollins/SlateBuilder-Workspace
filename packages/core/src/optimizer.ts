@@ -63,7 +63,7 @@ export function priorityScoreOf(input: {
   return urgencyWeight * (1 + r);
 }
 
-export function scoreCases(cases: PatientCase[], _date?: Date): ScoredCase[] {
+export function scoreCases(cases: PatientCase[]): ScoredCase[] {
   return cases.map((item) => ({
     ...item,
     urgencyWeight: urgencyWeightMap[item.benchmarkWeeks] ?? 1,
@@ -88,7 +88,7 @@ const occupiedFor = (count: number, surgical: number) =>
  */
 export function optimizeSlate(cases: PatientCase[], date: Date): SlateResult {
   const blockMinutes = getBlockMinutes(date);
-  const scored = scoreCases(cases, date);
+  const scored = scoreCases(cases);
   const TAT = TURNAROUND_MINUTES;
 
   // Phase 1 — anchor over-target cases greedily by priority.
@@ -146,39 +146,53 @@ export function optimizeSlate(cases: PatientCase[], date: Date): SlateResult {
 /**
  * 0/1 knapsack maximizing total priority subject to a minute budget and a slot
  * cap. Each item's weight is duration + TAT (see optimizeSlate for why).
+ *
+ * The DP table is one flat typed array indexed by (item, weight, slot) rather
+ * than (n+1) x (cap+1) separately-allocated Float32Arrays: for a realistic
+ * waitlist (thousands of candidates) the nested-allocation version creates
+ * millions of small typed-array objects, which is slow to allocate/GC and can
+ * exhaust a browser tab's memory. A single flat buffer holds the same values
+ * in one allocation. Candidates that can't possibly fit the budget on their
+ * own are dropped before the DP runs — this only shrinks the search space, it
+ * never changes which items an optimal solution could choose.
  */
 function knapsackFill(
   candidates: ScoredCase[],
   budget: number,
   slots: number
 ): ScoredCase[] {
-  const n = candidates.length;
   const cap = Math.floor(budget);
-  if (n === 0 || slots <= 0 || cap <= 0) return [];
+  if (slots <= 0 || cap <= 0) return [];
 
-  const weights = candidates.map((c) => Math.round(c.estimatedDurationMin) + TURNAROUND_MINUTES);
-  const values = candidates.map((c) => c.priorityScore);
-
-  const dp: Float64Array[][] = Array.from({ length: n + 1 }, () =>
-    Array.from({ length: cap + 1 }, () => new Float64Array(slots + 1))
+  const usable = candidates.filter(
+    (c) => Math.round(c.estimatedDurationMin) + TURNAROUND_MINUTES <= cap
   );
+  const n = usable.length;
+  if (n === 0) return [];
+
+  const weights = usable.map((c) => Math.round(c.estimatedDurationMin) + TURNAROUND_MINUTES);
+  const values = usable.map((c) => c.priorityScore);
+
+  const capSpan = cap + 1;
+  const slotSpan = slots + 1;
+  const layerSize = capSpan * slotSpan;
+  const dp = new Float32Array((n + 1) * layerSize);
+  const layerStart = (i: number, w: number) => i * layerSize + w * slotSpan;
 
   for (let i = 1; i <= n; i += 1) {
     const weight = weights[i - 1];
     const value = values[i - 1];
-    const prev = dp[i - 1];
-    const curr = dp[i];
     for (let w = 0; w <= cap; w += 1) {
-      const prevW = prev[w];
-      const prevFit = weight <= w ? prev[w - weight] : null;
-      const currW = curr[w];
+      const prevBase = layerStart(i - 1, w);
+      const currBase = layerStart(i, w);
+      const prevFitBase = weight <= w ? layerStart(i - 1, w - weight) : -1;
       for (let k = 0; k <= slots; k += 1) {
-        let best = prevW[k];
-        if (prevFit && k >= 1) {
-          const candidate = prevFit[k - 1] + value;
-          if (candidate > best) best = candidate;
+        let best = dp[prevBase + k];
+        if (prevFitBase >= 0 && k >= 1) {
+          const candidateValue = dp[prevFitBase + k - 1] + value;
+          if (candidateValue > best) best = candidateValue;
         }
-        currW[k] = best;
+        dp[currBase + k] = best;
       }
     }
   }
@@ -187,8 +201,8 @@ function knapsackFill(
   let w = cap;
   let k = slots;
   for (let i = n; i >= 1; i -= 1) {
-    if (dp[i][w][k] !== dp[i - 1][w][k]) {
-      chosen.push(candidates[i - 1]);
+    if (dp[layerStart(i, w) + k] !== dp[layerStart(i - 1, w) + k]) {
+      chosen.push(usable[i - 1]);
       w -= weights[i - 1];
       k -= 1;
     }
@@ -215,7 +229,7 @@ export function optimizeMultipleSlates(
 
   if (results.length > 0) {
     const last = results[results.length - 1];
-    last.remaining = scoreCases(remainingCases, date);
+    last.remaining = scoreCases(remainingCases);
   }
 
   return results;
@@ -246,7 +260,7 @@ export function optimizeSlatesForDates(
 
   if (results.length > 0) {
     const last = results[results.length - 1];
-    last.remaining = scoreCases(remainingCases, dates[results.length - 1]);
+    last.remaining = scoreCases(remainingCases);
   }
 
   return results;

@@ -124,13 +124,13 @@ describe("priorityScoreOf", () => {
 
 describe("reorderSlateByCaseIds", () => {
   it("applies a saved order and appends unknown cases", () => {
-    const scored = scoreCases(fixture.slice(0, 3), DATE);
+    const scored = scoreCases(fixture.slice(0, 3));
     const reordered = reorderSlateByCaseIds(scored, ["C-003", "C-001"]);
     expect(reordered.map((c) => c.caseId)).toEqual(["C-003", "C-001", "C-002"]);
   });
 
   it("returns input unchanged when no order is given", () => {
-    const scored = scoreCases(fixture.slice(0, 2), DATE);
+    const scored = scoreCases(fixture.slice(0, 2));
     expect(reorderSlateByCaseIds(scored, undefined)).toBe(scored);
   });
 });
