@@ -21,7 +21,14 @@ import {
   WaitlistPdfRow,
 } from "@slatebuilder/core/slatePdf";
 import {
+  applyDefaultDuration,
+  applyFlagOverrides,
+  applyUnavailableOverrides,
+  BENCHMARK_WEEKS_ORDER,
+  buildCaseSchedule,
+  caseFitsInSlate,
   ClinicalFlagKey,
+  DefaultDurations,
   formatMinutesToTime,
   getBlockMinutes,
   getBlockStartMinutes,
@@ -29,14 +36,17 @@ import {
   optimizeSlatesForDates,
   parseCsv,
   PatientCase,
+  PriorityMode,
   ScoredCase,
   clinicalFlagDefinitions,
   serializeCsv,
   csvEscape,
-  priorityScoreOf,
+  sortForSlate,
+  sortForWaitlist,
   toLocalDateOnly,
   scoreCases,
   isAvailableOnDate,
+  urgencyChipClasses,
   TURNAROUND_MINUTES,
   MAX_CASES_PER_SLATE,
 } from "@slatebuilder/core";
@@ -157,15 +167,6 @@ function StatCard({
       <p className="mt-1 text-xs text-sand-700">{detail}</p>
     </div>
   );
-}
-
-// Urgency tint keyed by benchmark class (most urgent = red).
-function urgencyChipClasses(weeks: number): string {
-  if (weeks <= 2) return "bg-rose-100 text-rose-700";
-  if (weeks <= 4) return "bg-orange-100 text-orange-700";
-  if (weeks <= 6) return "bg-amber-100 text-amber-800";
-  if (weeks <= 12) return "bg-sky-100 text-sky-700";
-  return "bg-slate-100 text-slate-600";
 }
 
 function UrgencyBadge({
@@ -337,16 +338,14 @@ export default function Home() {
     Record<string, boolean>
   >({});
   const [removedFromWaitlist, setRemovedFromWaitlist] = useState<Record<string, boolean>>({});
-  const [defaultDurations, setDefaultDurations] = useState({
+  const [defaultDurations, setDefaultDurations] = useState<DefaultDurations>({
     hysteroscopy: 30,
     laparoscopy: 60,
     hysterectomy: 180,
     other: 90,
   });
   const [defaultsSavedAt, setDefaultsSavedAt] = useState<string | null>(null);
-  const [priorityMode, setPriorityMode] = useState<"ttt" | "urgency_then_ttt">(
-    "urgency_then_ttt"
-  );
+  const [priorityMode, setPriorityMode] = useState<PriorityMode>("urgency_then_ttt");
   const [slateCount, setSlateCount] = useState(2);
   const [slateDates, setSlateDates] = useState<string[]>(() => {
     const today = new Date();
@@ -401,6 +400,11 @@ export default function Home() {
   // Holds a restored local (sessionStorage) session until `cases` is populated
   // from the restored csvText, since rebuilding the slate composition needs it.
   const pendingLocalRestoreRef = useRef<OfficeSessionState | null>(null);
+  // Tracks the initial post-sign-in cloud load so the debounced save effect
+  // never fires before it succeeds -- without this, a transient failure right
+  // after sign-in (with no retry) let the save effect push a mostly-default
+  // local state over real cloud data on the very next edit.
+  const cloudLoadStatusRef = useRef<"idle" | "loading" | "loaded" | "failed">("idle");
 
   useEffect(() => {
     if (!csvText) return;
@@ -461,43 +465,12 @@ export default function Home() {
     window.sessionStorage.setItem(OFFICE_TAB_KEY, activeTab);
   }, [activeTab]);
 
-  const applyDefaultDuration = (item: PatientCase): PatientCase => {
-    const name = (item.procedureName ?? "").toLowerCase();
-    let duration = defaultDurations.other;
-    if (name.includes("hysterectomy")) {
-      duration = defaultDurations.hysterectomy;
-    } else if (name.includes("hysteroscop")) {
-      duration = defaultDurations.hysteroscopy;
-    } else if (name.includes("laparoscop")) {
-      duration = defaultDurations.laparoscopy;
-    }
-    return { ...item, estimatedDurationMin: duration };
-  };
-
-  const applyFlagOverrides = (item: PatientCase): PatientCase => {
-    const override = flagOverrides[item.caseId];
-    if (!override) return item;
-    return {
-      ...item,
-      flags: {
-        ...item.flags,
-        ...override,
-      },
-    };
-  };
-
-  const applyUnavailableOverrides = (item: PatientCase): PatientCase => {
-    const override = unavailableOverrides[item.caseId];
-    if (override === undefined) return item;
-    return {
-      ...item,
-      unavailableUntil: normalizeDateOnly(override),
-    };
-  };
-
   const officeCases = useMemo(() => {
     return cases.map((item) =>
-      applyUnavailableOverrides(applyFlagOverrides(applyDefaultDuration(item)))
+      applyUnavailableOverrides(
+        applyFlagOverrides(applyDefaultDuration(item, defaultDurations), flagOverrides),
+        unavailableOverrides
+      )
     );
   }, [cases, defaultDurations, flagOverrides, unavailableOverrides]);
 
@@ -538,53 +511,57 @@ export default function Home() {
     );
   }, [officeCases]);
 
-  const sortForWaitlist = (items: PatientCase[]) => {
-    return [...items].sort((a, b) => {
-      if (priorityMode === "ttt") {
-        return a.timeToTargetDays - b.timeToTargetDays;
-      }
-      // Composite priority (same score the slate uses), longest wait breaks ties.
-      const diff = priorityScoreOf(b) - priorityScoreOf(a);
-      if (diff !== 0) return diff;
-      return a.timeToTargetDays - b.timeToTargetDays;
-    });
-  };
+  const sortWaitlistByPriority = (items: PatientCase[]) => sortForWaitlist(items, priorityMode);
 
-  const sortForSlate = (items: ScoredCase[]) => {
-    const order = [2, 4, 6, 12, 26];
-    return [...items].sort((a, b) => {
-      const aFlag = a.flags?.diabetes ? 0 : a.flags?.osa ? 1 : 2;
-      const bFlag = b.flags?.diabetes ? 0 : b.flags?.osa ? 1 : 2;
-      if (aFlag !== bFlag) return aFlag - bFlag;
-      if (priorityMode === "ttt") {
-        return a.timeToTargetDays - b.timeToTargetDays;
-      }
-      const aGroup = order.indexOf(a.benchmarkWeeks);
-      const bGroup = order.indexOf(b.benchmarkWeeks);
-      if (aGroup !== bGroup) return aGroup - bGroup;
-      return a.timeToTargetDays - b.timeToTargetDays;
-    });
-  };
+  const sortSlateByPriority = (items: ScoredCase[]) => sortForSlate(items, priorityMode);
 
+  // The configured, non-empty slate dates, in order. This is the single
+  // source of truth for "how many slate slots exist and which date each one
+  // is" — orderedSlates/orderedSlateCaseIds are always indexed against this,
+  // NOT against `slates` below (see its comment for why those two can
+  // diverge).
+  const activeSlateDates = useMemo(
+    () => slateDates.slice(0, slateCount).filter(Boolean),
+    [slateDates, slateCount]
+  );
+
+  // The optimizer's own suggestion, keyed by dates. IMPORTANT: this array can
+  // be SHORTER than activeSlateDates -- optimizeSlatesForDates stops once it
+  // runs out of cases to place, so a trailing configured date with nothing
+  // left to schedule simply isn't represented here. Never use slates.length
+  // or slates[i] as the source of truth for how many slate slots exist or
+  // which date slot i is; use activeSlateDates for that instead.
   const slates = useMemo(() => {
     if (slateEligibleCases.length === 0) return null;
-    const dates = slateDates
-      .slice(0, slateCount)
-      .filter(Boolean)
-      .map((date) => new Date(`${date}T00:00:00`));
+    const dates = activeSlateDates.map((date) => new Date(`${date}T00:00:00`));
     if (dates.length === 0) return null;
     return optimizeSlatesForDates(slateEligibleCases, dates);
-  }, [slateEligibleCases, slateDates, slateCount]);
+  }, [slateEligibleCases, activeSlateDates]);
+
+  // One entry per configured slate slot (always activeSlateDates.length long,
+  // unlike `slates`), carrying just enough to render/target a slate card even
+  // when the optimizer memo never reached that index.
+  const slateSlots = useMemo(() => {
+    return activeSlateDates.map((dateISO, i) => {
+      const fromOptimizer = slates?.[i];
+      // Only trust the optimizer entry at this index if its date actually
+      // matches -- optimizeSlatesForDates can skip a date entirely (not just
+      // stop early) if every remaining case is unavailable that day, which
+      // would otherwise shift slates[i] out of alignment with slot i.
+      if (fromOptimizer && fromOptimizer.dateISO === dateISO) {
+        return { dateISO, blockMinutes: fromOptimizer.blockMinutes, selected: fromOptimizer.selected };
+      }
+      const date = new Date(`${dateISO}T00:00:00`);
+      return { dateISO, blockMinutes: getBlockMinutes(date), selected: [] as ScoredCase[] };
+    });
+  }, [activeSlateDates, slates]);
 
   // A slate's composition is auto-generated only on a real structural change:
   // a new upload (the case-id set changes), the configured dates/count change,
   // or the priority-rule toggle. Any other edit (drag, lock, duration/flag
   // tweaks, remove/restore) mutates orderedSlates/orderedSlateCaseIds directly
   // and is never silently overwritten by re-running the optimizer.
-  const activeDatesKey = useMemo(
-    () => slateDates.slice(0, slateCount).filter(Boolean).join("|"),
-    [slateDates, slateCount]
-  );
+  const activeDatesKey = useMemo(() => activeSlateDates.join("|"), [activeSlateDates]);
   const caseIdSetKey = useMemo(
     () =>
       officeCasesWithOverrides
@@ -612,7 +589,7 @@ export default function Home() {
       setOrderedSlateCaseIds([]);
       return;
     }
-    const nextOrdered = slates.map((item) => sortForSlate(item.selected));
+    const nextOrdered = slates.map((item) => sortSlateByPriority(item.selected));
     setOrderedSlates(nextOrdered);
     setOrderedSlateCaseIds(nextOrdered.map((slate) => slate.map((item) => item.caseId)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -627,7 +604,7 @@ export default function Home() {
   }, [orderedSlates]);
 
   const orderedByUrgency = useMemo(() => {
-    return sortForWaitlist(officeCasesWithOverrides);
+    return sortWaitlistByPriority(officeCasesWithOverrides);
   }, [officeCasesWithOverrides, priorityMode]);
 
   const remainingByUrgency = useMemo(() => {
@@ -660,8 +637,7 @@ export default function Home() {
   // Histogram data: per benchmark bucket, split patients into under-/over-target
   // bands at the ±50%-of-target threshold.
   const waitlistOverview = useMemo<OverviewBucket[]>(() => {
-    const order = [2, 4, 6, 12, 26] as const;
-    const buckets: OverviewBucket[] = order.map((weeks) => ({
+    const buckets: OverviewBucket[] = BENCHMARK_WEEKS_ORDER.map((weeks) => ({
       label: `${weeks}w`,
       wellUnder: 0,
       approaching: 0,
@@ -669,7 +645,7 @@ export default function Home() {
       wellOver: 0,
       total: 0,
     }));
-    const indexOf = new Map(order.map((weeks, i) => [weeks, i]));
+    const indexOf = new Map(BENCHMARK_WEEKS_ORDER.map((weeks, i) => [weeks, i]));
     activeOfficeCases.forEach((item) => {
       const i = indexOf.get(item.benchmarkWeeks);
       if (i === undefined) return;
@@ -692,13 +668,12 @@ export default function Home() {
   // Long-waiters: every case past target, grouped by benchmark class, most
   // overdue first within each class.
   const longWaiters = useMemo(() => {
-    const order = [2, 4, 6, 12, 26] as const;
-    const groups = order.map((weeks) => ({
+    const groups = BENCHMARK_WEEKS_ORDER.map((weeks) => ({
       weeks,
       label: `${weeks}w`,
       cases: [] as PatientCase[],
     }));
-    const indexOf = new Map(order.map((weeks, i) => [weeks, i]));
+    const indexOf = new Map(BENCHMARK_WEEKS_ORDER.map((weeks, i) => [weeks, i]));
     activeOfficeCases
       .filter((c) => c.timeToTargetDays < 0)
       .forEach((c) => {
@@ -812,23 +787,16 @@ export default function Home() {
     const byId = new Map(cases.map((c) => [c.caseId, c]));
     const settingsDurations = state.settings.defaultDurations;
     const withAllOverrides = (item: PatientCase): PatientCase => {
-      const name = (item.procedureName ?? "").toLowerCase();
-      let defaultDuration = settingsDurations.other;
-      if (name.includes("hysterectomy")) defaultDuration = settingsDurations.hysterectomy;
-      else if (name.includes("hysteroscop")) defaultDuration = settingsDurations.hysteroscopy;
-      else if (name.includes("laparoscop")) defaultDuration = settingsDurations.laparoscopy;
+      const withDefaults = applyDefaultDuration(item, settingsDurations);
+      const withFlags = applyFlagOverrides(withDefaults, flags);
+      const withUnavail = applyUnavailableOverrides(withFlags, unavail);
       return {
-        ...item,
-        estimatedDurationMin: dur[item.caseId] ?? defaultDuration,
-        flags: { ...item.flags, ...(flags[item.caseId] ?? {}) },
-        unavailableUntil:
-          unavail[item.caseId] !== undefined
-            ? normalizeDateOnly(unavail[item.caseId])
-            : item.unavailableUntil,
+        ...withUnavail,
+        estimatedDurationMin: dur[item.caseId] ?? withDefaults.estimatedDurationMin,
       };
     };
     const nextOrderedSlates = nextCaseIds.map((ids) =>
-      sortForSlate(
+      sortSlateByPriority(
         scoreCases(
           ids
             .map((id) => byId.get(id))
@@ -905,6 +873,14 @@ export default function Home() {
       setSyncStatus("Enter your office name and password.");
       return;
     }
+    if (
+      cases.length > 0 &&
+      !window.confirm(
+        "Signing in will replace what's on this screen with this office's saved cloud data. Continue?"
+      )
+    ) {
+      return;
+    }
     setAuthBusy(true);
     try {
       const key = await loginOffice(id, officePassword);
@@ -927,21 +903,53 @@ export default function Home() {
     setCaseTokens({});
     syncVersionRef.current = 0;
     lastSyncedJsonRef.current = "";
+    cloudLoadStatusRef.current = "idle";
     setSyncStatus("Signed out");
   };
 
   // Once signed in and tokens are computed, pull the office's cloud state.
+  // Retries a couple of times on transient failure (e.g. a network blip)
+  // before giving up, since the save effect below refuses to run until this
+  // has succeeded at least once.
   useEffect(() => {
     if (!officeKey || !signedInId || Object.keys(caseTokens).length === 0) return;
-    if (lastSyncedJsonRef.current) return; // already loaded this session
-    loadFromCloud(officeKey, tokenToCaseId).catch(() => setSyncStatus("Could not load cloud state."));
+    if (cloudLoadStatusRef.current === "loading" || cloudLoadStatusRef.current === "loaded") return;
+
+    let cancelled = false;
+    cloudLoadStatusRef.current = "loading";
+
+    const attempt = async (retriesLeft: number): Promise<void> => {
+      try {
+        await loadFromCloud(officeKey, tokenToCaseId);
+        if (cancelled) return;
+        cloudLoadStatusRef.current = "loaded";
+      } catch {
+        if (cancelled) return;
+        if (retriesLeft > 0) {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          if (!cancelled) await attempt(retriesLeft - 1);
+          return;
+        }
+        cloudLoadStatusRef.current = "failed";
+        setSyncStatus("Could not load cloud state — sign in again to retry before making changes.");
+      }
+    };
+    void attempt(2);
+
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [officeKey, signedInId, caseTokens]);
 
   // Debounced auto-save of the (non-PHI) working state. A dirty check on the
   // serialized state prevents save loops; version refs drive optimistic concurrency.
+  // Deliberately waits for the initial cloud load to succeed first: saving
+  // before that finishes could push a default/incomplete local state over
+  // real cloud data (see cloudLoadStatusRef above).
   useEffect(() => {
     if (!officeKey || !signedInId || Object.keys(caseTokens).length === 0) return;
+    if (cloudLoadStatusRef.current !== "loaded") return;
     const handle = setTimeout(async () => {
       const next = buildSyncedState();
       const json = JSON.stringify(next);
@@ -1094,23 +1102,16 @@ export default function Home() {
     const flags = state.flagOverrides ?? {};
     const settingsDurations = state.defaultDurations;
     const withAllOverrides = (item: PatientCase): PatientCase => {
-      const name = (item.procedureName ?? "").toLowerCase();
-      let defaultDuration = settingsDurations.other;
-      if (name.includes("hysterectomy")) defaultDuration = settingsDurations.hysterectomy;
-      else if (name.includes("hysteroscop")) defaultDuration = settingsDurations.hysteroscopy;
-      else if (name.includes("laparoscop")) defaultDuration = settingsDurations.laparoscopy;
+      const withDefaults = applyDefaultDuration(item, settingsDurations);
+      const withFlags = applyFlagOverrides(withDefaults, flags);
+      const withUnavail = applyUnavailableOverrides(withFlags, unavail);
       return {
-        ...item,
-        estimatedDurationMin: dur[item.caseId] ?? defaultDuration,
-        flags: { ...item.flags, ...(flags[item.caseId] ?? {}) },
-        unavailableUntil:
-          unavail[item.caseId] !== undefined
-            ? normalizeDateOnly(unavail[item.caseId])
-            : item.unavailableUntil,
+        ...withUnavail,
+        estimatedDurationMin: dur[item.caseId] ?? withDefaults.estimatedDurationMin,
       };
     };
     const nextOrderedSlates = nextCaseIds.map((ids) =>
-      sortForSlate(
+      sortSlateByPriority(
         scoreCases(
           ids
             .map((id) => byId.get(id))
@@ -1235,19 +1236,19 @@ export default function Home() {
     if (!current) return;
     if (current.kind === "slate" && current.slateIndex === targetSlateIndex) return; // reorder already applied
 
-    const targetDateISO = slates?.[targetSlateIndex]?.dateISO ?? "";
+    const targetDateISO = slateSlots[targetSlateIndex]?.dateISO ?? "";
     if (lockedSlates[targetDateISO]) {
       window.alert("This slate is locked; patients cannot be added to it.");
       return;
     }
-    if (current.kind === "slate" && lockedSlates[slates?.[current.slateIndex]?.dateISO ?? ""]) {
+    if (current.kind === "slate" && lockedSlates[slateSlots[current.slateIndex]?.dateISO ?? ""]) {
       window.alert("That patient's slate is locked; patients cannot be removed from it.");
       return;
     }
 
     const source = officeCasesWithOverrides.find((c) => c.caseId === current.caseId);
     if (!source) return;
-    const blockMinutes = slates?.[targetSlateIndex]?.blockMinutes ?? 0;
+    const blockMinutes = slateSlots[targetSlateIndex]?.blockMinutes ?? 0;
     if (
       targetDateISO &&
       !isAvailableOnDate(source.unavailableUntil, new Date(`${targetDateISO}T00:00:00`))
@@ -1260,16 +1261,13 @@ export default function Home() {
     setOrderedSlates((prev) => {
       const withoutCase = prev.map((slate) => slate.filter((c) => c.caseId !== current.caseId));
       const target = withoutCase[targetSlateIndex] ?? [];
-      const nextCount = target.length + 1;
-      const surgical = target.reduce((sum, c) => sum + c.estimatedDurationMin, 0) +
-        scored.estimatedDurationMin;
-      const occupied = surgical + TURNAROUND_MINUTES * (nextCount - 1);
-      if (nextCount > MAX_CASES_PER_SLATE || occupied > blockMinutes) {
+      const surgical = target.reduce((sum, c) => sum + c.estimatedDurationMin, 0);
+      if (!caseFitsInSlate(surgical, target.length, scored.estimatedDurationMin, blockMinutes)) {
         window.alert("Not enough room in that slate for this patient.");
         return prev;
       }
       const next = [...withoutCase];
-      next[targetSlateIndex] = sortForSlate([...target, scored]);
+      next[targetSlateIndex] = sortSlateByPriority([...target, scored]);
       setOrderedSlateCaseIds(next.map((slate) => slate.map((c) => c.caseId)));
       return next;
     });
@@ -1288,8 +1286,7 @@ export default function Home() {
     const current = dragState;
     setDragState(null);
     if (!current || current.kind === "waitlist") return;
-    const sourceDateISO =
-      normalizeDateOnly(slateDates.slice(0, slateCount)[current.slateIndex]) ?? "";
+    const sourceDateISO = activeSlateDates[current.slateIndex] ?? "";
     if (lockedSlates[sourceDateISO]) {
       window.alert("This slate is locked; patients cannot be removed from it.");
       return;
@@ -1346,6 +1343,53 @@ export default function Home() {
     patchCaseInSlates(caseId, (item) => ({ ...item, flags: { ...item.flags, [flag]: value } }));
   };
 
+  // Searches slate slots in date order for the first unlocked one the
+  // candidate is available for and fits in (locked slots are skipped, with a
+  // one-time alert). Shared by updateUnavailableUntil and
+  // restoreToSuggestedSlates. Pass excludeCaseId when the candidate might
+  // still appear in a stale copy of its old slot -- e.g. right after
+  // spliceCaseOutOfSlates, whose state update hasn't committed yet, so
+  // orderedSlates (read via closure) can still contain it. Returns -1 if
+  // nothing fits anywhere.
+  const findNextAvailableSlotIndex = (
+    candidate: { estimatedDurationMin: number; unavailableUntil?: string },
+    excludeCaseId?: string
+  ): number => {
+    let alerted = false;
+    for (let i = 0; i < activeSlateDates.length; i += 1) {
+      const dateISO = activeSlateDates[i];
+      const date = new Date(`${dateISO}T00:00:00`);
+      if (!isAvailableOnDate(candidate.unavailableUntil, date)) continue;
+      const blockMinutes = getBlockMinutes(date);
+      const current = (orderedSlates[i] ?? []).filter((item) => item.caseId !== excludeCaseId);
+      const surgical = current.reduce((sum, item) => sum + item.estimatedDurationMin, 0);
+      if (!caseFitsInSlate(surgical, current.length, candidate.estimatedDurationMin, blockMinutes)) {
+        continue;
+      }
+      if (lockedSlates[dateISO]) {
+        if (!alerted) {
+          alerted = true;
+          window.alert(
+            `Slate ${i + 1} (${dateISO}) is locked. Placing this patient in the next available slot instead.`
+          );
+        }
+        continue;
+      }
+      return i;
+    }
+    return -1;
+  };
+
+  const placeCandidateInSlot = (slateIndex: number, candidate: ScoredCase) => {
+    setOrderedSlates((prev) => {
+      const next = [...prev];
+      while (next.length <= slateIndex) next.push([]);
+      next[slateIndex] = sortSlateByPriority([...next[slateIndex], candidate]);
+      setOrderedSlateCaseIds(next.map((slate) => slate.map((item) => item.caseId)));
+      return next;
+    });
+  };
+
   // Setting (or clearing) an unavailable-until date can invalidate a slate the
   // patient is already sitting on. If so, pull them off it and look for the
   // first later, unlocked slate with room (same search order as
@@ -1359,14 +1403,8 @@ export default function Home() {
       [caseId]: value,
     }));
 
-    // Deliberately built from the configured slate dates (slateDates/slateCount),
-    // not the `slates` optimizer memo: that memo only contains as many entries
-    // as it needs to place the current cases, so a trailing configured date can
-    // be entirely absent from it until something actually lands there. Relying
-    // on its length here would silently drop a patient instead of moving them.
-    const activeSlateDates = slateDates.slice(0, slateCount);
     const slateIndex = findSlateIndexForCase(caseId);
-    const currentDateISO = slateIndex !== -1 ? normalizeDateOnly(activeSlateDates[slateIndex]) ?? "" : "";
+    const currentDateISO = slateIndex !== -1 ? activeSlateDates[slateIndex] ?? "" : "";
     const stillFits =
       !currentDateISO || isAvailableOnDate(normalized, new Date(`${currentDateISO}T00:00:00`));
 
@@ -1390,46 +1428,16 @@ export default function Home() {
     backfillSlate(slateIndex, caseId);
     const candidate = scoreCases([{ ...source, unavailableUntil: normalized }])[0];
 
-    let alerted = false;
-    for (let i = 0; i < activeSlateDates.length; i += 1) {
-      const rawDate = activeSlateDates[i];
-      if (!rawDate) continue;
-      const dateISO = normalizeDateOnly(rawDate) ?? rawDate;
-      const date = new Date(`${rawDate}T00:00:00`);
-      if (!isAvailableOnDate(normalized, date)) continue;
-      const blockMinutes = getBlockMinutes(date);
-      const current = (orderedSlates[i] ?? []).filter((item) => item.caseId !== caseId);
-      if (current.length >= MAX_CASES_PER_SLATE) continue;
-      const surgical =
-        current.reduce((sum, item) => sum + item.estimatedDurationMin, 0) +
-        candidate.estimatedDurationMin;
-      const occupied = surgical + TURNAROUND_MINUTES * current.length;
-      if (occupied > blockMinutes) continue;
-
-      if (lockedSlates[dateISO]) {
-        if (!alerted) {
-          alerted = true;
-          window.alert(
-            `Slate ${i + 1}${dateISO ? ` (${dateISO})` : ""} is locked. Placing this patient in the next available slot instead.`
-          );
-        }
-        continue;
-      }
-
-      setOrderedSlates((prev) => {
-        const next = [...prev];
-        while (next.length <= i) next.push([]);
-        next[i] = sortForSlate([...next[i], candidate]);
-        setOrderedSlateCaseIds(next.map((slate) => slate.map((item) => item.caseId)));
-        return next;
-      });
+    const targetIndex = findNextAvailableSlotIndex(candidate, caseId);
+    if (targetIndex === -1) {
       window.alert(
-        `${source.displayLabel} was moved off the ${currentDateISO} slate (now before their unavailable-until date) and placed on ${dateISO}.`
+        `${source.displayLabel} was taken off the ${currentDateISO} slate (now before their unavailable-until date). No later slate had room, so they're back on the waitlist as not-yet-slated.`
       );
       return;
     }
+    placeCandidateInSlot(targetIndex, candidate);
     window.alert(
-      `${source.displayLabel} was taken off the ${currentDateISO} slate (now before their unavailable-until date). No later slate had room, so they're back on the waitlist as not-yet-slated.`
+      `${source.displayLabel} was moved off the ${currentDateISO} slate (now before their unavailable-until date) and placed on ${activeSlateDates[targetIndex]}.`
     );
   };
 
@@ -1462,7 +1470,6 @@ export default function Home() {
   // the very case that was just removed could immediately backfill its own
   // vacated spot, since it's still the highest-priority "candidate" around.
   const backfillSlate = (slateIndex: number, excludeCaseId?: string) => {
-    const activeSlateDates = slateDates.slice(0, slateCount);
     const rawDate = activeSlateDates[slateIndex];
     if (!rawDate) return;
     const dateISO = normalizeDateOnly(rawDate) ?? rawDate;
@@ -1475,7 +1482,7 @@ export default function Home() {
       if (current.length >= MAX_CASES_PER_SLATE) return prev;
 
       const placedIds = new Set(prev.flatMap((slate) => slate.map((item) => item.caseId)));
-      const candidates = sortForWaitlist(
+      const candidates = sortWaitlistByPriority(
         officeCasesWithOverrides.filter(
           (item) =>
             item.caseId !== excludeCaseId &&
@@ -1491,8 +1498,9 @@ export default function Home() {
       const additions: ScoredCase[] = [];
       for (const candidate of candidates) {
         if (count >= MAX_CASES_PER_SLATE) break;
-        const occupied = surgical + candidate.estimatedDurationMin + TURNAROUND_MINUTES * count;
-        if (occupied > blockMinutes) continue;
+        if (!caseFitsInSlate(surgical, count, candidate.estimatedDurationMin, blockMinutes)) {
+          continue;
+        }
         additions.push(scoreCases([candidate])[0]);
         surgical += candidate.estimatedDurationMin;
         count += 1;
@@ -1500,7 +1508,7 @@ export default function Home() {
       if (additions.length === 0) return prev;
 
       const next = [...prev];
-      next[slateIndex] = sortForSlate([...current, ...additions]);
+      next[slateIndex] = sortSlateByPriority([...current, ...additions]);
       setOrderedSlateCaseIds(next.map((slate) => slate.map((item) => item.caseId)));
       return next;
     });
@@ -1509,7 +1517,7 @@ export default function Home() {
   const removeFromSuggestedSlates = (caseId: string) => {
     const slateIndex = findSlateIndexForCase(caseId);
     if (slateIndex !== -1) {
-      const dateISO = normalizeDateOnly(slateDates.slice(0, slateCount)[slateIndex]) ?? "";
+      const dateISO = activeSlateDates[slateIndex] ?? "";
       if (lockedSlates[dateISO]) {
         window.alert("This slate is locked. Unlock it to remove this patient.");
         return;
@@ -1539,47 +1547,9 @@ export default function Home() {
     if (!source) return;
     const candidate = scoreCases([source])[0];
 
-    // Built from the configured slate dates, not the `slates` optimizer memo:
-    // that memo only contains as many entries as it needs to place the cases
-    // it currently knows about, so a trailing configured date can be missing
-    // from it entirely until something lands there. Looping over it directly
-    // would silently skip a later slate this candidate could actually fill.
-    const activeSlateDates = slateDates.slice(0, slateCount);
-    let alerted = false;
-    for (let i = 0; i < activeSlateDates.length; i += 1) {
-      const rawDate = activeSlateDates[i];
-      if (!rawDate) continue;
-      const dateISO = normalizeDateOnly(rawDate) ?? rawDate;
-      const date = new Date(`${rawDate}T00:00:00`);
-      if (!isAvailableOnDate(candidate.unavailableUntil, date)) continue;
-      const blockMinutes = getBlockMinutes(date);
-      const current = orderedSlates[i] ?? [];
-      if (current.length >= MAX_CASES_PER_SLATE) continue;
-      const surgical = current.reduce((sum, item) => sum + item.estimatedDurationMin, 0) +
-        candidate.estimatedDurationMin;
-      const occupied = surgical + TURNAROUND_MINUTES * current.length;
-      if (occupied > blockMinutes) continue;
-
-      if (lockedSlates[dateISO]) {
-        if (!alerted) {
-          alerted = true;
-          window.alert(
-            `Slate ${i + 1}${dateISO ? ` (${dateISO})` : ""} is locked. Placing this patient in the next available slot instead.`
-          );
-        }
-        continue;
-      }
-
-      setOrderedSlates((prev) => {
-        const next = [...prev];
-        while (next.length <= i) next.push([]);
-        next[i] = sortForSlate([...next[i], candidate]);
-        setOrderedSlateCaseIds(next.map((slate) => slate.map((item) => item.caseId)));
-        return next;
-      });
-      return;
-    }
-    // No unlocked slot had room; leave it on the waitlist as not-yet-slated.
+    const targetIndex = findNextAvailableSlotIndex(candidate);
+    if (targetIndex === -1) return; // leave it on the waitlist as not-yet-slated
+    placeCandidateInSlot(targetIndex, candidate);
   };
 
   // Removes a patient from the waitlist entirely: confirm, take them off any
@@ -1652,7 +1622,7 @@ export default function Home() {
   // order entirely. Locked slates are left untouched and excluded from the
   // pool of movable cases. Confirms first, then reports what changed.
   const runOptimizeUtilization = () => {
-    if (!slates || slates.length === 0) return;
+    if (slateSlots.length === 0) return;
     const confirmed = window.confirm(
       "Optimize Utilization will rearrange patients across unlocked slates to pack in as much OR " +
         "time as possible. This may override the usual priority order. Locked slates are left " +
@@ -1660,17 +1630,17 @@ export default function Home() {
     );
     if (!confirmed) return;
 
-    const unlockedIndices = slates
+    const unlockedIndices = slateSlots
       .map((_, i) => i)
-      .filter((i) => !lockedSlates[slates[i].dateISO]);
+      .filter((i) => !lockedSlates[slateSlots[i].dateISO]);
     if (unlockedIndices.length === 0) {
       window.alert("All slates are locked; there is nothing to optimize.");
       return;
     }
 
     const lockedCaseIds = new Set<string>();
-    slates.forEach((slate, i) => {
-      if (lockedSlates[slate.dateISO]) {
+    slateSlots.forEach((slot, i) => {
+      if (lockedSlates[slot.dateISO]) {
         (orderedSlates[i] ?? []).forEach((c) => lockedCaseIds.add(c.caseId));
       }
     });
@@ -1686,7 +1656,7 @@ export default function Home() {
 
     const beforeBySlate = new Map<number, { pct: number; caseIds: Set<string> }>();
     unlockedIndices.forEach((i) => {
-      const blockMinutes = slates[i].blockMinutes;
+      const blockMinutes = slateSlots[i].blockMinutes;
       const current = orderedSlates[i] ?? [];
       const surgical = current.reduce((sum, c) => sum + c.estimatedDurationMin, 0);
       const occupied = surgical + TURNAROUND_MINUTES * Math.max(0, current.length - 1);
@@ -1706,9 +1676,9 @@ export default function Home() {
     };
     const bins: Bin[] = unlockedIndices.map((i) => ({
       index: i,
-      dateISO: slates[i].dateISO,
-      date: new Date(`${slates[i].dateISO}T00:00:00`),
-      blockMinutes: slates[i].blockMinutes,
+      dateISO: slateSlots[i].dateISO,
+      date: new Date(`${slateSlots[i].dateISO}T00:00:00`),
+      blockMinutes: slateSlots[i].blockMinutes,
       cases: [],
       surgicalMinutes: 0,
     }));
@@ -1720,11 +1690,12 @@ export default function Home() {
       let best: Bin | null = null;
       let bestRemaining = Infinity;
       for (const bin of bins) {
-        if (bin.cases.length >= MAX_CASES_PER_SLATE) continue;
         if (bin.dateISO && !isAvailableOnDate(item.unavailableUntil, bin.date)) continue;
-        const nextCount = bin.cases.length + 1;
-        const occupied = bin.surgicalMinutes + item.estimatedDurationMin + TURNAROUND_MINUTES * (nextCount - 1);
-        if (occupied > bin.blockMinutes) continue;
+        if (!caseFitsInSlate(bin.surgicalMinutes, bin.cases.length, item.estimatedDurationMin, bin.blockMinutes)) {
+          continue;
+        }
+        const occupied =
+          bin.surgicalMinutes + item.estimatedDurationMin + TURNAROUND_MINUTES * bin.cases.length;
         const remaining = bin.blockMinutes - occupied;
         if (remaining < bestRemaining) {
           bestRemaining = remaining;
@@ -1740,7 +1711,7 @@ export default function Home() {
     setOrderedSlates((prev) => {
       const next = [...prev];
       bins.forEach((bin) => {
-        next[bin.index] = sortForSlate(bin.cases);
+        next[bin.index] = sortSlateByPriority(bin.cases);
       });
       setOrderedSlateCaseIds(next.map((slate) => slate.map((c) => c.caseId)));
       return next;
@@ -1769,26 +1740,10 @@ export default function Home() {
     setOptimizeReport({ perSlate });
   };
 
-  const buildSchedule = (items: ScoredCase[], dateISO: string) => {
-    const date = new Date(`${dateISO}T00:00:00`);
-    let cursor = getBlockStartMinutes(date);
-    return items.map((item, index) => {
-      const start = cursor;
-      const end = cursor + Math.round(item.estimatedDurationMin);
-      cursor = end;
-      // Every case but the last is followed by a 30-min turnaround.
-      const tatAfter = index < items.length - 1;
-      const tatStart = end;
-      const tatEnd = tatAfter ? end + TURNAROUND_MINUTES : end;
-      if (tatAfter) cursor = tatEnd;
-      return { item, start, end, tatAfter, tatStart, tatEnd };
-    });
-  };
-
   const downloadSlateCsv = (slateIndex: number) => {
-    if (!slates || !orderedSlates[slateIndex]) return;
+    if (!slateSlots[slateIndex] || !orderedSlates[slateIndex]) return;
     const orderedSlate = orderedSlates[slateIndex];
-    const dateISO = slates[slateIndex].dateISO;
+    const dateISO = slateSlots[slateIndex].dateISO;
     const date = new Date(`${dateISO}T00:00:00`);
     const startMinutes = getBlockStartMinutes(date);
     const rows = [
@@ -1852,8 +1807,8 @@ export default function Home() {
 
   const buildSlateOptions = (slateIndex: number): SlatePdfOptions | null => {
     const orderedSlate = orderedSlates[slateIndex];
-    if (!orderedSlate || orderedSlate.length === 0 || !slates) return null;
-    const dateISO = slates[slateIndex].dateISO;
+    if (!orderedSlate || orderedSlate.length === 0 || !slateSlots[slateIndex]) return null;
+    const dateISO = slateSlots[slateIndex].dateISO;
     const date = new Date(`${dateISO}T00:00:00`);
     const startMin = getBlockStartMinutes(date);
     const blockMin = getBlockMinutes(date);
@@ -1957,7 +1912,7 @@ export default function Home() {
 
   const downloadMappingCsv = (slateIndex: number) => {
     if (!orderedSlates[slateIndex] || orderedSlates[slateIndex].length === 0) return;
-    const dateISO = slates?.[slateIndex]?.dateISO ?? "undated";
+    const dateISO = slateSlots[slateIndex]?.dateISO ?? "undated";
     // The reidentification key: opaque code -> patient label. Keep this file
     // secured and separate from the deidentified slate CSV.
     const rows = [["case_id", "patient_label"]];
@@ -2095,7 +2050,7 @@ export default function Home() {
 
   const tabs: { id: OfficeTab; label: string; badge?: number; danger?: boolean }[] = [
     { id: "setup", label: "Setup" },
-    { id: "slates", label: "Suggested slates", badge: slates?.length ?? 0 },
+    { id: "slates", label: "Suggested slates", badge: slateSlots.length },
     { id: "waitlist", label: "Priority waitlist", badge: orderedByUrgency.length },
     { id: "long", label: "Long-waiters", badge: longWaiters.total, danger: true },
   ];
@@ -2901,7 +2856,7 @@ export default function Home() {
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
-              {slates && slates.length > 0 && (
+              {slates && slateSlots.length > 0 && (
                 <>
                   <button
                     type="button"
@@ -2955,18 +2910,22 @@ export default function Home() {
             </div>
           )}
 
-          {slates && slates.length === 0 && (
-            <div className="mt-6 rounded-2xl border border-dashed border-sand-300 bg-white/70 p-6 text-sm text-sand-700">
-              No cases fit into the selected block lengths.
-            </div>
-          )}
+          {slates &&
+            slateSlots.length > 0 &&
+            slateSlots.every((slot, i) => (orderedSlates[i] ?? slot.selected).length === 0) && (
+              <div className="mt-6 rounded-2xl border border-dashed border-sand-300 bg-white/70 p-6 text-sm text-sand-700">
+                No cases fit into the selected block lengths.
+              </div>
+            )}
 
-          {slates && slates.length > 0 && (
+          {slates &&
+            slateSlots.length > 0 &&
+            slateSlots.some((slot, i) => (orderedSlates[i] ?? slot.selected).length > 0) && (
             <div className="mt-6 flex flex-col gap-6">
-              {slates.map((slate, slateIndex) => {
-                const orderedSlate = orderedSlates[slateIndex] ?? slate.selected;
-                const slateDate = slate.dateISO;
-                const schedule = buildSchedule(orderedSlate, slateDate);
+              {slateSlots.map((slot, slateIndex) => {
+                const orderedSlate = orderedSlates[slateIndex] ?? slot.selected;
+                const slateDate = slot.dateISO;
+                const schedule = buildCaseSchedule(orderedSlate, slateDate);
                 const surgicalMinutes = orderedSlate.reduce(
                   (sum, item) => sum + item.estimatedDurationMin,
                   0
@@ -2975,7 +2934,7 @@ export default function Home() {
                   TURNAROUND_MINUTES * Math.max(0, orderedSlate.length - 1);
                 const occupiedMinutes = surgicalMinutes + turnaroundMinutes;
                 const utilizationPct =
-                  slate.blockMinutes > 0 ? (occupiedMinutes / slate.blockMinutes) * 100 : 0;
+                  slot.blockMinutes > 0 ? (occupiedMinutes / slot.blockMinutes) * 100 : 0;
                 const isLocked = Boolean(lockedSlates[slateDate]);
                 const isCollapsed = Boolean(collapsedSlates[slateDate]);
 
@@ -3054,7 +3013,7 @@ export default function Home() {
                       <StatCard
                         label="Utilization"
                         value={`${utilizationPct.toFixed(1)}%`}
-                        detail={`${occupiedMinutes} / ${slate.blockMinutes} min (incl. ${turnaroundMinutes} min TAT)`}
+                        detail={`${occupiedMinutes} / ${slot.blockMinutes} min (incl. ${turnaroundMinutes} min TAT)`}
                       />
                       <StatCard
                         label="Start Time"
@@ -3066,7 +3025,7 @@ export default function Home() {
                     </div>
 
                     <div className="mt-4 rounded-2xl border border-sand-200 bg-white/70 p-4">
-                      <CapacityBar totalMinutes={occupiedMinutes} blockMinutes={slate.blockMinutes} />
+                      <CapacityBar totalMinutes={occupiedMinutes} blockMinutes={slot.blockMinutes} />
                       <p className="mt-2 text-xs text-sand-600">
                         {surgicalMinutes} min surgical + {turnaroundMinutes} min turnaround (30 min
                         after each case but the last).
