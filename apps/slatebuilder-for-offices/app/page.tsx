@@ -1006,6 +1006,7 @@ export default function Home() {
     durationOverrides,
     flagOverrides,
     removedFromSlateSuggestions,
+    removedFromWaitlist,
     slateDates,
     slateCount,
     orderedSlateCaseIds,
@@ -1022,6 +1023,27 @@ export default function Home() {
     });
   };
 
+  // Clears every piece of state keyed by caseId. caseIds are reassigned by
+  // row order on every parseCsv() call (see csv.ts), not derived from case
+  // content, so without this a re-upload can silently reattach a stale
+  // override (e.g. "removed from waitlist") to a different, unrelated
+  // patient that happens to land on the same row.
+  const clearCaseKeyedState = () => {
+    setDurationOverrides({});
+    setUnavailableOverrides({});
+    setFlagOverrides({});
+    setRemovedFromSlateSuggestions({});
+    setRemovedFromWaitlist({});
+    setMovedCaseIds({});
+    setOrderedSlates([]);
+    setOrderedSlateCaseIds([]);
+    setOptimizeReport(null);
+    setDragState(null);
+    setDragOverTarget(null);
+    setDraggingCaseId(null);
+    compositionSeedRef.current = "";
+  };
+
   // Clears every trace of the current workspace from memory and sessionStorage.
   // Shared by the Setup-tab "Reset" button and the always-visible full reset
   // below — neither leaves unencrypted PHI sitting around after the click.
@@ -1030,11 +1052,7 @@ export default function Home() {
     setCases([]);
     setWarnings([]);
     setUploadSummary(null);
-    setDurationOverrides({});
-    setUnavailableOverrides({});
-    setFlagOverrides({});
-    setRemovedFromSlateSuggestions({});
-    setRemovedFromWaitlist({});
+    clearCaseKeyedState();
     setPriorityMode("urgency_then_ttt");
     setSlateCount(2);
     setSlateDates(() => {
@@ -1045,16 +1063,8 @@ export default function Home() {
         return toLocalDateOnly(next);
       });
     });
-    setOrderedSlates([]);
-    setOrderedSlateCaseIds([]);
     setLockedSlates({});
     setCollapsedSlates({});
-    setOptimizeReport(null);
-    setDragState(null);
-    setDragOverTarget(null);
-    setDraggingCaseId(null);
-    setMovedCaseIds({});
-    compositionSeedRef.current = "";
     window.sessionStorage.removeItem(OFFICE_AUTOSAVE_KEY);
   };
 
@@ -1174,6 +1184,7 @@ export default function Home() {
     unavailableOverrides,
     flagOverrides,
     removedFromSlateSuggestions,
+    removedFromWaitlist,
     defaultDurations,
     priorityMode,
     slateCount,
@@ -1186,6 +1197,7 @@ export default function Home() {
     if (!file) return;
     setUploadSummary(null);
     justUploadedRef.current = true;
+    clearCaseKeyedState();
     const lowerName = file.name.toLowerCase();
 
     if (lowerName.endsWith(".xlsx") || lowerName.endsWith(".xls")) {

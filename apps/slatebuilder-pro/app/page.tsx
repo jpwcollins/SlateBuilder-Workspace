@@ -31,6 +31,33 @@ import { downloadWaitlistPdf, WaitlistPdfRow } from "@slatebuilder/core/slatePdf
 type ProTab = "setup" | "slates" | "waitlist" | "long";
 const PRO_TAB_KEY = "slatebuilder-pro-tab";
 
+function CapacityBar({ totalMinutes, blockMinutes }: { totalMinutes: number; blockMinutes: number }) {
+  const pct = blockMinutes > 0 ? (totalMinutes / blockMinutes) * 100 : 0;
+  const over = totalMinutes > blockMinutes;
+  const remaining = blockMinutes - totalMinutes;
+  const barColor = over ? "bg-rose-500" : pct >= 85 ? "bg-amber-500" : "bg-emerald-500";
+  return (
+    <div>
+      <div className="flex items-center justify-between text-xs text-sand-700">
+        <span className="font-semibold text-sand-900">Capacity</span>
+        <span className={over ? "font-semibold text-rose-600" : ""}>
+          {over
+            ? `Over by ${Math.abs(remaining)} min`
+            : remaining === 0
+              ? "Full"
+              : `${remaining} min free`}
+        </span>
+      </div>
+      <div className="mt-1 h-2.5 w-full overflow-hidden rounded-full bg-sand-200">
+        <div
+          className={`h-full rounded-full ${barColor}`}
+          style={{ width: `${Math.min(100, Math.max(pct, totalMinutes > 0 ? 4 : 0))}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function downloadFile(filename: string, contents: string) {
   const blob = new Blob([contents], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
@@ -278,9 +305,27 @@ export default function Home() {
     });
   };
 
+  // Clears every piece of state keyed by caseId. caseIds are reassigned by
+  // row order on every parseCsv() call (see csv.ts), not derived from case
+  // content, so without this a re-upload can silently reattach a stale
+  // override (e.g. a manual duration edit or "removed from suggested slates")
+  // to a different, unrelated patient that happens to land on the same row.
+  const clearCaseKeyedState = () => {
+    setDurationOverrides({});
+    setUnavailableOverrides({});
+    setFlagOverrides({});
+    setRemovedFromSlateSuggestions({});
+    setMovedCaseIds({});
+    setOrderedSlates([]);
+    setOrderedSlateCaseIds([]);
+    setDragState(null);
+    setDraggingCaseId(null);
+  };
+
   const handleUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    clearCaseKeyedState();
     const reader = new FileReader();
     reader.onload = () => {
       const text = typeof reader.result === "string" ? reader.result : "";
@@ -1108,6 +1153,10 @@ export default function Home() {
                         </p>
                         <p className="text-xs text-sand-700">Day start</p>
                       </div>
+                    </div>
+
+                    <div className="mt-4 rounded-xl border border-sand-200 bg-white/70 p-3">
+                      <CapacityBar totalMinutes={totalMinutes} blockMinutes={slate.blockMinutes} />
                     </div>
 
                     <div className="mt-4 flex flex-col gap-2">
