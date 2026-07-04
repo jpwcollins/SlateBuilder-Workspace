@@ -2141,7 +2141,11 @@ export default function Home() {
   const tabs: { id: OfficeTab; label: string; badge?: number; danger?: boolean }[] = [
     { id: "setup", label: "Setup" },
     { id: "slates", label: "Suggested slates", badge: slateSlots.length },
-    { id: "waitlist", label: "Priority waitlist", badge: orderedByUrgency.length },
+    // Overdue patients are the number that should pull the eye; fall back to
+    // the plain total when nobody is past target.
+    officeStats.overdue > 0
+      ? { id: "waitlist", label: "Priority waitlist", badge: officeStats.overdue, danger: true }
+      : { id: "waitlist", label: "Priority waitlist", badge: orderedByUrgency.length },
     { id: "long", label: "Long-waiters", badge: longWaiters.total, danger: true },
   ];
 
@@ -2382,19 +2386,71 @@ export default function Home() {
             SlateBuilder for Offices
           </p>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5">
-            <span>
+            <button
+              type="button"
+              onClick={() => {
+                setWaitlistOverdueOnly(false);
+                setWaitlistUnslatedOnly(false);
+                setActiveTab("waitlist");
+              }}
+              title="View the full Priority Waitlist"
+              className="hover:underline"
+            >
               Cases <span className="font-semibold text-slateBlue-900">{officeStats.totalCases}</span>
-            </span>
-            <span className={officeStats.overdue > 0 ? "text-rose-600" : ""}>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setWaitlistOverdueOnly(true);
+                setWaitlistUnslatedOnly(false);
+                setActiveTab("waitlist");
+              }}
+              title="View overdue patients on the Priority Waitlist"
+              className={`hover:underline ${officeStats.overdue > 0 ? "text-rose-600" : ""}`}
+            >
               Overdue <span className="font-semibold">{officeStats.overdue}</span>
-            </span>
-            <span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("slates")}
+              title="View the suggested slates"
+              className="hover:underline"
+            >
               Slated <span className="font-semibold text-slateBlue-900">{selectedCaseIds.size}</span>
-            </span>
-            <span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setWaitlistOverdueOnly(false);
+                setWaitlistUnslatedOnly(true);
+                setActiveTab("waitlist");
+              }}
+              title="View not-yet-slated patients on the Priority Waitlist"
+              className="hover:underline"
+            >
               Waiting{" "}
               <span className="font-semibold text-slateBlue-900">{remainingByUrgency.length}</span>
-            </span>
+            </button>
+            {signedInId &&
+              (() => {
+                // Condense the free-text sync status into a traffic-light dot
+                // so save state is visible from any tab; full text on hover.
+                const saving =
+                  syncStatus.startsWith("Saving") || syncStatus.endsWith("loading…");
+                const synced =
+                  syncStatus.startsWith("Synced") || syncStatus.startsWith("Loaded");
+                const dot = saving ? "bg-amber-500" : synced ? "bg-emerald-500" : "bg-rose-500";
+                const label = saving ? "Saving…" : synced ? "Synced" : "Not synced";
+                return (
+                  <span
+                    title={syncStatus || "Waiting for first sync"}
+                    className="inline-flex items-center gap-1.5 font-semibold text-sand-800"
+                  >
+                    <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
+                    {label}
+                  </span>
+                );
+              })()}
             <button
               type="button"
               onClick={() => void handleFullReset()}
@@ -2448,51 +2504,6 @@ export default function Home() {
 
       {activeTab === "setup" && (
         <>
-      <header>
-        <div className="card p-8">
-          <p className="text-sm uppercase tracking-[0.26em] text-sand-600">
-            Office Scheduling Toolkit
-          </p>
-          <h1 className="mt-3 text-4xl font-semibold text-slateBlue-900">
-            SlateBuilder for Offices
-          </h1>
-          <p className="mt-4 max-w-3xl text-base leading-7 text-sand-800">
-            Upload one surgeon office&apos;s waitlist, generate streamlined OR slates, and maintain
-            a Priority Waitlist that clearly shows which patients are already slated and which are
-            still waiting.
-          </p>
-          <p className="mt-3 max-w-3xl text-xs leading-6 text-sand-700">
-            Higher priority scores mean more urgent — patients past their target date are always
-            slated first. See the <a href="/guide" target="_blank" rel="noopener noreferrer" className="font-semibold text-slateBlue-700 underline">user guide</a> for exactly how the score is calculated.
-          </p>
-          <p className="mt-3 max-w-3xl text-xs leading-6 text-sand-600">
-            Patient names and PHNs never leave this device. Each case gets an opaque code (e.g.
-            C-001); exports use that code unless you opt to include names. When you sign in, only
-            pseudonymized, end-to-end-encrypted working data is synced to the cloud — never names,
-            PHNs, or diagnoses.
-          </p>
-          <div className="mt-6 flex flex-wrap items-center gap-3 text-xs text-sand-700">
-            <a
-              href="/guide"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="rounded-full bg-slateBlue-700 px-4 py-1.5 font-semibold text-white"
-            >
-              User guide ↗
-            </a>
-            <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
-              Names &amp; PHNs stay on device
-            </span>
-            <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
-              Encrypted cloud sync
-            </span>
-            <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
-              Up to 3 selectable OR dates
-            </span>
-          </div>
-        </div>
-      </header>
-
       <section className="grid gap-6 lg:grid-cols-[0.95fr_1.05fr]">
         <div className="card p-6">
           <h2 className="text-lg font-semibold text-slateBlue-900">Load Office Waitlist</h2>
@@ -2537,8 +2548,15 @@ export default function Home() {
             </div>
 
             {uploadSummary && (
-              <div className="rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs font-semibold text-emerald-800">
-                {uploadSummary}
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs font-semibold text-emerald-800">
+                <span>{uploadSummary}</span>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("slates")}
+                  className="rounded-full bg-emerald-700 px-3 py-1.5 font-semibold text-white"
+                >
+                  View suggested slates →
+                </button>
               </div>
             )}
 
@@ -2558,44 +2576,6 @@ export default function Home() {
         <div className="card p-6">
           <h2 className="text-lg font-semibold text-slateBlue-900">Configure Scheduling Rules</h2>
           <div className="mt-4 grid gap-6">
-            <div className="rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
-              <p className="font-semibold text-sand-900">Priority rule</p>
-              <div className="mt-3 flex flex-col gap-3">
-                <label className="flex items-start gap-3">
-                  <input
-                    type="radio"
-                    name="priority"
-                    value="urgency_then_ttt"
-                    checked={priorityMode === "urgency_then_ttt"}
-                    onChange={() => setPriorityMode("urgency_then_ttt")}
-                    className="mt-1"
-                  />
-                  <span>
-                    <span className="font-semibold">Urgency first, then wait time</span>
-                    <span className="block text-xs text-sand-600">
-                      Best for keeping the office Priority Waitlist aligned to benchmark class.
-                    </span>
-                  </span>
-                </label>
-                <label className="flex items-start gap-3">
-                  <input
-                    type="radio"
-                    name="priority"
-                    value="ttt"
-                    checked={priorityMode === "ttt"}
-                    onChange={() => setPriorityMode("ttt")}
-                    className="mt-1"
-                  />
-                  <span>
-                    <span className="font-semibold">Wait time only</span>
-                    <span className="block text-xs text-sand-600">
-                      Strictly sort by days to target regardless of urgency bucket.
-                    </span>
-                  </span>
-                </label>
-              </div>
-            </div>
-
             <div className="rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="font-semibold text-sand-900">Default case durations (min)</p>
@@ -2716,6 +2696,112 @@ export default function Home() {
           </div>
         </div>
       </section>
+
+      <section className="card p-6">
+        <h2 className="text-lg font-semibold text-slateBlue-900">Office Snapshot</h2>
+        <p className="mt-1 text-sm text-sand-700">A quick read on the uploaded office waitlist.</p>
+        <div className="mt-4 grid gap-3 sm:grid-cols-4">
+          <StatCard
+            label="Cases"
+            value={String(officeStats.totalCases)}
+            detail="Total active patients loaded"
+          />
+          <StatCard
+            label="Overdue"
+            value={String(officeStats.overdue)}
+            detail="Patients past target date"
+          />
+          <StatCard
+            label="Urgent"
+            value={String(officeStats.urgent)}
+            detail="2w, 4w, or 6w benchmarks"
+          />
+          <StatCard
+            label="Workload"
+            value={`${officeStats.totalHours.toFixed(1)}h`}
+            detail="Estimated operative time"
+          />
+        </div>
+        <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_1fr]">
+          <div className="rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
+            <div className="flex items-center justify-between">
+              <p className="font-semibold text-sand-900">Waitlist overview</p>
+              <p className="text-xs text-sand-600">By benchmark · under vs. over target</p>
+            </div>
+            {officeStats.totalCases > 0 ? (
+              <>
+                <div className="mt-2">
+                  <WaitlistHistogram buckets={waitlistOverview} />
+                </div>
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-sand-700">
+                  {OVERVIEW_SEGMENTS.map((seg) => (
+                    <span key={seg.key} className="inline-flex items-center gap-1.5">
+                      <span
+                        className="inline-block h-2.5 w-2.5 rounded-sm"
+                        style={{ backgroundColor: seg.color }}
+                      />
+                      {seg.label}
+                    </span>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <p className="mt-2 text-xs text-sand-600">No waitlist uploaded yet.</p>
+            )}
+          </div>
+          <div className="rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
+            <p className="font-semibold text-sand-900">Detected surgeon IDs</p>
+            <p className="mt-1 text-xs text-sand-700">
+              {officeSurgeons.length > 0 ? officeSurgeons.join(", ") : "No waitlist uploaded yet."}
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <header>
+        <div className="card p-8">
+          <p className="text-sm uppercase tracking-[0.26em] text-sand-600">
+            Office Scheduling Toolkit
+          </p>
+          <h1 className="mt-2 text-2xl font-semibold text-slateBlue-900">
+            How SlateBuilder for Offices works
+          </h1>
+          <p className="mt-4 max-w-3xl text-base leading-7 text-sand-800">
+            Upload one surgeon office&apos;s waitlist, generate streamlined OR slates, and maintain
+            a Priority Waitlist that clearly shows which patients are already slated and which are
+            still waiting.
+          </p>
+          <p className="mt-3 max-w-3xl text-xs leading-6 text-sand-700">
+            Higher priority scores mean more urgent — patients past their target date are always
+            slated first. See the <a href="/guide" target="_blank" rel="noopener noreferrer" className="font-semibold text-slateBlue-700 underline">user guide</a> for exactly how the score is calculated.
+          </p>
+          <p className="mt-3 max-w-3xl text-xs leading-6 text-sand-600">
+            Patient names and PHNs never leave this device. Each case gets an opaque code (e.g.
+            C-001); exports use that code unless you opt to include names. When you sign in, only
+            pseudonymized, end-to-end-encrypted working data is synced to the cloud — never names,
+            PHNs, or diagnoses.
+          </p>
+          <div className="mt-6 flex flex-wrap items-center gap-3 text-xs text-sand-700">
+            <a
+              href="/guide"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-full bg-slateBlue-700 px-4 py-1.5 font-semibold text-white"
+            >
+              User guide ↗
+            </a>
+            <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
+              Names &amp; PHNs stay on device
+            </span>
+            <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
+              Encrypted cloud sync
+            </span>
+            <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
+              Up to 3 selectable OR dates
+            </span>
+          </div>
+        </div>
+      </header>
 
 
       <section className="card p-6">
@@ -2892,67 +2978,6 @@ export default function Home() {
 
         {syncStatus && <p className="mt-3 text-xs text-sand-600">{syncStatus}</p>}
       </section>
-
-      <section className="card p-6">
-        <h2 className="text-lg font-semibold text-slateBlue-900">Office Snapshot</h2>
-        <p className="mt-1 text-sm text-sand-700">A quick read on the uploaded office waitlist.</p>
-        <div className="mt-4 grid gap-3 sm:grid-cols-4">
-          <StatCard
-            label="Cases"
-            value={String(officeStats.totalCases)}
-            detail="Total active patients loaded"
-          />
-          <StatCard
-            label="Overdue"
-            value={String(officeStats.overdue)}
-            detail="Patients past target date"
-          />
-          <StatCard
-            label="Urgent"
-            value={String(officeStats.urgent)}
-            detail="2w, 4w, or 6w benchmarks"
-          />
-          <StatCard
-            label="Workload"
-            value={`${officeStats.totalHours.toFixed(1)}h`}
-            detail="Estimated operative time"
-          />
-        </div>
-        <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_1fr]">
-          <div className="rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
-            <div className="flex items-center justify-between">
-              <p className="font-semibold text-sand-900">Waitlist overview</p>
-              <p className="text-xs text-sand-600">By benchmark · under vs. over target</p>
-            </div>
-            {officeStats.totalCases > 0 ? (
-              <>
-                <div className="mt-2">
-                  <WaitlistHistogram buckets={waitlistOverview} />
-                </div>
-                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-sand-700">
-                  {OVERVIEW_SEGMENTS.map((seg) => (
-                    <span key={seg.key} className="inline-flex items-center gap-1.5">
-                      <span
-                        className="inline-block h-2.5 w-2.5 rounded-sm"
-                        style={{ backgroundColor: seg.color }}
-                      />
-                      {seg.label}
-                    </span>
-                  ))}
-                </div>
-              </>
-            ) : (
-              <p className="mt-2 text-xs text-sand-600">No waitlist uploaded yet.</p>
-            )}
-          </div>
-          <div className="rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
-            <p className="font-semibold text-sand-900">Detected surgeon IDs</p>
-            <p className="mt-1 text-xs text-sand-700">
-              {officeSurgeons.length > 0 ? officeSurgeons.join(", ") : "No waitlist uploaded yet."}
-            </p>
-          </div>
-        </div>
-      </section>
         </>
       )}
 
@@ -3076,6 +3101,18 @@ export default function Home() {
                             {orderedSlate.length} cases on {slateDate || "unspecified date"}
                           </h3>
                         </div>
+                        <span
+                          title={`${occupiedMinutes} / ${slot.blockMinutes} min used (incl. turnaround)`}
+                          className={`mt-0.5 rounded-full px-2 py-1 text-[11px] font-semibold ${
+                            occupiedMinutes > slot.blockMinutes
+                              ? "bg-rose-100 text-rose-700"
+                              : utilizationPct >= 85
+                                ? "bg-amber-100 text-amber-800"
+                                : "bg-emerald-100 text-emerald-700"
+                          }`}
+                        >
+                          {utilizationPct.toFixed(0)}% full
+                        </span>
                         {isLocked && (
                           <span className="mt-0.5 rounded-full bg-amber-100 px-2 py-1 text-[11px] font-semibold text-amber-800">
                             🔒 Locked
@@ -3489,6 +3526,47 @@ export default function Home() {
               value={String(remainingByUrgency.length)}
               detail="Not yet assigned to a generated slate"
             />
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
+            <p className="font-semibold text-sand-900">Priority rule</p>
+            <p className="mt-0.5 text-xs text-sand-600">
+              Controls how this list (and slate auto-fill) ranks patients.
+            </p>
+            <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:gap-8">
+              <label className="flex items-start gap-3">
+                <input
+                  type="radio"
+                  name="priority"
+                  value="urgency_then_ttt"
+                  checked={priorityMode === "urgency_then_ttt"}
+                  onChange={() => setPriorityMode("urgency_then_ttt")}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="font-semibold">Urgency first, then wait time (default)</span>
+                  <span className="block text-xs text-sand-600">
+                    Best for keeping the office Priority Waitlist aligned to benchmark class.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3">
+                <input
+                  type="radio"
+                  name="priority"
+                  value="ttt"
+                  checked={priorityMode === "ttt"}
+                  onChange={() => setPriorityMode("ttt")}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="font-semibold">Wait time only</span>
+                  <span className="block text-xs text-sand-600">
+                    Strictly sort by days to target regardless of urgency bucket.
+                  </span>
+                </span>
+              </label>
+            </div>
           </div>
 
           <div className="mt-4 flex flex-wrap items-center gap-2">

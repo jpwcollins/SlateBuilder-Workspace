@@ -1097,7 +1097,18 @@ export default function Home() {
                           Slate {slateIndex + 1}
                         </p>
                         <h3 className="mt-1 text-lg font-semibold text-slateBlue-900">
-                          {orderedSlate.length} cases · {utilizationPct.toFixed(1)}% utilization
+                          {orderedSlate.length} cases ·{" "}
+                          <span
+                            className={
+                              totalMinutes > slate.blockMinutes
+                                ? "text-rose-600"
+                                : utilizationPct >= 85
+                                  ? "text-amber-600"
+                                  : "text-emerald-700"
+                            }
+                          >
+                            {utilizationPct.toFixed(1)}% utilization
+                          </span>
                         </h3>
                         <p className="mt-1 text-xs text-sand-700">
                           Date {slateDate || "Not set"}
