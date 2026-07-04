@@ -113,6 +113,28 @@ function downloadFile(filename: string, contents: string) {
   URL.revokeObjectURL(url);
 }
 
+// Per-patient manual edits that should survive a re-upload of next week's
+// waitlist. Snapshotted before the new file parses, then re-keyed onto the
+// new file's caseIds by matching stablePatientKey.
+type CarriedOverrides = {
+  duration?: number;
+  unavailableUntil?: string;
+  flags?: Partial<Record<ClinicalFlagKey, boolean>>;
+  removedFromSlates?: boolean;
+  removedFromWaitlist?: boolean;
+};
+
+// A patient's identity independent of their row position in the file: PHN
+// when present, else the name-based source key. Returns null for the parser's
+// positional fallbacks (row-N / "Office row N") — those change meaning between
+// files, and migrating on them would reattach edits to the wrong patient.
+function stablePatientKey(item: PatientCase): string | null {
+  if (item.patientRef) return `ref:${item.patientRef}`;
+  const key = item.sourceKey?.trim();
+  if (!key || /^row-\d+$/i.test(key) || /^office row \d+$/i.test(key)) return null;
+  return `src:${key.toLowerCase()}`;
+}
+
 function normalizeOfficeWorkbookToCsv(rows: SpreadsheetRow[]): string {
   // Office exports always express TARGET_TIME and TIME_WAITING in weeks.
   const headers = [
@@ -425,6 +447,9 @@ export default function Home() {
   // after sign-in (with no retry) let the save effect push a mostly-default
   // local state over real cloud data on the very next edit.
   const cloudLoadStatusRef = useRef<"idle" | "loading" | "loaded" | "failed">("idle");
+  // Per-patient edits snapshotted at upload time, waiting for the new file to
+  // parse so they can be re-keyed onto the new caseIds (see stablePatientKey).
+  const pendingOverrideMigrationRef = useRef<Map<string, CarriedOverrides> | null>(null);
 
   useEffect(() => {
     if (!csvText) return;
@@ -433,8 +458,50 @@ export default function Home() {
     setWarnings(result.warnings);
     if (justUploadedRef.current) {
       justUploadedRef.current = false;
+
+      // caseIds are positional (C-001 = row 1), so a new file's ids mean new
+      // patients. Re-key every per-case edit onto the new ids by matching each
+      // patient's stable identity (PHN, else name); edits for patients no
+      // longer in the file are dropped. The slate composition itself always
+      // rebuilds from the new list.
+      const migration = pendingOverrideMigrationRef.current;
+      pendingOverrideMigrationRef.current = null;
+      let carried = 0;
+      if (migration) {
+        const durations: Record<string, number> = {};
+        const unavailable: Record<string, string> = {};
+        const flags: Record<string, Partial<Record<ClinicalFlagKey, boolean>>> = {};
+        const removedSlates: Record<string, boolean> = {};
+        const removedWaitlist: Record<string, boolean> = {};
+        for (const item of result.cases) {
+          const key = stablePatientKey(item);
+          const entry = key ? migration.get(key) : undefined;
+          if (!entry) continue;
+          carried += 1;
+          if (entry.duration !== undefined) durations[item.caseId] = entry.duration;
+          if (entry.unavailableUntil) unavailable[item.caseId] = entry.unavailableUntil;
+          if (entry.flags) flags[item.caseId] = entry.flags;
+          if (entry.removedFromSlates) removedSlates[item.caseId] = true;
+          if (entry.removedFromWaitlist) removedWaitlist[item.caseId] = true;
+        }
+        setDurationOverrides(durations);
+        setUnavailableOverrides(unavailable);
+        setFlagOverrides(flags);
+        setRemovedFromSlateSuggestions(removedSlates);
+        setRemovedFromWaitlist(removedWaitlist);
+        setMovedCaseIds({});
+        setOrderedSlates([]);
+        setOrderedSlateCaseIds([]);
+        setOptimizeReport(null);
+        setDragState(null);
+        setDragOverTarget(null);
+        setDraggingCaseId(null);
+        compositionSeedRef.current = "";
+      }
+
       const skipped = result.warnings.length > 0 ? ` · ${result.warnings.length} row${result.warnings.length === 1 ? "" : "s"} skipped or flagged, see below` : "";
-      setUploadSummary(`✓ ${result.cases.length} patient${result.cases.length === 1 ? "" : "s"} loaded${skipped}`);
+      const kept = carried > 0 ? ` · edits kept for ${carried} returning patient${carried === 1 ? "" : "s"}` : "";
+      setUploadSummary(`✓ ${result.cases.length} patient${result.cases.length === 1 ? "" : "s"} loaded${kept}${skipped}`);
     }
   }, [csvText]);
 
@@ -1023,11 +1090,9 @@ export default function Home() {
     });
   };
 
-  // Clears every piece of state keyed by caseId. caseIds are reassigned by
-  // row order on every parseCsv() call (see csv.ts), not derived from case
-  // content, so without this a re-upload can silently reattach a stale
-  // override (e.g. "removed from waitlist") to a different, unrelated
-  // patient that happens to land on the same row.
+  // Clears every piece of state keyed by caseId. Used by the workspace reset
+  // paths; re-uploads instead migrate these edits onto the new file's caseIds
+  // by patient identity (see pendingOverrideMigrationRef in the parse effect).
   const clearCaseKeyedState = () => {
     setDurationOverrides({});
     setUnavailableOverrides({});
@@ -1197,7 +1262,28 @@ export default function Home() {
     if (!file) return;
     setUploadSummary(null);
     justUploadedRef.current = true;
-    clearCaseKeyedState();
+
+    // Snapshot the current per-patient edits so the parse effect can carry
+    // them over to matching patients in the new file. Nothing is cleared here:
+    // if the file turns out to be unreadable, the existing workspace stays
+    // intact, and on a successful parse the effect replaces every case-keyed
+    // map wholesale (so stale row-position edits can never leak through).
+    const snapshot = new Map<string, CarriedOverrides>();
+    for (const item of cases) {
+      const key = stablePatientKey(item);
+      if (!key) continue;
+      const entry: CarriedOverrides = {};
+      if (durationOverrides[item.caseId] !== undefined)
+        entry.duration = durationOverrides[item.caseId];
+      if (unavailableOverrides[item.caseId])
+        entry.unavailableUntil = unavailableOverrides[item.caseId];
+      if (flagOverrides[item.caseId]) entry.flags = flagOverrides[item.caseId];
+      if (removedFromSlateSuggestions[item.caseId]) entry.removedFromSlates = true;
+      if (removedFromWaitlist[item.caseId]) entry.removedFromWaitlist = true;
+      if (Object.keys(entry).length > 0) snapshot.set(key, entry);
+    }
+    pendingOverrideMigrationRef.current = snapshot;
+
     const lowerName = file.name.toLowerCase();
 
     if (lowerName.endsWith(".xlsx") || lowerName.endsWith(".xls")) {

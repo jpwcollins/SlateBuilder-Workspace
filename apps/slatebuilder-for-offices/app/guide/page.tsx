@@ -198,8 +198,11 @@ export default function Guide() {
             <span className="font-semibold">finalized</span> when it&apos;s ready.
           </li>
           <li>
-            Unavailable dates and other edits <span className="font-semibold">persist across monthly
-            uploads</span>, so you don&apos;t re-enter them each time.
+            When you upload an updated waitlist, unavailable dates and other edits{" "}
+            <span className="font-semibold">follow each returning patient</span> (matched by PHN, or
+            name if no PHN), so you don&apos;t re-enter them each time. Edits for patients who are no
+            longer on the list are dropped, and the suggested slates rebuild from the new file. The
+            upload confirmation shows how many patients kept their edits.
           </li>
           <li>
             If you&apos;re not signed in, work is still{" "}

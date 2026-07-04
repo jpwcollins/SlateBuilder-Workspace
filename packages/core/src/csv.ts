@@ -10,6 +10,10 @@ const headerAliases: Record<string, string> = {
   sourcekey: "source_key",
   patient_key: "source_key",
   patient_identifier: "source_key",
+  // Raw hospital exports name their columns PAT_NAME1 / PHN; map them so a
+  // CSV saved straight from the hospital file shows patient names and keeps
+  // a stable per-patient identity, exactly like the XLSX upload path.
+  pat_name1: "source_key",
   patient_ref: "patient_ref",
   phn: "patient_ref",
   benchmark: "benchmark",
@@ -19,7 +23,11 @@ const headerAliases: Record<string, string> = {
   time_to_target: "time_to_target_days",
   time_to_target_days: "time_to_target_days",
   ttt_days: "time_to_target_days",
-  time_waiting: "time_waiting_days",
+  // Hospital waitlist exports always express TIME_WAITING in weeks, so a bare
+  // "time_waiting" header must be read as weeks. (It was previously aliased to
+  // days, which silently deflated every wait by 7x when the same export was
+  // uploaded as CSV instead of XLSX.) Days must be requested explicitly.
+  time_waiting: "time_waiting_weeks",
   time_waiting_days: "time_waiting_days",
   time_waiting_weeks: "time_waiting_weeks",
   target_time_weeks: "target_time_weeks",
@@ -34,6 +42,10 @@ const headerAliases: Record<string, string> = {
   surgeon_id: "surgeon_id",
   surgeon: "surgeon_id",
   surgeon_desc: "procedure_name",
+  // Raw hospital exports carry the procedure inside the DIAGNOSIS column
+  // (e.g. "Fibroids - Total Hysterectomy"); without this alias every raw CSV
+  // case silently fell back to the 90-minute "other" default duration.
+  diagnosis: "procedure_name",
   surg_desc: "procedure_name",
   proc_code: "procedure_code",
   proc_desc: "procedure_name",

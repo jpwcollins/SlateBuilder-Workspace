@@ -37,6 +37,32 @@ describe("parseCsv", () => {
     expect(cases[0].timeToTargetDays).toBe(-14);
   });
 
+  it("reads a bare TIME_WAITING header as weeks, matching hospital exports", () => {
+    // Raw hospital columns: TARGET_TIME and TIME_WAITING are both in weeks.
+    // 4-week target, waited 11 weeks -> 4*7 - 11*7 = -49 days (overdue),
+    // NOT 4*7 - 11 = 17 days (the old days-alias misread).
+    const csv = ["source_key,target_time,time_waiting", "A,4,11"].join("\n");
+    const { cases } = parseCsv(csv);
+    expect(cases[0].timeToTargetDays).toBe(-49);
+  });
+
+  it("parses a raw hospital CSV header row end to end", () => {
+    // A file saved as CSV straight from the hospital's Excel export must behave
+    // identically to the XLSX path: names shown, PHN kept as the stable
+    // patient_ref, diagnosis used for duration inference, weeks as weeks.
+    const csv = [
+      "PAT_NAME1,PHN,SURGEON,DIAGNOSIS,TARGET_TIME,TIME_WAITING",
+      '"Kaur, Harpreet",9043334445,Dr Collins,Fibroids - Total Hysterectomy,4,11',
+    ].join("\n");
+    const { cases } = parseCsv(csv);
+    expect(cases).toHaveLength(1);
+    expect(cases[0].displayLabel).toBe("Patient Kaur, Harpreet");
+    expect(cases[0].patientRef).toBe("9043334445");
+    expect(cases[0].timeToTargetDays).toBe(-49);
+    expect(cases[0].estimatedDurationMin).toBe(180); // hysterectomy, not the 90m default
+    expect(cases[0].surgeonId).toBe("Dr Collins");
+  });
+
   it("keeps sourceKey as the raw uploaded identifier, distinct from displayLabel", () => {
     const csv = ["source_key,benchmark,time_to_target_days", "Jane Doe,2w,5"].join("\n");
     const { cases } = parseCsv(csv);
