@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   applyAnnotations,
   collectAnnotations,
+  fingerprintWaitlist,
   isAnnotationsFile,
+  isClearedAnnotation,
+  mergeAnnotations,
   stablePatientKey,
   ANNOTATIONS_KIND,
 } from "./annotations";
@@ -124,5 +127,161 @@ describe("isAnnotationsFile", () => {
     ).toBe(true);
     expect(isAnnotationsFile({ v: 1, kind: "something-else", annotations: {} })).toBe(false);
     expect(isAnnotationsFile(null)).toBe(false);
+  });
+});
+
+describe("timestamps and clearing", () => {
+  const cases = [
+    makeCase({ caseId: "C-001", sourceKey: "Kaur", patientRef: "9000000001" }),
+    makeCase({ caseId: "C-002", sourceKey: "Osei", patientRef: "9000000002" }),
+  ];
+
+  it("preserves each patient's own edit time rather than the time of saving", () => {
+    const saved = collectAnnotations(
+      cases,
+      {
+        durationOverrides: { "C-001": 120 },
+        unavailableOverrides: { "C-002": "2026-09-01" },
+        flagOverrides: {},
+        removedFromSlateSuggestions: {},
+        removedFromWaitlist: {},
+      },
+      {
+        "C-001": { at: "2026-09-01T10:00:00.000Z", by: "MOA" },
+        "C-002": { at: "2026-09-08T14:30:00.000Z" },
+      }
+    );
+    expect(saved["phn:9000000001"].updatedAt).toBe("2026-09-01T10:00:00.000Z");
+    expect(saved["phn:9000000001"].updatedBy).toBe("MOA");
+    expect(saved["phn:9000000002"].updatedAt).toBe("2026-09-08T14:30:00.000Z");
+  });
+
+  it("records a cleared patient as an empty entry instead of dropping them", () => {
+    // C-001 has a known edit time but no notes left: someone cleared them.
+    const saved = collectAnnotations(
+      cases,
+      {
+        durationOverrides: {},
+        unavailableOverrides: {},
+        flagOverrides: {},
+        removedFromSlateSuggestions: {},
+        removedFromWaitlist: {},
+      },
+      { "C-001": { at: "2026-09-10T09:00:00.000Z" } }
+    );
+    expect(saved["phn:9000000001"]).toBeDefined();
+    expect(isClearedAnnotation(saved["phn:9000000001"])).toBe(true);
+    // C-002 never had notes, so it is absent entirely.
+    expect(saved["phn:9000000002"]).toBeUndefined();
+  });
+
+  it("applies nothing for a cleared entry but still carries its timestamp", () => {
+    const applied = applyAnnotations(cases, {
+      "phn:9000000001": { updatedAt: "2026-09-10T09:00:00.000Z" },
+    });
+    expect(applied.matched).toBe(0);
+    expect(applied.durationOverrides).toEqual({});
+    expect(applied.times["C-001"].at).toBe("2026-09-10T09:00:00.000Z");
+  });
+});
+
+describe("mergeAnnotations", () => {
+  const early = "2026-09-01T10:00:00.000Z";
+  const late = "2026-09-08T10:00:00.000Z";
+
+  it("takes the newer entry for a patient edited on both sides", () => {
+    const mine = { "phn:1": { durationOverrideMin: 90, updatedAt: early } };
+    const theirs = { "phn:1": { durationOverrideMin: 150, updatedAt: late } };
+    const r = mergeAnnotations(mine, theirs);
+    expect(r.annotations["phn:1"].durationOverrideMin).toBe(150);
+    expect(r.taken).toBe(1);
+    expect(r.kept).toBe(0);
+  });
+
+  it("keeps mine when mine is newer", () => {
+    const mine = { "phn:1": { durationOverrideMin: 150, updatedAt: late } };
+    const theirs = { "phn:1": { durationOverrideMin: 90, updatedAt: early } };
+    const r = mergeAnnotations(mine, theirs);
+    expect(r.annotations["phn:1"].durationOverrideMin).toBe(150);
+    expect(r.kept).toBe(1);
+  });
+
+  it("is order-independent — the whole point of merging", () => {
+    const a = {
+      "phn:1": { durationOverrideMin: 90, updatedAt: early },
+      "phn:2": { unavailableUntil: "2026-10-01", updatedAt: late },
+    };
+    const b = {
+      "phn:1": { durationOverrideMin: 150, updatedAt: late },
+      "phn:3": { removedFromWaitlist: true as const, updatedAt: early },
+    };
+    const ab = mergeAnnotations(a, b).annotations;
+    const ba = mergeAnnotations(b, a).annotations;
+    expect(ab).toEqual(ba);
+    expect(ab["phn:1"].durationOverrideMin).toBe(150);
+  });
+
+  it("does not let an older file resurrect notes someone cleared", () => {
+    // They cleared this patient after I set the override.
+    const mine = { "phn:1": { durationOverrideMin: 90, updatedAt: early } };
+    const theirs = { "phn:1": { updatedAt: late } };
+    const r = mergeAnnotations(mine, theirs);
+    expect(isClearedAnnotation(r.annotations["phn:1"])).toBe(true);
+    expect(r.annotations["phn:1"].durationOverrideMin).toBeUndefined();
+  });
+
+  it("brings across patients the other side knows about and I do not", () => {
+    const r = mergeAnnotations({}, { "phn:9": { unavailableUntil: "2026-12-01", updatedAt: late } });
+    expect(r.added).toBe(1);
+    expect(r.annotations["phn:9"].unavailableUntil).toBe("2026-12-01");
+  });
+
+  it("treats reloading the same file as a no-op", () => {
+    const file = { "phn:1": { durationOverrideMin: 90, updatedAt: early } };
+    const r = mergeAnnotations(file, file);
+    expect(r.annotations).toEqual(file);
+    expect(r.taken).toBe(0);
+    expect(r.added).toBe(0);
+  });
+});
+
+describe("fingerprintWaitlist", () => {
+  it("is stable for the same cohort regardless of row order", () => {
+    const a = [
+      makeCase({ caseId: "C-001", sourceKey: "Kaur", patientRef: "9000000001" }),
+      makeCase({ caseId: "C-002", sourceKey: "Osei", patientRef: "9000000002" }),
+    ];
+    const b = [
+      makeCase({ caseId: "C-001", sourceKey: "Osei", patientRef: "9000000002" }),
+      makeCase({ caseId: "C-002", sourceKey: "Kaur", patientRef: "9000000001" }),
+    ];
+    expect(fingerprintWaitlist(a)).toBe(fingerprintWaitlist(b));
+  });
+
+  it("differs when the cohort differs", () => {
+    const a = [makeCase({ caseId: "C-001", sourceKey: "Kaur", patientRef: "9000000001" })];
+    const b = [makeCase({ caseId: "C-001", sourceKey: "Silva", patientRef: "9000000009" })];
+    expect(fingerprintWaitlist(a)).not.toBe(fingerprintWaitlist(b));
+  });
+});
+
+describe("merge tie-breaks", () => {
+  const same = "2026-09-05T12:00:00.000Z";
+
+  it("prefers real notes over a clearing recorded at the same instant", () => {
+    // This is the shape a stale timestamp produces: a tombstone carrying the
+    // same time as the entry it shadows. It must not win.
+    const localTombstone = { "phn:1": { updatedAt: same } };
+    const incomingWithNotes = { "phn:1": { unavailableUntil: "2026-12-01", updatedAt: same } };
+    const r = mergeAnnotations(localTombstone, incomingWithNotes);
+    expect(r.annotations["phn:1"].unavailableUntil).toBe("2026-12-01");
+    expect(r.taken).toBe(1);
+  });
+
+  it("still treats an identical entry as unchanged", () => {
+    const entry = { "phn:1": { unavailableUntil: "2026-12-01", updatedAt: same } };
+    const r = mergeAnnotations(entry, { ...entry });
+    expect(r.unchanged).toBe(1);
+    expect(r.taken).toBe(0);
   });
 });

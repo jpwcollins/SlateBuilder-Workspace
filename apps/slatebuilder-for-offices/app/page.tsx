@@ -3,6 +3,18 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import {
+  canBindNotesFile,
+  ensureHandlePermission,
+  forgetNotesHandle,
+  NotesFileHandle,
+  pickNotesFileForOpening,
+  pickNotesFileForSaving,
+  readNotesHandle,
+  recallNotesHandle,
+  rememberNotesHandle,
+  writeNotesHandle,
+} from "./notesStorage";
+import {
   downloadSlatePdf,
   downloadAllSlatesPdf,
   downloadWaitlistPdf,
@@ -13,6 +25,7 @@ import {
 import {
   AnnotationsFile,
   ANNOTATIONS_KIND,
+  AnnotationTimes,
   applyAnnotations,
   applyDefaultDuration,
   applyFlagOverrides,
@@ -25,8 +38,10 @@ import {
   decryptJson,
   DefaultDurations,
   encryptJson,
+  fingerprintWaitlist,
   isAnnotationsFile,
   isEncryptedEnvelope,
+  mergeAnnotations,
   MIN_PASSPHRASE_LENGTH,
   PatientAnnotation,
   stablePatientKey,
@@ -80,6 +95,9 @@ type OfficeTab = "setup" | "slates" | "waitlist" | "long";
 // patient information is written to browser storage of any kind: the uploaded
 // waitlist lives in memory for as long as the tab is open, and nowhere else.
 const OFFICE_TAB_KEY = "slatebuilder-office-tab";
+// Highest notes revision seen on this machine. A number, not patient data.
+const NOTES_REVISION_KEY = "slatebuilder-office-notes-revision";
+const AUTHOR_LABEL_KEY = "slatebuilder-office-author";
 
 function downloadTextFile(filename: string, contents: string, mime: string) {
   const blob = new Blob([contents], { type: `${mime};charset=utf-8;` });
@@ -414,6 +432,27 @@ export default function Home() {
   // Which of the two notes actions produced the current message, so feedback
   // appears in the card the user just used rather than in both of them.
   const [notesScope, setNotesScope] = useState<"save" | "load" | null>(null);
+  // Free-text label recorded against each edit and each save, so a merged file
+  // can say who changed what. Remembered per machine; it names a role, not a
+  // person's health information.
+  const [authorLabel, setAuthorLabel] = useState("");
+  // When each patient's notes last changed, keyed by case code. Seeded from a
+  // loaded file so that saving preserves real edit times rather than restamping
+  // everything with the moment of the save.
+  const [annotationTimes, setAnnotationTimes] = useState<AnnotationTimes>({});
+  // Provenance of the notes currently on screen: what we loaded, and what the
+  // file said when we loaded it. Drives the revision counter and the
+  // someone-else-saved-since check.
+  // The one file this computer writes notes to, when the browser supports it.
+  const [notesHandle, setNotesHandle] = useState<NotesFileHandle | null>(null);
+  const [canBindFile, setCanBindFile] = useState(false);
+  const [loadedNotes, setLoadedNotes] = useState<{
+    revision: number;
+    savedBy?: string;
+    updatedAt: string;
+    fingerprint?: string;
+    patientCount?: number;
+  } | null>(null);
   // Tracks the last "structural" signature (case-id-set + active dates +
   // priority mode) that the slate composition was auto-generated from, so
   // manual edits (drag, lock, remove/restore, duration/flag tweaks) are never
@@ -449,6 +488,7 @@ export default function Home() {
         setFlagOverrides(applied.flagOverrides);
         setRemovedFromSlateSuggestions(applied.removedFromSlateSuggestions);
         setRemovedFromWaitlist(applied.removedFromWaitlist);
+        setAnnotationTimes(applied.times);
         setMovedCaseIds({});
         setOrderedSlates([]);
         setOrderedSlateCaseIds([]);
@@ -464,6 +504,31 @@ export default function Home() {
       setUploadSummary(`✓ ${result.cases.length} patient${result.cases.length === 1 ? "" : "s"} loaded${kept}${skipped}`);
     }
   }, [csvText]);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(AUTHOR_LABEL_KEY);
+      if (stored) setAuthorLabel(stored);
+    } catch {
+      // no stored label; the field simply starts empty
+    }
+  }, []);
+
+  // Detect the capability rather than the browser, and re-attach to the file
+  // this computer was last bound to. Re-attaching does not read the file or
+  // prompt: permission is requested only when a save or load actually happens.
+  useEffect(() => {
+    const supported = canBindNotesFile();
+    setCanBindFile(supported);
+    if (!supported) return;
+    let cancelled = false;
+    void recallNotesHandle().then((handle) => {
+      if (!cancelled && handle) setNotesHandle(handle);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const stored = window.localStorage.getItem("slatebuilder-office-default-durations");
@@ -723,6 +788,16 @@ export default function Home() {
   // is never part of it — the hospital's file is the list, and it is re-sent
   // every week.
 
+  // Records that this patient's notes just changed. Called from every edit
+  // site; the timestamp is what a later merge resolves conflicts with.
+  const touchAnnotations = (caseId: string) => {
+    const at = new Date().toISOString();
+    setAnnotationTimes((prev) => ({
+      ...prev,
+      [caseId]: { at, by: authorLabel.trim() || undefined },
+    }));
+  };
+
   const annotationsCount = useMemo(
     () => Object.keys(collectAnnotations(cases, {
       durationOverrides,
@@ -741,6 +816,116 @@ export default function Home() {
     ]
   );
 
+  // The highest notes revision this machine has seen, kept in localStorage.
+  // It is a counter, not patient information, so it can persist where the
+  // notes themselves deliberately do not — and it is what lets the app notice
+  // that the file being loaded is older than one already worked with here.
+  const lastSeenRevision = (): number => {
+    try {
+      return Number(window.localStorage.getItem(NOTES_REVISION_KEY)) || 0;
+    } catch {
+      return 0;
+    }
+  };
+
+  const rememberRevision = (revision: number) => {
+    try {
+      if (revision > lastSeenRevision()) {
+        window.localStorage.setItem(NOTES_REVISION_KEY, String(revision));
+      }
+    } catch {
+      // A browser with storage disabled simply loses the staleness check.
+    }
+  };
+
+  // Reasons to pause before loading a file. Deliberately excludes "these notes
+  // were saved against a different waitlist", which is the normal weekly case
+  // and would train people to click through the warning.
+  const describeNotesConcerns = (file: AnnotationsFile, incomingRevision: number): string[] => {
+    const out: string[] = [];
+    const seen = lastSeenRevision();
+    if (incomingRevision > 0 && incomingRevision < seen) {
+      out.push(
+        `This file is revision ${incomingRevision}, but revision ${seen} has already been used on this computer. It may be an older copy, and loading it could bring back notes that were since changed.`
+      );
+    }
+    const savedAt = Date.parse(file.updatedAt ?? "");
+    if (Number.isFinite(savedAt)) {
+      const days = Math.floor((Date.now() - savedAt) / 86_400_000);
+      if (days > 14) {
+        out.push(`These notes were last saved ${days} days ago, on ${file.updatedAt.slice(0, 10)}.`);
+      }
+      if (savedAt > Date.now() + 86_400_000) {
+        out.push(
+          "These notes are dated in the future, which usually means the clock on the computer that saved them is wrong. Merging relies on these times being right."
+        );
+      }
+    }
+    if (annotationsCount > 0 && !loadedNotes) {
+      out.push(
+        `You have notes on screen for ${annotationsCount} patient${annotationsCount === 1 ? "" : "s"} that have not been saved. They will be combined with this file, keeping whichever is newer for each patient.`
+      );
+    }
+    return out;
+  };
+
+  // Choose the single file this computer reads and writes notes to. Doing this
+  // once means every later save overwrites that file instead of adding another
+  // copy to Downloads — which is what stops an office accumulating several
+  // notes files and loading the wrong one.
+  const handleChooseNotesFile = async (mode: "open" | "create") => {
+    setNotesError(null);
+    setNotesStatus(null);
+    setNotesScope(mode === "open" ? "load" : "save");
+    const handle =
+      mode === "open"
+        ? await pickNotesFileForOpening()
+        : await pickNotesFileForSaving(
+            `slatebuilder-notes-${toLocalDateOnly(new Date())}.sbnotes`
+          );
+    if (!handle) return; // cancelled
+    setNotesHandle(handle);
+    setNotesFile(null);
+    await rememberNotesHandle(handle);
+    setNotesStatus(
+      mode === "open"
+        ? `Using ${handle.name}. Enter its passphrase and load it to bring in the notes.`
+        : `Notes will be saved to ${handle.name} from now on, replacing it each time rather than adding another copy.`
+    );
+  };
+
+  const handleUnbindNotesFile = async () => {
+    await forgetNotesHandle();
+    setNotesHandle(null);
+    setNotesScope("save");
+    setNotesStatus("No longer linked to a file. Saving will download a copy instead.");
+  };
+
+  // Builds the file that would be saved right now, including provenance.
+  const buildNotesFile = (revision: number): AnnotationsFile => ({
+    v: 1,
+    kind: ANNOTATIONS_KIND,
+    updatedAt: new Date().toISOString(),
+    revision,
+    savedBy: authorLabel.trim() || undefined,
+    waitlist:
+      cases.length > 0
+        ? { fingerprint: fingerprintWaitlist(cases), patientCount: cases.length }
+        : undefined,
+    annotations: collectAnnotations(
+      cases,
+      {
+        durationOverrides,
+        unavailableOverrides,
+        flagOverrides,
+        removedFromSlateSuggestions,
+        removedFromWaitlist,
+      },
+      annotationTimes
+    ),
+    settings: { defaultDurations, priorityMode, slateCount },
+  });
+
   const handleSaveNotes = async () => {
     setNotesError(null);
     setNotesStatus(null);
@@ -757,28 +942,81 @@ export default function Home() {
     }
     setNotesBusy(true);
     try {
-      const file: AnnotationsFile = {
-        v: 1,
-        kind: ANNOTATIONS_KIND,
-        updatedAt: new Date().toISOString(),
-        annotations: collectAnnotations(cases, {
+      let baseRevision = loadedNotes?.revision ?? lastSeenRevision();
+      let mine = collectAnnotations(
+        cases,
+        {
           durationOverrides,
           unavailableOverrides,
           flagOverrides,
           removedFromSlateSuggestions,
           removedFromWaitlist,
-        }),
-        settings: { defaultDurations, priorityMode, slateCount },
-      };
-      const envelope = await encryptJson(notesPassphrase, file);
-      downloadTextFile(
-        `slatebuilder-notes-${toLocalDateOnly(new Date())}.sbnotes`,
-        JSON.stringify(envelope, null, 2),
-        "application/json"
+        },
+        annotationTimes
       );
+      let mergedInFirst = 0;
+
+      // Writing to a shared file is the one case where saving can destroy
+      // someone else's work: if a colleague saved after this session opened
+      // the file, a plain overwrite erases everything they did. Re-read first,
+      // and if the file has moved on, merge into it rather than over it.
+      if (notesHandle && (await ensureHandlePermission(notesHandle, "readwrite"))) {
+        try {
+          const existingText = await readNotesHandle(notesHandle);
+          const existingEnvelope = JSON.parse(existingText);
+          if (isEncryptedEnvelope(existingEnvelope)) {
+            const existing = await decryptJson<AnnotationsFile>(notesPassphrase, existingEnvelope);
+            if (isAnnotationsFile(existing)) {
+              const existingRevision = existing.revision ?? 0;
+              if (existingRevision > baseRevision) {
+                const merged = mergeAnnotations(mine, existing.annotations);
+                mine = merged.annotations;
+                mergedInFirst = merged.taken + merged.added;
+                baseRevision = existingRevision;
+              }
+            }
+          }
+        } catch {
+          // An unreadable or differently-locked existing file must not block
+          // saving; it is treated as though there were nothing to merge.
+        }
+      }
+
+      const revision = baseRevision + 1;
+      const file: AnnotationsFile = { ...buildNotesFile(revision), annotations: mine };
+      const envelope = await encryptJson(notesPassphrase, file);
+      const payload = JSON.stringify(envelope, null, 2);
+      const who = authorLabel.trim() ? `-${authorLabel.trim().replace(/[^A-Za-z0-9]+/g, "")}` : "";
+      // Revision and author in the filename so that, in a folder listing, the
+      // newest file is obvious without opening any of them.
+      const filename = `slatebuilder-notes-r${String(revision).padStart(3, "0")}-${toLocalDateOnly(new Date())}${who}.sbnotes`;
+
+      let wroteTo = filename;
+      if (notesHandle && (await ensureHandlePermission(notesHandle, "readwrite"))) {
+        await writeNotesHandle(notesHandle, payload);
+        wroteTo = notesHandle.name;
+      } else {
+        downloadTextFile(filename, payload, "application/json");
+      }
+
+      rememberRevision(revision);
+      setLoadedNotes({
+        revision,
+        savedBy: file.savedBy,
+        updatedAt: file.updatedAt,
+        fingerprint: file.waitlist?.fingerprint,
+        patientCount: file.waitlist?.patientCount,
+      });
       const n = Object.keys(file.annotations).length;
+      const mergedNote =
+        mergedInFirst > 0
+          ? ` Someone had saved to this file since you opened it, so ${mergedInFirst} of their change${mergedInFirst === 1 ? "" : "s"} were merged in rather than overwritten.`
+          : "";
+      const keepNote = notesHandle
+        ? ""
+        : " Keep the file and its passphrase somewhere safe: it cannot be opened without the passphrase, and there is no way to reset it.";
       setNotesStatus(
-        `Saved notes for ${n} patient${n === 1 ? "" : "s"}. Keep the file and its passphrase somewhere safe — it cannot be opened without the passphrase, and there is no way to reset it.`
+        `Saved revision ${revision} to ${wroteTo} — notes for ${n} patient${n === 1 ? "" : "s"}.${mergedNote}${keepNote}`
       );
       setNotesPassphrase("");
       setNotesPassphraseConfirm("");
@@ -793,7 +1031,7 @@ export default function Home() {
     setNotesError(null);
     setNotesStatus(null);
     setNotesScope("load");
-    if (!notesFile) {
+    if (!notesFile && !notesHandle) {
       setNotesError("Choose a saved notes file first.");
       return;
     }
@@ -803,7 +1041,17 @@ export default function Home() {
     }
     setNotesBusy(true);
     try {
-      const envelope = JSON.parse(await notesFile.text());
+      // Prefer an explicitly chosen file; otherwise read the bound one.
+      let text: string;
+      if (notesFile) {
+        text = await notesFile.text();
+      } else if (notesHandle && (await ensureHandlePermission(notesHandle, "read"))) {
+        text = await readNotesHandle(notesHandle);
+      } else {
+        setNotesError("Could not read the notes file on this computer.");
+        return;
+      }
+      const envelope = JSON.parse(text);
       if (!isEncryptedEnvelope(envelope)) {
         setNotesError("That file is not a SlateBuilder notes file.");
         return;
@@ -813,33 +1061,73 @@ export default function Home() {
         setNotesError("That file is not a SlateBuilder notes file.");
         return;
       }
+
+      const incomingRevision = decoded.revision ?? 0;
+      const concerns = describeNotesConcerns(decoded, incomingRevision);
+      if (
+        concerns.length > 0 &&
+        !window.confirm(`${concerns.join("\n\n")}\n\nLoad this file anyway?`)
+      ) {
+        return;
+      }
+
       if (decoded.settings) {
         setDefaultDurations(decoded.settings.defaultDurations);
         setPriorityMode(decoded.settings.priorityMode);
         setSlateCount(decoded.settings.slateCount || 2);
       }
+
+      // Combine rather than replace, so loading a colleague's file adds their
+      // work to yours instead of discarding whoever saved first.
+      const mine = collectAnnotations(
+        cases,
+        {
+          durationOverrides,
+          unavailableOverrides,
+          flagOverrides,
+          removedFromSlateSuggestions,
+          removedFromWaitlist,
+        },
+        annotationTimes
+      );
+      const merged = mergeAnnotations(mine, decoded.annotations);
+
+      setLoadedNotes({
+        revision: Math.max(incomingRevision, loadedNotes?.revision ?? 0),
+        savedBy: decoded.savedBy,
+        updatedAt: decoded.updatedAt,
+        fingerprint: decoded.waitlist?.fingerprint,
+        patientCount: decoded.waitlist?.patientCount,
+      });
+      rememberRevision(incomingRevision);
+
       if (cases.length === 0) {
-        // No waitlist on screen yet: hold the notes until one is uploaded.
-        pendingAnnotationsRef.current = decoded.annotations;
-        const n = Object.keys(decoded.annotations).length;
+        // No waitlist open yet: hold the merged notes until one is uploaded.
+        pendingAnnotationsRef.current = merged.annotations;
+        const n = Object.keys(merged.annotations).length;
         setNotesStatus(
-          `Notes for ${n} patient${n === 1 ? "" : "s"} are ready. Upload this week's waitlist and they will be applied to everyone still on it.`
+          `Notes for ${n} patient${n === 1 ? "" : "s"} are ready (revision ${incomingRevision}${decoded.savedBy ? `, saved by ${decoded.savedBy}` : ""}). Upload this week's waitlist and they will be applied to everyone still on it.`
         );
       } else {
-        const applied = applyAnnotations(cases, decoded.annotations);
+        const applied = applyAnnotations(cases, merged.annotations);
         setDurationOverrides(applied.durationOverrides);
         setUnavailableOverrides(applied.unavailableOverrides);
         setFlagOverrides(applied.flagOverrides);
         setRemovedFromSlateSuggestions(applied.removedFromSlateSuggestions);
         setRemovedFromWaitlist(applied.removedFromWaitlist);
+        setAnnotationTimes(applied.times);
         setMovedCaseIds({});
         setOrderedSlates([]);
         setOrderedSlateCaseIds([]);
         setOptimizeReport(null);
         compositionSeedRef.current = "";
-        setNotesStatus(
-          `Applied notes to ${applied.matched} patient${applied.matched === 1 ? "" : "s"} on this week's list.`
-        );
+        const parts = [
+          `${applied.matched} patient${applied.matched === 1 ? "" : "s"} on this week's list now carry notes`,
+        ];
+        if (merged.taken > 0) parts.push(`${merged.taken} updated from this file`);
+        if (merged.kept > 0) parts.push(`${merged.kept} kept because yours were newer`);
+        if (merged.added > 0) parts.push(`${merged.added} added`);
+        setNotesStatus(`${parts.join(" · ")}.`);
       }
       setNotesPassphrase("");
       setNotesPassphraseConfirm("");
@@ -863,6 +1151,7 @@ export default function Home() {
   // paths; re-uploads instead migrate these edits onto the new file's caseIds
   // by patient identity (see pendingOverrideMigrationRef in the parse effect).
   const clearCaseKeyedState = () => {
+    setAnnotationTimes({});
     setDurationOverrides({});
     setUnavailableOverrides({});
     setFlagOverrides({});
@@ -902,6 +1191,7 @@ export default function Home() {
     setNotesStatus(null);
     setNotesError(null);
     setNotesScope(null);
+    setLoadedNotes(null);
     setNotesFile(null);
     setNotesPassphrase("");
     setNotesPassphraseConfirm("");
@@ -1091,6 +1381,7 @@ export default function Home() {
       return next;
     });
     setMovedCaseIds((prev) => (prev[current.caseId] ? prev : { ...prev, [current.caseId]: true }));
+    touchAnnotations(current.caseId);
     setRemovedFromSlateSuggestions((prev) => {
       if (!prev[current.caseId]) return prev;
       const next = { ...prev };
@@ -1114,6 +1405,7 @@ export default function Home() {
     }
     spliceCaseOutOfSlates(current.caseId);
     setRemovedFromSlateSuggestions((prev) => ({ ...prev, [current.caseId]: true }));
+    touchAnnotations(current.caseId);
     backfillSlate(current.slateIndex, current.caseId);
   };
 
@@ -1121,6 +1413,7 @@ export default function Home() {
     const minutes = Number(value);
     if (!Number.isFinite(minutes) || minutes <= 0) return;
     setDurationOverrides((prev) => ({ ...prev, [caseId]: minutes }));
+    touchAnnotations(caseId);
     setOrderedSlates((prev) => {
       const next = prev.map((slate) => [...slate]);
       const slate = next[slateIndex];
@@ -1161,6 +1454,7 @@ export default function Home() {
         [flag]: value,
       },
     }));
+    touchAnnotations(caseId);
     patchCaseInSlates(caseId, (item) => ({ ...item, flags: { ...item.flags, [flag]: value } }));
   };
 
@@ -1223,6 +1517,7 @@ export default function Home() {
       ...prev,
       [caseId]: value,
     }));
+    touchAnnotations(caseId);
 
     const slateIndex = findSlateIndexForCase(caseId);
     const currentDateISO = slateIndex !== -1 ? activeSlateDates[slateIndex] ?? "" : "";
@@ -1348,6 +1643,7 @@ export default function Home() {
       ...prev,
       [caseId]: true,
     }));
+    touchAnnotations(caseId);
     spliceCaseOutOfSlates(caseId);
     if (slateIndex !== -1) backfillSlate(slateIndex, caseId);
   };
@@ -1363,6 +1659,7 @@ export default function Home() {
       delete next[caseId];
       return next;
     });
+    touchAnnotations(caseId);
 
     const source = officeCasesWithOverrides.find((c) => c.caseId === caseId);
     if (!source) return;
@@ -1388,6 +1685,7 @@ export default function Home() {
     }
     const slateIndex = findSlateIndexForCase(caseId);
     setRemovedFromWaitlist((prev) => ({ ...prev, [caseId]: true }));
+    touchAnnotations(caseId);
     spliceCaseOutOfSlates(caseId);
     if (slateIndex !== -1) backfillSlate(slateIndex, caseId);
     const phn = item.patientRef?.trim();
@@ -1412,6 +1710,7 @@ export default function Home() {
       delete next[caseId];
       return next;
     });
+    touchAnnotations(caseId);
   };
 
   const resetDurationOverrides = () => {
@@ -2332,8 +2631,39 @@ export default function Home() {
             matched to whoever is still on the list you just loaded.
           </p>
           <div className="mt-4 flex flex-col gap-3">
+            {notesHandle ? (
+              <div className="rounded-xl border border-slateBlue-200 bg-slateBlue-50/60 px-3 py-2 text-xs text-slateBlue-900">
+                <span className="font-semibold">Linked to {notesHandle.name}</span> on this computer.
+                Saving replaces this file rather than adding another copy.
+                <button
+                  type="button"
+                  onClick={() => void handleUnbindNotesFile()}
+                  className="ml-2 font-semibold underline"
+                >
+                  Unlink
+                </button>
+              </div>
+            ) : canBindFile ? (
+              <div className="rounded-xl border border-sand-200 bg-white/70 px-3 py-2 text-xs text-sand-700">
+                <span className="font-semibold text-sand-900">Recommended:</span> link one notes file
+                on this computer, so every save replaces it instead of leaving copies in Downloads.
+                <button
+                  type="button"
+                  onClick={() => void handleChooseNotesFile("open")}
+                  className="ml-2 font-semibold text-slateBlue-700 underline"
+                >
+                  Choose the file
+                </button>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                This browser cannot save straight to a folder, so notes are downloaded as a new file
+                each time. Chrome or Edge can link one file instead. Take care to keep only the
+                newest copy.
+              </div>
+            )}
             <label className="flex flex-col gap-1.5 text-xs text-sand-700">
-              Notes file
+              {notesHandle ? "Or choose a different file" : "Notes file"}
               <input
                 type="file"
                 accept=".sbnotes,application/json"
@@ -2352,7 +2682,7 @@ export default function Home() {
             </label>
             <button
               type="button"
-              disabled={notesBusy || !notesFile}
+              disabled={notesBusy || (!notesFile && !notesHandle)}
               onClick={() => void handleLoadNotes()}
               className="self-start rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700 disabled:opacity-50"
             >
@@ -2569,6 +2899,18 @@ export default function Home() {
           them at step 2 next week, instead of entering them again.
         </p>
 
+        {loadedNotes && (
+          <p className="mt-2 text-xs text-sand-600">
+            Working from revision {loadedNotes.revision}
+            {loadedNotes.savedBy ? `, saved by ${loadedNotes.savedBy}` : ""} on{" "}
+            {loadedNotes.updatedAt.slice(0, 10)}
+            {loadedNotes.patientCount !== undefined
+              ? ` against a ${loadedNotes.patientCount}-patient list`
+              : ""}
+            . Saving will write revision {loadedNotes.revision + 1}.
+          </p>
+        )}
+
         <div className="mt-4 grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
           <div className="rounded-2xl border border-sand-200 bg-white/70 p-4">
             <p className="text-xs text-sand-600">
@@ -2577,6 +2919,23 @@ export default function Home() {
                 : "Nothing to save yet. Notes appear here once you set an unavailable date, adjust a case length, tick a clinical flag, or remove someone."}
             </p>
             <div className="mt-3 flex flex-col gap-3">
+              <label className="flex flex-col gap-1.5 text-xs text-sand-700">
+                Who is saving (initials or role)
+                <input
+                  type="text"
+                  value={authorLabel}
+                  onChange={(event) => {
+                    setAuthorLabel(event.target.value);
+                    try {
+                      window.localStorage.setItem(AUTHOR_LABEL_KEY, event.target.value);
+                    } catch {
+                      // not remembering the label is harmless
+                    }
+                  }}
+                  placeholder="e.g. MOA"
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
               <label className="flex flex-col gap-1.5 text-xs text-sand-700">
                 Passphrase (at least {MIN_PASSPHRASE_LENGTH} characters)
                 <input
