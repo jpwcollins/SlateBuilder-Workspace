@@ -33,6 +33,9 @@ import {
   BENCHMARK_WEEKS_ORDER,
   buildCaseSchedule,
   caseFitsInSlate,
+  checkImportedWaitlist,
+  ImportCheck,
+  summarizeImport,
   ClinicalFlagKey,
   collectAnnotations,
   decryptJson,
@@ -157,6 +160,70 @@ function normalizeOfficeWorkbookToCsv(rows: SpreadsheetRow[]): string {
   });
 
   return lines.join("\n");
+}
+
+// Aggregate sanity checks on a freshly uploaded waitlist.
+//
+// This sits above the tabs rather than inside Setup because the failure it
+// guards against is precisely the one you do not notice: a units error or an
+// unmatched column produces slates that look entirely normal, and someone who
+// uploads and goes straight to Slates would never see a panel tucked under the
+// upload box. It does not block the app -- a surgeon at 7am must never be
+// locked out by a false positive -- but it takes a click to put away, so it
+// cannot be dismissed by simply not reading it.
+function ImportCheckPanel({
+  checks,
+  onAcknowledge,
+}: {
+  checks: ImportCheck[];
+  onAcknowledge: () => void;
+}) {
+  const serious = checks.some((check) => check.severity === "serious");
+  return (
+    <section
+      aria-labelledby="import-check-heading"
+      className={`rounded-2xl border-2 px-5 py-4 ${
+        serious ? "border-rose-300 bg-rose-50" : "border-amber-300 bg-amber-50"
+      }`}
+    >
+      <h2
+        id="import-check-heading"
+        className={`text-sm font-semibold ${serious ? "text-rose-900" : "text-amber-900"}`}
+      >
+        {serious
+          ? "This file may not have loaded correctly"
+          : "Worth a look before you use these slates"}
+      </h2>
+      <ul className="mt-3 flex flex-col gap-3">
+        {checks.map((check) => (
+          <li key={check.id} className="text-sm">
+            <p
+              className={`font-semibold ${
+                check.severity === "serious" ? "text-rose-900" : "text-amber-900"
+              }`}
+            >
+              {check.headline}
+            </p>
+            <p className="mt-0.5 text-sand-800">{check.detail}</p>
+          </li>
+        ))}
+      </ul>
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={onAcknowledge}
+          className={`rounded-full px-4 py-1.5 text-xs font-semibold text-white ${
+            serious ? "bg-rose-700 hover:bg-rose-800" : "bg-amber-700 hover:bg-amber-800"
+          }`}
+        >
+          I have checked these
+        </button>
+        <span className="text-xs text-sand-700">
+          Nothing is blocked. This appears again the next time you load a waitlist.
+        </span>
+      </div>
+    </section>
+  );
 }
 
 // Numbered heading for the Setup tab. The numbers are not decoration: the
@@ -365,11 +432,27 @@ export default function Home() {
   const [csvText, setCsvText] = useState("");
   const [cases, setCases] = useState<PatientCase[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
+  // Aggregate sanity checks on the file that just loaded, and whether the user
+  // has said they have read them. Acknowledgement is deliberately not
+  // remembered: it belongs to one import, and the next upload earns a fresh
+  // look.
+  const [importChecks, setImportChecks] = useState<ImportCheck[]>([]);
+  const [importChecksRead, setImportChecksRead] = useState(false);
+  // How the app read the file, stated plainly. Always shown after an upload,
+  // never conditional — see summarizeImport() for why a silent receipt catches
+  // what a threshold cannot.
+  const [importSummary, setImportSummary] = useState<string | null>(null);
   // Confirms a fresh upload succeeded ("✓ N patients loaded"); only set right
   // after handleUpload, never after the sessionStorage-restore path re-parses
   // the same csvText on reload (see justUploadedRef below).
   const [uploadSummary, setUploadSummary] = useState<string | null>(null);
   const justUploadedRef = useRef(false);
+  // Bumped alongside every setCsvText from an upload. Without it, re-uploading
+  // a file whose contents are byte-identical leaves csvText unchanged, React
+  // skips the parse effect, and the upload appears to do nothing at all — no
+  // confirmation line, no import checks, nothing. Set in the same handler as
+  // the text so the two land in one render.
+  const [uploadNonce, setUploadNonce] = useState(0);
   const [durationOverrides, setDurationOverrides] = useState<Record<string, number>>({});
   const [unavailableOverrides, setUnavailableOverrides] = useState<Record<string, string>>({});
   const [flagOverrides, setFlagOverrides] = useState<
@@ -470,6 +553,9 @@ export default function Home() {
     const result = parseCsv(csvText);
     setCases(result.cases);
     setWarnings(result.warnings);
+    setImportChecks(checkImportedWaitlist(result));
+    setImportChecksRead(false);
+    setImportSummary(result.cases.length > 0 ? summarizeImport(result.cases).line : null);
     if (justUploadedRef.current) {
       justUploadedRef.current = false;
 
@@ -503,7 +589,7 @@ export default function Home() {
       const kept = carried > 0 ? ` · notes kept for ${carried} returning patient${carried === 1 ? "" : "s"}` : "";
       setUploadSummary(`✓ ${result.cases.length} patient${result.cases.length === 1 ? "" : "s"} loaded${kept}${skipped}`);
     }
-  }, [csvText]);
+  }, [csvText, uploadNonce]);
 
   useEffect(() => {
     try {
@@ -1010,7 +1096,7 @@ export default function Home() {
       const n = Object.keys(file.annotations).length;
       const mergedNote =
         mergedInFirst > 0
-          ? ` Someone had saved to this file since you opened it, so ${mergedInFirst} of their change${mergedInFirst === 1 ? "" : "s"} were merged in rather than overwritten.`
+          ? ` Someone had saved to this file since you opened it, so ${mergedInFirst} of their changes ${mergedInFirst === 1 ? "was" : "were"} merged in rather than overwritten.`
           : "";
       const keepNote = notesHandle
         ? ""
@@ -1174,6 +1260,9 @@ export default function Home() {
     setCsvText("");
     setCases([]);
     setWarnings([]);
+    setImportChecks([]);
+    setImportChecksRead(false);
+    setImportSummary(null);
     setUploadSummary(null);
     clearCaseKeyedState();
     setPriorityMode("urgency_then_ttt");
@@ -1270,6 +1359,7 @@ export default function Home() {
           raw: false,
         });
         setCsvText(normalizeOfficeWorkbookToCsv(rows));
+        setUploadNonce((n) => n + 1);
       };
       reader.readAsArrayBuffer(file);
       return;
@@ -1279,6 +1369,7 @@ export default function Home() {
     reader.onload = () => {
       const text = typeof reader.result === "string" ? reader.result : "";
       setCsvText(text);
+      setUploadNonce((n) => n + 1);
     };
     reader.readAsText(file);
   };
@@ -2552,6 +2643,10 @@ export default function Home() {
         </div>
       </div>
 
+      {importChecks.length > 0 && !importChecksRead && (
+        <ImportCheckPanel checks={importChecks} onAcknowledge={() => setImportChecksRead(true)} />
+      )}
+
       {activeTab === "setup" && (
         <>
       <section className="grid gap-6 lg:grid-cols-2">
@@ -2599,15 +2694,26 @@ export default function Home() {
             </div>
 
             {uploadSummary && (
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs font-semibold text-emerald-800">
-                <span>{uploadSummary}</span>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab("slates")}
-                  className="rounded-full bg-emerald-700 px-3 py-1.5 font-semibold text-white"
-                >
-                  View suggested slates →
-                </button>
+              <div className="rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs text-emerald-800">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <span className="font-semibold">{uploadSummary}</span>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("slates")}
+                    className="rounded-full bg-emerald-700 px-3 py-1.5 font-semibold text-white"
+                  >
+                    View suggested slates →
+                  </button>
+                </div>
+                {importSummary && (
+                  <p className="mt-2 border-t border-emerald-200 pt-2 text-emerald-900">
+                    <span className="font-semibold">Read as:</span> {importSummary}.{" "}
+                    <span className="text-emerald-800">
+                      If that does not match the list you know, stop and check the file rather
+                      than the slates.
+                    </span>
+                  </p>
+                )}
               </div>
             )}
 
@@ -2647,13 +2753,27 @@ export default function Home() {
               <div className="rounded-xl border border-sand-200 bg-white/70 px-3 py-2 text-xs text-sand-700">
                 <span className="font-semibold text-sand-900">Recommended:</span> link one notes file
                 on this computer, so every save replaces it instead of leaving copies in Downloads.
-                <button
-                  type="button"
-                  onClick={() => void handleChooseNotesFile("open")}
-                  className="ml-2 font-semibold text-slateBlue-700 underline"
-                >
-                  Choose the file
-                </button>
+                <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+                  {/* Both ways in matter. "Use an existing file" opens a picker
+                      that can only select a file that is already there, so on
+                      the first day of use -- when no notes file exists yet --
+                      it is the one thing that cannot work. */}
+                  <button
+                    type="button"
+                    onClick={() => void handleChooseNotesFile("create")}
+                    className="font-semibold text-slateBlue-700 underline"
+                  >
+                    Create a new notes file
+                  </button>
+                  <span className="text-sand-500">or</span>
+                  <button
+                    type="button"
+                    onClick={() => void handleChooseNotesFile("open")}
+                    className="font-semibold text-slateBlue-700 underline"
+                  >
+                    use one you already have
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">

@@ -2,6 +2,47 @@ import { describe, expect, it } from "vitest";
 import { parseCsv } from "./csv";
 
 describe("parseCsv", () => {
+  it("accounts for every row that carried data but produced no patient", () => {
+    // A row with content and no way to place it in time used to vanish
+    // silently -- the worst thing this parser can do to a surgical waitlist.
+    const csv = [
+      "source_key,benchmark,time_to_target_days",
+      "Present,12w,5",
+      "No wait info,,",
+      "Bad benchmark,someday,5",
+    ].join("\n");
+    const result = parseCsv(csv);
+    expect(result.cases).toHaveLength(1);
+    expect(result.rowsRead).toBe(3);
+    expect(result.skipped).toEqual([
+      { row: 3, reason: "no-wait-information", sourceKey: "No wait info" },
+      {
+        row: 4,
+        reason: "unrecognized-benchmark",
+        sourceKey: "Bad benchmark",
+        offendingValue: "someday",
+      },
+    ]);
+  });
+
+  it("summarizes rather than listing a bullet for every skipped row", () => {
+    // A file missing its benchmark column skips every row; an 800-bullet list
+    // reads as a broken app rather than as 800 missing patients.
+    const rows = Array.from({ length: 40 }, (_, i) => `P${i},,`);
+    const result = parseCsv(["source_key,benchmark,time_to_target_days", ...rows].join("\n"));
+    expect(result.cases).toHaveLength(0);
+    expect(result.skipped).toHaveLength(40);
+    expect(result.warnings.length).toBeLessThan(12);
+    expect(result.warnings.at(-1)).toContain("32 more rows skipped");
+  });
+
+  it("does not count blank lines as rows", () => {
+    const csv = ["source_key,benchmark,time_to_target_days", "A,12w,5", ",,", "B,12w,5"].join("\n");
+    const result = parseCsv(csv);
+    expect(result.rowsRead).toBe(2);
+    expect(result.skipped).toEqual([]);
+  });
+
   it("assigns opaque case codes and keeps the identifier as the display label", () => {
     const csv = ["source_key,benchmark,time_to_target_days", "Jane Doe,2w,5"].join("\n");
     const { cases } = parseCsv(csv);
@@ -77,6 +118,19 @@ describe("parseCsv", () => {
     ].join("\n");
     const { cases, warnings } = parseCsv(csv);
     expect(cases).toHaveLength(0);
-    expect(warnings.some((w) => w.includes("unrecognized benchmark"))).toBe(true);
+    expect(warnings.some((w) => w.includes("not recognised"))).toBe(true);
+  });
+
+  it("distinguishes a blank target time from one it could not understand", () => {
+    // Different fixes: a blank means a missing column or value, while an
+    // unrecognised value means the column is there and says something odd.
+    const blank = parseCsv(
+      ["source_key,benchmark,time_waiting_weeks", "A,,12"].join("\n")
+    );
+    const odd = parseCsv(
+      ["source_key,benchmark,time_waiting_weeks", "A,someday,12"].join("\n")
+    );
+    expect(blank.warnings.some((w) => w.includes("no target time given"))).toBe(true);
+    expect(odd.warnings.some((w) => w.includes("'someday' not recognised"))).toBe(true);
   });
 });

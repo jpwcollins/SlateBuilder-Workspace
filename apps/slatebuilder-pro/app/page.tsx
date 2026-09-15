@@ -14,6 +14,9 @@ import {
   getBlockStartMinutes,
   optimizeSlatesForDates,
   parseCsv,
+  checkImportedWaitlist,
+  ImportCheck,
+  summarizeImport,
   PatientCase,
   PriorityMode,
   ScoredCase,
@@ -27,6 +30,71 @@ import {
   TURNAROUND_MINUTES,
 } from "@slatebuilder/core";
 import { downloadWaitlistPdf, WaitlistPdfRow } from "@slatebuilder/core/slatePdf";
+
+// Aggregate sanity checks on a freshly uploaded waitlist.
+//
+// This sits above the tabs rather than inside Setup because the failure it
+// guards against is precisely the one you do not notice: a units error or an
+// unmatched column produces slates that look entirely normal, and someone who
+// uploads and goes straight to Slates would never see a panel tucked under the
+// upload box. It does not block the app -- a surgeon at 7am must never be
+// locked out by a false positive -- but it takes a click to put away, so it
+// cannot be dismissed by simply not reading it.
+function ImportCheckPanel({
+  checks,
+  onAcknowledge,
+}: {
+  checks: ImportCheck[];
+  onAcknowledge: () => void;
+}) {
+  const serious = checks.some((check) => check.severity === "serious");
+  return (
+    <section
+      aria-labelledby="import-check-heading"
+      className={`rounded-2xl border-2 px-5 py-4 ${
+        serious ? "border-rose-300 bg-rose-50" : "border-amber-300 bg-amber-50"
+      }`}
+    >
+      <h2
+        id="import-check-heading"
+        className={`text-sm font-semibold ${serious ? "text-rose-900" : "text-amber-900"}`}
+      >
+        {serious
+          ? "This file may not have loaded correctly"
+          : "Worth a look before you use these slates"}
+      </h2>
+      <ul className="mt-3 flex flex-col gap-3">
+        {checks.map((check) => (
+          <li key={check.id} className="text-sm">
+            <p
+              className={`font-semibold ${
+                check.severity === "serious" ? "text-rose-900" : "text-amber-900"
+              }`}
+            >
+              {check.headline}
+            </p>
+            <p className="mt-0.5 text-sand-800">{check.detail}</p>
+          </li>
+        ))}
+      </ul>
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={onAcknowledge}
+          className={`rounded-full px-4 py-1.5 text-xs font-semibold text-white ${
+            serious ? "bg-rose-700 hover:bg-rose-800" : "bg-amber-700 hover:bg-amber-800"
+          }`}
+        >
+          I have checked these
+        </button>
+        <span className="text-xs text-sand-700">
+          Nothing is blocked. This appears again the next time you load a waitlist.
+        </span>
+      </div>
+    </section>
+  );
+}
+
 
 type ProTab = "setup" | "slates" | "waitlist" | "long";
 const PRO_TAB_KEY = "slatebuilder-pro-tab";
@@ -74,6 +142,13 @@ export default function Home() {
   const [csvText, setCsvText] = useState("");
   const [cases, setCases] = useState<PatientCase[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [importChecks, setImportChecks] = useState<ImportCheck[]>([]);
+  const [importChecksRead, setImportChecksRead] = useState(false);
+  const [importSummary, setImportSummary] = useState<string | null>(null);
+  // Bumped with every upload so that re-loading a byte-identical file still
+  // re-parses: without it React sees no change to csvText and the upload
+  // silently does nothing.
+  const [uploadNonce, setUploadNonce] = useState(0);
   const [durationOverrides, setDurationOverrides] = useState<Record<string, number>>({});
   const [unavailableOverrides, setUnavailableOverrides] = useState<Record<string, string>>({});
   const [flagOverrides, setFlagOverrides] = useState<
@@ -139,10 +214,13 @@ export default function Home() {
     const result = parseCsv(csvText);
     setCases(result.cases);
     setWarnings(result.warnings);
+    setImportChecks(checkImportedWaitlist(result));
+    setImportChecksRead(false);
+    setImportSummary(result.cases.length > 0 ? summarizeImport(result.cases).line : null);
     if (!selectedSurgeon && result.cases.length > 0) {
       setSelectedSurgeon(result.cases[0].surgeonId);
     }
-  }, [csvText, selectedSurgeon]);
+  }, [csvText, selectedSurgeon, uploadNonce]);
 
   useEffect(() => {
     const stored = window.localStorage.getItem("slatebuilder-default-durations");
@@ -330,6 +408,7 @@ export default function Home() {
     reader.onload = () => {
       const text = typeof reader.result === "string" ? reader.result : "";
       setCsvText(text);
+      setUploadNonce((n) => n + 1);
     };
     reader.readAsText(file);
   };
@@ -742,6 +821,10 @@ export default function Home() {
         </nav>
       </div>
 
+      {importChecks.length > 0 && !importChecksRead && (
+        <ImportCheckPanel checks={importChecks} onAcknowledge={() => setImportChecksRead(true)} />
+      )}
+
       {activeTab === "setup" && (
         <>
       <header className="flex flex-col gap-4">
@@ -813,6 +896,14 @@ export default function Home() {
               />
             </div>
 
+
+            {importSummary && (
+              <p className="rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs text-emerald-900">
+                <span className="font-semibold">Read as:</span> {importSummary}.{" "}
+                If that does not match the list you know, stop and check the file rather than the
+                slates.
+              </p>
+            )}
 
             {warnings.length > 0 && (
               <div className="rounded-lg border border-sand-200 bg-sand-50 px-4 py-3 text-xs text-sand-800">

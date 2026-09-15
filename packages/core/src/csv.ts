@@ -65,9 +65,37 @@ const headerAliases: Record<string, string> = {
   specialassist: "specialAssist",
 };
 
+/** Why a row in the uploaded file did not become a patient on screen. */
+export type SkipReason =
+  | "no-wait-information"
+  | "unrecognized-benchmark"
+  | "missing-time-or-duration";
+
+/**
+ * A row that carried data but produced no patient.
+ *
+ * Recorded for every such row, so the app can account for the whole file:
+ * a patient who silently fails to appear on a surgical waitlist is the most
+ * consequential thing this parser can do, and "43 rows read, 41 patients
+ * loaded" is only checkable if the difference is enumerable.
+ */
+export type SkippedRow = {
+  /** 1-based line number, matching the row number a spreadsheet would show. */
+  row: number;
+  reason: SkipReason;
+  /** Whatever identified the patient on that row, if anything did. */
+  sourceKey?: string;
+  /** The offending value, where naming it helps (e.g. a bad benchmark). */
+  offendingValue?: string;
+};
+
 export type ParseResult = {
   cases: PatientCase[];
   warnings: string[];
+  /** Rows carrying data, excluding the header and blank lines. */
+  rowsRead: number;
+  /** Data rows that produced no patient, with the reason for each. */
+  skipped: SkippedRow[];
 };
 
 export function parseCsv(text: string): ParseResult {
@@ -77,7 +105,7 @@ export function parseCsv(text: string): ParseResult {
     .filter((line) => line.length > 0);
 
   if (lines.length === 0) {
-    return { cases: [], warnings: ["CSV is empty."] };
+    return { cases: [], warnings: ["CSV is empty."], rowsRead: 0, skipped: [] };
   }
 
   const header = splitCsvLine(lines[0]).map((h) => normalizeHeader(h));
@@ -85,6 +113,8 @@ export function parseCsv(text: string): ParseResult {
 
   const warnings: string[] = [];
   const cases: PatientCase[] = [];
+  const skipped: SkippedRow[] = [];
+  let rowsRead = 0;
   let caseSeq = 0;
 
   for (let i = 1; i < lines.length; i += 1) {
@@ -98,6 +128,7 @@ export function parseCsv(text: string): ParseResult {
     if (Object.values(record).every((value) => value === "")) {
       continue;
     }
+    rowsRead += 1;
 
     const rawId = record["source_key"] || record["case_num"] || `row-${i}`;
     // displayLabel may contain PHI (a name/PHN); it is shown on screen but kept
@@ -111,11 +142,20 @@ export function parseCsv(text: string): ParseResult {
     const benchmarkRaw =
       record["benchmark"] || record["target_time_weeks"] || record["target_time"];
     if (!benchmarkRaw && !record["time_to_target_days"] && !record["time_waiting_days"] && !record["time_waiting_weeks"]) {
+      // This row has content but nothing to place it in time. It used to
+      // vanish without a trace; a patient dropping off a surgical waitlist
+      // unannounced is the worst failure this parser has, so it is recorded.
+      skipped.push({ row: i + 1, reason: "no-wait-information", sourceKey });
       continue;
     }
     const benchmarkWeeks = parseBenchmarkWeeks(benchmarkRaw);
     if (!benchmarkWeeks) {
-      warnings.push(`Row ${i + 1}: unrecognized benchmark '${benchmarkRaw}'.`);
+      skipped.push({
+        row: i + 1,
+        reason: "unrecognized-benchmark",
+        sourceKey,
+        offendingValue: benchmarkRaw,
+      });
       continue;
     }
 
@@ -163,7 +203,7 @@ export function parseCsv(text: string): ParseResult {
     const unavailableUntil = record["unavailableUntil"] || "";
 
     if (!Number.isFinite(roundedTimeToTargetDays) || !Number.isFinite(estimatedDurationMin)) {
-      warnings.push(`Row ${i + 1}: missing time-to-target or duration.`);
+      skipped.push({ row: i + 1, reason: "missing-time-or-duration", sourceKey });
       continue;
     }
 
@@ -196,7 +236,46 @@ export function parseCsv(text: string): ParseResult {
     warnings.push("No source_key or case_num column found; generated row-based keys.");
   }
 
-  return { cases, warnings };
+  warnings.push(...describeSkippedRows(skipped));
+
+  return { cases, warnings, rowsRead, skipped };
+}
+
+/** How many individual skipped rows to name before summarizing the rest. */
+const MAX_ROW_WARNINGS = 8;
+
+function skipReasonText(skip: SkippedRow): string {
+  switch (skip.reason) {
+    case "no-wait-information":
+      return "no target time or waiting time.";
+    case "unrecognized-benchmark":
+      // A blank target is a missing column or a missing value, not a value
+      // the app failed to understand; saying so points at the right fix.
+      return skip.offendingValue
+        ? `target time '${skip.offendingValue}' not recognised.`
+        : "no target time given.";
+    case "missing-time-or-duration":
+      return "missing time-to-target or duration.";
+  }
+}
+
+/**
+ * One bullet per skipped row, up to a limit, then a count.
+ *
+ * The limit matters: a file missing its benchmark column skips every row, and
+ * an eight-hundred-bullet list is read as a broken app rather than as a list
+ * of eight hundred missing patients. The full record stays in `skipped`.
+ */
+function describeSkippedRows(skipped: SkippedRow[]): string[] {
+  if (skipped.length === 0) return [];
+  const named = skipped
+    .slice(0, MAX_ROW_WARNINGS)
+    .map((skip) => `Row ${skip.row}: ${skipReasonText(skip)}`);
+  const remaining = skipped.length - named.length;
+  if (remaining > 0) {
+    named.push(`...and ${remaining} more row${remaining === 1 ? "" : "s"} skipped.`);
+  }
+  return named;
 }
 
 export function getCsvTemplate(): string {

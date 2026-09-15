@@ -1,0 +1,13 @@
+PAT_NAME1,PHN,TARGET_TIME,TIME_WAITING,DIAGNOSIS
+Testcase Alpha,9990000001,2w,11,Fibroids - Total Hysterectomy
+Testcase Bravo,9990000002,4w,43,Menorrhagia - Hysteroscopy
+Testcase Charlie,9990000003,6w,6,Endometriosis - Laparoscopic Excision
+Testcase Delta,9990000004,12w,8,Ovarian Cyst - Laparoscopic Cystectomy
+Testcase Echo,9990000005,26w,39,Fibroids - Total Hysterectomy
+Testcase Foxtrot,9990000006,2w,60,Menorrhagia - Hysteroscopy
+Testcase Golf,9990000007,4w,15,Endometriosis - Laparoscopic Excision
+Testcase Hotel,9990000008,6w,7,Ovarian Cyst - Laparoscopic Cystectomy
+Testcase India,9990000009,12w,28,Fibroids - Total Hysterectomy
+Testcase Juliet,9990000010,26w,17,Menorrhagia - Hysteroscopy
+Testcase Kilo,9990000011,2w,37,Endometriosis - Laparoscopic Excision
+Testcase Lima,9990000012,4w,5,Ovarian Cyst - Laparoscopic Cystectomy
