@@ -64,9 +64,10 @@ export default function Guide() {
       <Section title="2. Set the scheduling rules">
         <ul className="list-disc pl-5">
           <li>
-            <span className="font-semibold">Priority rule</span> — &quot;composite priority&quot;
-            (urgency + time waited) is the default; &quot;wait time only&quot; sorts purely by
-            time-to-target.
+            <span className="font-semibold">Priority rule</span> — this one lives on the{" "}
+            <span className="font-semibold">Priority waitlist</span> tab, where you can see its effect
+            as you change it. &quot;Urgency first, then wait time&quot; is the default; &quot;wait time
+            only&quot; sorts purely by time-to-target.
           </li>
           <li>
             <span className="font-semibold">Default case durations</span> — four buckets
@@ -185,106 +186,99 @@ export default function Guide() {
         </p>
       </Section>
 
-      <Section title="Saving &amp; sharing your work">
+      <Section title="Saving your work between weeks">
+        <p>
+          SlateBuilder has <span className="font-semibold">no accounts and no cloud</span>. The
+          waitlist you upload is held in the browser tab you are working in and nowhere else — not on
+          this computer&apos;s hard drive, and not on any server. Closing the tab clears it.
+        </p>
+        <p>
+          What is worth keeping from week to week is not the list (the hospital sends a fresh one
+          every time) but <span className="font-semibold">your notes on it</span>: who is away until
+          when, which cases you have given a longer slot, the clinical flags you have ticked, and
+          anyone you have taken off the list. Those you can save.
+        </p>
         <ul className="list-disc pl-5">
           <li>
-            <span className="font-semibold">Sign in</span> (Office account &amp; sync) to save your
-            work to the cloud and share draft slates across devices with your team. Only
-            pseudonymized, encrypted data is stored — never names, PHNs, or diagnoses.
+            On the Setup tab, under <span className="font-semibold">Save your notes</span>, choose a
+            passphrase and click <span className="font-semibold">Save notes file</span>. A file is
+            saved to this computer, locked with that passphrase.
           </li>
           <li>
-            Once signed in, changes <span className="font-semibold">sync automatically</span>. Sign in
-            on another device and upload the same waitlist to pick up where you left off; mark a plan{" "}
-            <span className="font-semibold">finalized</span> when it&apos;s ready.
+            The next week, upload the new waitlist first, then load the notes file and enter the same
+            passphrase. Your notes are matched to each patient by PHN, so they follow the right person
+            even though the new file lists everyone in a different order. Notes for patients who are
+            no longer waiting are simply left out.
           </li>
           <li>
-            When you upload an updated waitlist, unavailable dates and other edits{" "}
-            <span className="font-semibold">follow each returning patient</span> (matched by PHN, or
-            name if no PHN), so you don&apos;t re-enter them each time. Edits for patients who are no
-            longer on the list are dropped, and the suggested slates rebuild from the new file. The
-            upload confirmation shows how many patients kept their edits.
+            <span className="font-semibold">There is no way to recover a lost passphrase.</span> No
+            one — including whoever built this tool — can open the file without it. Keep it where your
+            office keeps other confidential passwords.
           </li>
           <li>
-            If you&apos;re not signed in, work is still{" "}
-            <span className="font-semibold">autosaved for the current browser tab</span> and cleared
-            when you close it.
+            Before walking away from the computer, use <span className="font-semibold">Clear screen</span>{" "}
+            in the top bar. It removes the uploaded list and every note from the screen. A notes file
+            you have already saved is a separate file and is not affected.
           </li>
           <li>
-            On a shared office computer, use the{" "}
-            <span className="font-semibold">Sign out &amp; reset</span> /{" "}
-            <span className="font-semibold">Reset device data</span> button in the top bar (visible on
-            every tab, signed in or not) before walking away. It clears everything held on this device —
-            the uploaded list, every edit, and the tab autosave — and signs you out if you were signed
-            in. It does not delete anything already saved to the cloud.
+            Because nothing is written to the browser, <span className="font-semibold">reloading the
+            page loses the list</span> and you will need to upload it again. The browser will warn you
+            before that happens.
           </li>
         </ul>
       </Section>
 
       <Section title="Privacy &amp; security, in plain language">
         <p>
-          The short version: <span className="font-semibold">patient names, PHNs, and diagnoses never
-          leave your computer</span>. Only your browser ever sees them. What gets saved to the cloud (so
-          your team can share drafts across devices) is a scrambled, locked version of your working
-          data that the server itself cannot read.
+          The short version: <span className="font-semibold">nothing you upload leaves this
+          computer.</span> There is no account to sign in to and no server holding your data. The
+          waitlist is read and sorted inside your browser, much as a spreadsheet works on your own
+          machine.
         </p>
-        <p className="font-semibold text-sand-900">How a patient is identified in the cloud</p>
+        <p className="font-semibold text-sand-900">What happens to the file the hospital sends</p>
         <p>
-          When you sign in, your office password unlocks a secret &quot;office key&quot; that only ever
-          exists in your browser&apos;s memory — it is never sent to the server, even in encrypted form
-          that could later be unlocked there. Each patient&apos;s PHN is combined with that office key
-          and run through a one-way scrambling function (the same family of math banks use to store
-          passwords). The result is a meaningless string of characters — a &quot;patient token&quot;.
-          It&apos;s consistent from month to month (so re-uploading the waitlist still recognizes the
-          same patient), but there is no mathematical way to run it backwards to recover the PHN. Only
-          someone who already has your office key and the original PHN could reproduce the same token —
-          the server, which never has the office key, cannot.
+          When you choose the waitlist file, your browser reads it into memory and works on it there.
+          It is not uploaded anywhere. Each patient is given a short code — C-001, C-002 and so on —
+          and it is that code, not the name, that appears on exported slates and lists unless you
+          deliberately tick the box to include names.
         </p>
-        <p className="font-semibold text-sand-900">How your working data is protected</p>
+        <p className="font-semibold text-sand-900">What is in the notes file, and what is not</p>
         <p>
-          Everything else — durations, flags, unavailable dates, which patient is on which slate — is
-          bundled up and locked with the same office key using a standard, widely-audited encryption
-          method (AES-256, the same class of encryption used for online banking). What lands on the
-          server is an opaque, locked blob plus your password&apos;s hash (never the password itself,
-          and hashed in a deliberately slow way designed to resist guessing). The server stores the box;
-          it does not hold the key.
+          The notes file contains each patient&apos;s PHN alongside your notes about them: an
+          unavailable date, an adjusted case length, clinical flags, and whether you removed them. The
+          PHN is there because it is what lets a note find the right patient in next week&apos;s file.
+          It does <span className="font-semibold">not</span> contain patient names, diagnoses, or the
+          waitlist itself.
+        </p>
+        <p>
+          That still makes it a health record, and it should be treated like one: keep it wherever
+          your office keeps confidential files, and delete it when you no longer need it. It is
+          encrypted with AES-256 — the same class of encryption used for online banking — with a key
+          derived from your passphrase in a deliberately slow way that makes guessing expensive.
         </p>
         <p className="font-semibold text-sand-900">
-          Worst case: what if the database itself was hacked?
+          Worst case: what if someone got hold of the notes file?
         </p>
         <p>
-          If an attacker broke into the cloud database directly, here is exactly what they would find,
-          and what it would get them:
+          Everything rests on the passphrase. Someone who copied the file but does not have the
+          passphrase has an unreadable block of ciphertext — and even opened, it holds no names and no
+          diagnoses. Someone who has both the file and the passphrase can read your notes, including
+          PHNs, which is exactly why the passphrase should be a real one. Several unrelated words
+          together are both stronger and easier to remember than a short password with symbols in it.
         </p>
-        <ul className="list-disc pl-5">
-          <li>
-            <span className="font-semibold">Locked working-data blobs</span> — unreadable without the
-            office key, which was never stored there. The attacker would see ciphertext, not case
-            details.
-          </li>
-          <li>
-            <span className="font-semibold">Patient tokens</span> inside those blobs — even once
-            decrypted (which they can&apos;t be), these are one-way scrambled values, not PHNs or names.
-            There is no feasible way to reverse them back to a real patient.
-          </li>
-          <li>
-            <span className="font-semibold">Password hashes</span>, not passwords — cracking one to
-            recover the real office password would take a deliberately impractical amount of computing
-            time, especially for a reasonably strong password.
-          </li>
-          <li>
-            <span className="font-semibold">Office keys, but wrapped (double-locked)</span> — the office
-            key itself is also stored only in an encrypted form that requires the office password to
-            open. Without the password, it&apos;s just as unreadable as everything else.
-          </li>
-        </ul>
         <p>
-          In short: a full database breach would hand an attacker a pile of locked boxes and
-          scrambled labels, with no names, PHNs, or diagnoses anywhere in it, and no practical way to
-          unlock any of it without also separately compromising an office&apos;s actual password. The
-          one thing worth taking seriously from this: choose a real office password (not something
-          guessable), since it is the one piece that, combined with a breach, is the theoretical weak
-          point. Everything else in the design assumes the server itself may someday be compromised, and
-          is built so that a breach alone still isn&apos;t enough to expose a patient.
+          Because there is no server, there is no database to be breached, no account to be taken
+          over, and nothing about your patients stored anywhere you cannot see. The trade is that
+          safekeeping moves to you: the notes file and the exports you produce are ordinary files on
+          your office computer, protected by whatever protects that computer.
+        </p>
+        <p className="font-semibold text-sand-900">Things that do leave the computer</p>
+        <p>
+          Two, and only when you ask for them. Exported slates, lists and PDFs are saved to this
+          computer and go wherever you then send them — by default they carry case codes rather than
+          names. And removing a patient from the waitlist opens an email to the hospital booking
+          office containing that patient&apos;s PHN, so the booking office knows who to take off. You
+          see and send that email yourself.
         </p>
       </Section>
 
@@ -294,6 +288,14 @@ export default function Guide() {
           <li>Upload one surgeon&apos;s file at a time; a banner warns if it detects several.</li>
           <li>Durations drive how many cases fit — adjust per-case estimates for an accurate slate.</li>
           <li>If the slate looks empty, check the file includes TARGET_TIME and TIME_WAITING.</li>
+          <li>
+            Don&apos;t reload the page mid-session — the list is held in the tab only, so you would
+            need to upload it again. Finish and export first.
+          </li>
+          <li>
+            Loading a notes file takes a second or two: unlocking it is deliberately slow, which is
+            what makes the passphrase hard to guess.
+          </li>
         </ul>
       </Section>
 

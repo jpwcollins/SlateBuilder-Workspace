@@ -1,16 +1,6 @@
 "use client";
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import {
-  SyncedState,
-  buildCaseTokens,
-  changePassword,
-  fetchState,
-  loginOffice,
-  logoutOffice,
-  putState,
-  resetPassword,
-} from "../lib/sync";
 import * as XLSX from "xlsx";
 import {
   downloadSlatePdf,
@@ -21,6 +11,9 @@ import {
   WaitlistPdfRow,
 } from "@slatebuilder/core/slatePdf";
 import {
+  AnnotationsFile,
+  ANNOTATIONS_KIND,
+  applyAnnotations,
   applyDefaultDuration,
   applyFlagOverrides,
   applyUnavailableOverrides,
@@ -28,7 +21,15 @@ import {
   buildCaseSchedule,
   caseFitsInSlate,
   ClinicalFlagKey,
+  collectAnnotations,
+  decryptJson,
   DefaultDurations,
+  encryptJson,
+  isAnnotationsFile,
+  isEncryptedEnvelope,
+  MIN_PASSPHRASE_LENGTH,
+  PatientAnnotation,
+  stablePatientKey,
   formatMinutesToTime,
   getBlockMinutes,
   getBlockStartMinutes,
@@ -53,26 +54,6 @@ import {
 
 type SpreadsheetRow = Record<string, string | number | boolean | null | undefined>;
 
-type OfficeSessionState = {
-  csvText: string;
-  durationOverrides: Record<string, number>;
-  unavailableOverrides: Record<string, string>;
-  flagOverrides: Record<string, Partial<Record<ClinicalFlagKey, boolean>>>;
-  removedFromSlateSuggestions: Record<string, boolean>;
-  removedFromWaitlist: Record<string, boolean>;
-  defaultDurations: {
-    hysteroscopy: number;
-    laparoscopy: number;
-    hysterectomy: number;
-    other: number;
-  };
-  priorityMode: "ttt" | "urgency_then_ttt";
-  slateCount: number;
-  slateDates: string[];
-  orderedSlateCaseIds: string[][];
-  lockedSlateDates: string[];
-};
-
 // A drag is either a case picked up from the waitlist, or a case picked up
 // from a specific slate (used to support cross-container drag-and-drop).
 type DragState = { kind: "slate"; slateIndex: number; caseId: string } | { kind: "waitlist"; caseId: string };
@@ -95,14 +76,13 @@ type OptimizeReport = {
 };
 
 type OfficeTab = "setup" | "slates" | "waitlist" | "long";
+// The only thing remembered between page loads is which tab you were on. No
+// patient information is written to browser storage of any kind: the uploaded
+// waitlist lives in memory for as long as the tab is open, and nowhere else.
 const OFFICE_TAB_KEY = "slatebuilder-office-tab";
-// Autosave lives in sessionStorage (cleared when the tab closes, never shared
-// with other tabs or written to disk) so unencrypted PHI is not left behind on
-// a shared clinic workstation.
-const OFFICE_AUTOSAVE_KEY = "slatebuilder-office-autosave";
 
-function downloadFile(filename: string, contents: string) {
-  const blob = new Blob([contents], { type: "text/csv;charset=utf-8;" });
+function downloadTextFile(filename: string, contents: string, mime: string) {
+  const blob = new Blob([contents], { type: `${mime};charset=utf-8;` });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -113,26 +93,8 @@ function downloadFile(filename: string, contents: string) {
   URL.revokeObjectURL(url);
 }
 
-// Per-patient manual edits that should survive a re-upload of next week's
-// waitlist. Snapshotted before the new file parses, then re-keyed onto the
-// new file's caseIds by matching stablePatientKey.
-type CarriedOverrides = {
-  duration?: number;
-  unavailableUntil?: string;
-  flags?: Partial<Record<ClinicalFlagKey, boolean>>;
-  removedFromSlates?: boolean;
-  removedFromWaitlist?: boolean;
-};
-
-// A patient's identity independent of their row position in the file: PHN
-// when present, else the name-based source key. Returns null for the parser's
-// positional fallbacks (row-N / "Office row N") — those change meaning between
-// files, and migrating on them would reattach edits to the wrong patient.
-function stablePatientKey(item: PatientCase): string | null {
-  if (item.patientRef) return `ref:${item.patientRef}`;
-  const key = item.sourceKey?.trim();
-  if (!key || /^row-\d+$/i.test(key) || /^office row \d+$/i.test(key)) return null;
-  return `src:${key.toLowerCase()}`;
+function downloadFile(filename: string, contents: string) {
+  downloadTextFile(filename, contents, "text/csv");
 }
 
 function normalizeOfficeWorkbookToCsv(rows: SpreadsheetRow[]): string {
@@ -412,22 +374,15 @@ export default function Home() {
   const [waitlistQuery, setWaitlistQuery] = useState("");
   const [waitlistOverdueOnly, setWaitlistOverdueOnly] = useState(false);
   const [waitlistUnslatedOnly, setWaitlistUnslatedOnly] = useState(true);
-  // Cloud sync (pseudonymized): officeKey lives only in memory.
-  const [officeIdInput, setOfficeIdInput] = useState("");
-  const [officePassword, setOfficePassword] = useState("");
-  const [officeKey, setOfficeKey] = useState<Uint8Array | null>(null);
-  const [signedInId, setSignedInId] = useState<string | null>(null);
-  const [caseTokens, setCaseTokens] = useState<Record<string, string>>({});
-  const [planStatus, setPlanStatus] = useState<"draft" | "finalized">("draft");
-  const [authBusy, setAuthBusy] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<string>("");
-  const [showReset, setShowReset] = useState(false);
-  const [showChangePw, setShowChangePw] = useState(false);
-  const [recoveryCodeInput, setRecoveryCodeInput] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const syncVersionRef = useRef(0);
-  const lastSyncedJsonRef = useRef<string>("");
-  const tokensReadyRef = useRef(false);
+  // Saving and reloading the office's own notes (an encrypted file on this
+  // computer). Nothing here talks to a server: the passphrase and the decrypted
+  // notes exist only in this tab's memory.
+  const [notesPassphrase, setNotesPassphrase] = useState("");
+  const [notesPassphraseConfirm, setNotesPassphraseConfirm] = useState("");
+  const [notesFile, setNotesFile] = useState<File | null>(null);
+  const [notesStatus, setNotesStatus] = useState<string | null>(null);
+  const [notesError, setNotesError] = useState<string | null>(null);
+  const [notesBusy, setNotesBusy] = useState(false);
   // Tracks the last "structural" signature (case-id-set + active dates +
   // priority mode) that the slate composition was auto-generated from, so
   // manual edits (drag, lock, remove/restore, duration/flag tweaks) are never
@@ -435,21 +390,10 @@ export default function Home() {
   // (new upload, date/count change, or an explicit priority-mode toggle)
   // regenerates the suggested composition.
   const compositionSeedRef = useRef<string>("");
-  // Set synchronously by applySyncedState/applySessionState so the reseed
-  // effect below treats a just-loaded composition as already seeded rather
-  // than overwriting it.
-  const justSyncedRef = useRef(false);
-  // Holds a restored local (sessionStorage) session until `cases` is populated
-  // from the restored csvText, since rebuilding the slate composition needs it.
-  const pendingLocalRestoreRef = useRef<OfficeSessionState | null>(null);
-  // Tracks the initial post-sign-in cloud load so the debounced save effect
-  // never fires before it succeeds -- without this, a transient failure right
-  // after sign-in (with no retry) let the save effect push a mostly-default
-  // local state over real cloud data on the very next edit.
-  const cloudLoadStatusRef = useRef<"idle" | "loading" | "loaded" | "failed">("idle");
-  // Per-patient edits snapshotted at upload time, waiting for the new file to
-  // parse so they can be re-keyed onto the new caseIds (see stablePatientKey).
-  const pendingOverrideMigrationRef = useRef<Map<string, CarriedOverrides> | null>(null);
+  // Per-patient notes waiting for a file to finish parsing so they can be
+  // re-keyed onto the new case codes. Set either by an upload (carrying the
+  // current screen's edits forward) or by loading a saved notes file.
+  const pendingAnnotationsRef = useRef<Record<string, PatientAnnotation> | null>(null);
 
   useEffect(() => {
     if (!csvText) return;
@@ -459,36 +403,21 @@ export default function Home() {
     if (justUploadedRef.current) {
       justUploadedRef.current = false;
 
-      // caseIds are positional (C-001 = row 1), so a new file's ids mean new
-      // patients. Re-key every per-case edit onto the new ids by matching each
-      // patient's stable identity (PHN, else name); edits for patients no
-      // longer in the file are dropped. The slate composition itself always
-      // rebuilds from the new list.
-      const migration = pendingOverrideMigrationRef.current;
-      pendingOverrideMigrationRef.current = null;
+      // Case codes are positional (C-001 = row 1), so a new file's codes mean
+      // new patients. Re-key each patient's notes onto the new codes by
+      // matching their identity (PHN, else name); notes for patients no longer
+      // on the list are dropped, and the slate composition always rebuilds.
+      const pending = pendingAnnotationsRef.current;
+      pendingAnnotationsRef.current = null;
       let carried = 0;
-      if (migration) {
-        const durations: Record<string, number> = {};
-        const unavailable: Record<string, string> = {};
-        const flags: Record<string, Partial<Record<ClinicalFlagKey, boolean>>> = {};
-        const removedSlates: Record<string, boolean> = {};
-        const removedWaitlist: Record<string, boolean> = {};
-        for (const item of result.cases) {
-          const key = stablePatientKey(item);
-          const entry = key ? migration.get(key) : undefined;
-          if (!entry) continue;
-          carried += 1;
-          if (entry.duration !== undefined) durations[item.caseId] = entry.duration;
-          if (entry.unavailableUntil) unavailable[item.caseId] = entry.unavailableUntil;
-          if (entry.flags) flags[item.caseId] = entry.flags;
-          if (entry.removedFromSlates) removedSlates[item.caseId] = true;
-          if (entry.removedFromWaitlist) removedWaitlist[item.caseId] = true;
-        }
-        setDurationOverrides(durations);
-        setUnavailableOverrides(unavailable);
-        setFlagOverrides(flags);
-        setRemovedFromSlateSuggestions(removedSlates);
-        setRemovedFromWaitlist(removedWaitlist);
+      if (pending) {
+        const applied = applyAnnotations(result.cases, pending);
+        carried = applied.matched;
+        setDurationOverrides(applied.durationOverrides);
+        setUnavailableOverrides(applied.unavailableOverrides);
+        setFlagOverrides(applied.flagOverrides);
+        setRemovedFromSlateSuggestions(applied.removedFromSlateSuggestions);
+        setRemovedFromWaitlist(applied.removedFromWaitlist);
         setMovedCaseIds({});
         setOrderedSlates([]);
         setOrderedSlateCaseIds([]);
@@ -500,7 +429,7 @@ export default function Home() {
       }
 
       const skipped = result.warnings.length > 0 ? ` · ${result.warnings.length} row${result.warnings.length === 1 ? "" : "s"} skipped or flagged, see below` : "";
-      const kept = carried > 0 ? ` · edits kept for ${carried} returning patient${carried === 1 ? "" : "s"}` : "";
+      const kept = carried > 0 ? ` · notes kept for ${carried} returning patient${carried === 1 ? "" : "s"}` : "";
       setUploadSummary(`✓ ${result.cases.length} patient${result.cases.length === 1 ? "" : "s"} loaded${kept}${skipped}`);
     }
   }, [csvText]);
@@ -519,32 +448,17 @@ export default function Home() {
     }
   }, []);
 
-  // Restore the in-tab autosave (sessionStorage only) so a reload within the
-  // same tab does not lose work. Nothing is read from disk. Restoring csvText
-  // here kicks off the parse effect that populates `cases`; the rest of the
-  // session (overrides, slate composition, locks) is applied once `cases` is
-  // actually available (see the effect below) since rebuilding the slate
-  // composition needs the parsed cases to look up each case's data.
+  // A reload discards the uploaded waitlist by design — nothing about it is
+  // written to browser storage — so warn before one is lost by accident.
   useEffect(() => {
-    const auto = window.sessionStorage.getItem(OFFICE_AUTOSAVE_KEY);
-    if (!auto) return;
-    try {
-      const state = JSON.parse(auto) as OfficeSessionState;
-      pendingLocalRestoreRef.current = state;
-      setCsvText(state.csvText);
-    } catch {
-      // ignore malformed autosave
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    const pending = pendingLocalRestoreRef.current;
-    if (!pending || cases.length === 0) return;
-    pendingLocalRestoreRef.current = null;
-    applySessionState(pending);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cases]);
+    if (cases.length === 0) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [cases.length]);
 
   // Remember the last-viewed tab for this browser tab.
   useEffect(() => {
@@ -665,13 +579,6 @@ export default function Home() {
 
   useEffect(() => {
     const seedKey = `${caseIdSetKey}::${activeDatesKey}::${priorityMode}`;
-    if (justSyncedRef.current) {
-      // A cloud-sync load just set the composition explicitly; treat it as
-      // already seeded rather than overwriting it with a fresh auto-suggestion.
-      justSyncedRef.current = false;
-      compositionSeedRef.current = seedKey;
-      return;
-    }
     if (seedKey === compositionSeedRef.current) return;
     compositionSeedRef.current = seedKey;
     setLockedSlates({});
@@ -777,310 +684,139 @@ export default function Home() {
     return { groups, total };
   }, [activeOfficeCases]);
 
-  // ---- Cloud sync (token-keyed, no PHI) ------------------------------------
+  // ---- Saving the office's own notes to this computer ----------------------
+  //
+  // There is no server and no account. The only thing that can outlive the tab
+  // is a file the user deliberately saves: their accumulated notes about
+  // patients, encrypted with a passphrase only they know. The uploaded waitlist
+  // is never part of it — the hospital's file is the list, and it is re-sent
+  // every week.
 
-  const tokenToCaseId = useMemo(() => {
-    const map: Record<string, string> = {};
-    Object.entries(caseTokens).forEach(([caseId, token]) => {
-      map[token] = caseId;
-    });
-    return map;
-  }, [caseTokens]);
+  const annotationsCount = useMemo(
+    () => Object.keys(collectAnnotations(cases, {
+      durationOverrides,
+      unavailableOverrides,
+      flagOverrides,
+      removedFromSlateSuggestions,
+      removedFromWaitlist,
+    })).length,
+    [
+      cases,
+      durationOverrides,
+      unavailableOverrides,
+      flagOverrides,
+      removedFromSlateSuggestions,
+      removedFromWaitlist,
+    ]
+  );
 
-  // Recompute patient tokens whenever the office key or the uploaded cases change.
-  useEffect(() => {
-    if (!officeKey || cases.length === 0) {
-      setCaseTokens({});
-      tokensReadyRef.current = false;
+  const handleSaveNotes = async () => {
+    setNotesError(null);
+    setNotesStatus(null);
+    if (notesPassphrase.length < MIN_PASSPHRASE_LENGTH) {
+      setNotesError(
+        `Use a passphrase of at least ${MIN_PASSPHRASE_LENGTH} characters. Several words together work well and are easier to remember.`
+      );
       return;
     }
-    let cancelled = false;
-    buildCaseTokens(officeKey, cases).then((map) => {
-      if (!cancelled) {
-        setCaseTokens(map);
-        tokensReadyRef.current = true;
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [officeKey, cases]);
-
-  const buildSyncedState = (): SyncedState => {
-    const patientState: SyncedState["patientState"] = {};
-    Object.entries(caseTokens).forEach(([caseId, token]) => {
-      const entry: SyncedState["patientState"][string] = {};
-      if (unavailableOverrides[caseId]) entry.unavailableUntil = unavailableOverrides[caseId];
-      if (durationOverrides[caseId]) entry.durationOverrideMin = durationOverrides[caseId];
-      if (flagOverrides[caseId]) entry.flagOverrides = flagOverrides[caseId];
-      if (removedFromSlateSuggestions[caseId]) entry.removed = true;
-      if (removedFromWaitlist[caseId]) entry.removedFromWaitlist = true;
-      if (Object.keys(entry).length > 0) patientState[token] = entry;
-    });
-    const activeDates = slateDates.slice(0, slateCount);
-    const assignments: Record<string, string[]> = {};
-    activeDates.forEach((date, i) => {
-      assignments[date] = (orderedSlateCaseIds[i] ?? [])
-        .map((caseId) => caseTokens[caseId])
-        .filter(Boolean);
-    });
-    const lockedDates = activeDates.filter((date) => lockedSlates[date]);
-    return {
-      v: 1,
-      patientState,
-      plan: {
-        status: planStatus,
-        slateDates: activeDates,
-        assignments,
-        lockedDates,
+    if (notesPassphrase !== notesPassphraseConfirm) {
+      setNotesError("The two passphrases do not match.");
+      return;
+    }
+    setNotesBusy(true);
+    try {
+      const file: AnnotationsFile = {
+        v: 1,
+        kind: ANNOTATIONS_KIND,
         updatedAt: new Date().toISOString(),
-      },
-      settings: { defaultDurations, priorityMode, slateCount },
-    };
-  };
-
-  const applySyncedState = (state: SyncedState, t2c: Record<string, string>) => {
-    setDefaultDurations(state.settings.defaultDurations);
-    setPriorityMode(state.settings.priorityMode);
-    setSlateCount(state.settings.slateCount || 2);
-    setPlanStatus(state.plan.status);
-
-    const dur: Record<string, number> = {};
-    const unavail: Record<string, string> = {};
-    const flags: Record<string, Partial<Record<ClinicalFlagKey, boolean>>> = {};
-    const removed: Record<string, boolean> = {};
-    const removedWaitlist: Record<string, boolean> = {};
-    Object.entries(state.patientState).forEach(([token, ps]) => {
-      const caseId = t2c[token];
-      if (!caseId) return;
-      if (ps.unavailableUntil) unavail[caseId] = ps.unavailableUntil;
-      if (ps.durationOverrideMin) dur[caseId] = ps.durationOverrideMin;
-      if (ps.flagOverrides) flags[caseId] = ps.flagOverrides;
-      if (ps.removed) removed[caseId] = true;
-      if (ps.removedFromWaitlist) removedWaitlist[caseId] = true;
-    });
-    setDurationOverrides(dur);
-    setUnavailableOverrides(unavail);
-    setFlagOverrides(flags);
-    setRemovedFromSlateSuggestions(removed);
-    setRemovedFromWaitlist(removedWaitlist);
-    if (state.plan.slateDates.length > 0) setSlateDates(state.plan.slateDates);
-
-    const nextCaseIds = state.plan.slateDates.map((date) =>
-      (state.plan.assignments[date] ?? []).map((token) => t2c[token]).filter(Boolean)
-    );
-    setOrderedSlateCaseIds(nextCaseIds);
-
-    // Build the full slate composition from the synced case-id assignment
-    // directly off the raw parsed cases (not the memoized officeCasesWithOverrides,
-    // which won't reflect the overrides set just above until the next render),
-    // so manually-dragged/added cases the optimizer wouldn't independently pick
-    // are preserved rather than dropped.
-    const byId = new Map(cases.map((c) => [c.caseId, c]));
-    const settingsDurations = state.settings.defaultDurations;
-    const withAllOverrides = (item: PatientCase): PatientCase => {
-      const withDefaults = applyDefaultDuration(item, settingsDurations);
-      const withFlags = applyFlagOverrides(withDefaults, flags);
-      const withUnavail = applyUnavailableOverrides(withFlags, unavail);
-      return {
-        ...withUnavail,
-        estimatedDurationMin: dur[item.caseId] ?? withDefaults.estimatedDurationMin,
+        annotations: collectAnnotations(cases, {
+          durationOverrides,
+          unavailableOverrides,
+          flagOverrides,
+          removedFromSlateSuggestions,
+          removedFromWaitlist,
+        }),
+        settings: { defaultDurations, priorityMode, slateCount },
       };
-    };
-    const nextOrderedSlates = nextCaseIds.map((ids) =>
-      sortSlateByPriority(
-        scoreCases(
-          ids
-            .map((id) => byId.get(id))
-            .filter((c): c is PatientCase => Boolean(c))
-            .map(withAllOverrides)
-        )
-      )
-    );
-    setOrderedSlates(nextOrderedSlates);
-
-    const lockedMap: Record<string, boolean> = {};
-    (state.plan.lockedDates ?? []).forEach((d) => {
-      lockedMap[d] = true;
-    });
-    setLockedSlates(lockedMap);
-
-    justSyncedRef.current = true;
-    lastSyncedJsonRef.current = JSON.stringify(state);
-  };
-
-  const loadFromCloud = async (key: Uint8Array, t2c: Record<string, string>) => {
-    const { state, version } = await fetchState(key);
-    syncVersionRef.current = version;
-    applySyncedState(state, t2c);
-    setSyncStatus(`Synced · v${version} · ${state.plan.status}`);
-  };
-
-  const handleReset = async () => {
-    const id = officeIdInput.trim().toLowerCase();
-    if (!id || !recoveryCodeInput.trim() || newPassword.length < 8) {
-      setSyncStatus("Enter office, recovery code, and an 8+ character new password.");
-      return;
-    }
-    setAuthBusy(true);
-    try {
-      const key = await resetPassword(id, recoveryCodeInput, newPassword);
-      setOfficeKey(key);
-      setSignedInId(id);
-      setRecoveryCodeInput("");
-      setNewPassword("");
-      setOfficePassword("");
-      setShowReset(false);
-      lastSyncedJsonRef.current = "";
-      setSyncStatus("Password reset · signed in · loading…");
-    } catch (e) {
-      setSyncStatus(e instanceof Error ? e.message : "Reset failed.");
+      const envelope = await encryptJson(notesPassphrase, file);
+      downloadTextFile(
+        `slatebuilder-notes-${toLocalDateOnly(new Date())}.sbnotes`,
+        JSON.stringify(envelope, null, 2),
+        "application/json"
+      );
+      const n = Object.keys(file.annotations).length;
+      setNotesStatus(
+        `Saved notes for ${n} patient${n === 1 ? "" : "s"}. Keep the file and its passphrase somewhere safe — it cannot be opened without the passphrase, and there is no way to reset it.`
+      );
+      setNotesPassphrase("");
+      setNotesPassphraseConfirm("");
+    } catch {
+      setNotesError("Could not save the notes file.");
     } finally {
-      setAuthBusy(false);
+      setNotesBusy(false);
     }
   };
 
-  const handleChangePassword = async () => {
-    if (!officeKey || newPassword.length < 8) {
-      setSyncStatus("Enter an 8+ character new password.");
+  const handleLoadNotes = async () => {
+    setNotesError(null);
+    setNotesStatus(null);
+    if (!notesFile) {
+      setNotesError("Choose a saved notes file first.");
       return;
     }
-    setAuthBusy(true);
+    if (!notesPassphrase) {
+      setNotesError("Enter the passphrase for this notes file.");
+      return;
+    }
+    setNotesBusy(true);
     try {
-      await changePassword(officeKey, officePassword, newPassword);
-      setOfficePassword("");
-      setNewPassword("");
-      setShowChangePw(false);
-      setSyncStatus("Password changed");
-    } catch (e) {
-      setSyncStatus(e instanceof Error ? e.message : "Could not change password.");
-    } finally {
-      setAuthBusy(false);
-    }
-  };
-
-  const handleLogin = async () => {
-    const id = officeIdInput.trim().toLowerCase();
-    if (!id || !officePassword) {
-      setSyncStatus("Enter your office name and password.");
-      return;
-    }
-    if (
-      cases.length > 0 &&
-      !window.confirm(
-        "Signing in will replace what's on this screen with this office's saved cloud data. Continue?"
-      )
-    ) {
-      return;
-    }
-    setAuthBusy(true);
-    try {
-      const key = await loginOffice(id, officePassword);
-      setOfficeKey(key);
-      setSignedInId(id);
-      setOfficePassword("");
-      setSyncStatus("Signed in · loading…");
-      // State is applied once tokens are ready (see effect below).
-    } catch (e) {
-      setSyncStatus(e instanceof Error ? e.message : "Sign-in failed.");
-    } finally {
-      setAuthBusy(false);
-    }
-  };
-
-  const handleSignOut = async () => {
-    await logoutOffice();
-    setOfficeKey(null);
-    setSignedInId(null);
-    setCaseTokens({});
-    syncVersionRef.current = 0;
-    lastSyncedJsonRef.current = "";
-    cloudLoadStatusRef.current = "idle";
-    setSyncStatus("Signed out");
-  };
-
-  // Once signed in and tokens are computed, pull the office's cloud state.
-  // Retries a couple of times on transient failure (e.g. a network blip)
-  // before giving up, since the save effect below refuses to run until this
-  // has succeeded at least once.
-  useEffect(() => {
-    if (!officeKey || !signedInId || Object.keys(caseTokens).length === 0) return;
-    if (cloudLoadStatusRef.current === "loading" || cloudLoadStatusRef.current === "loaded") return;
-
-    let cancelled = false;
-    cloudLoadStatusRef.current = "loading";
-
-    const attempt = async (retriesLeft: number): Promise<void> => {
-      try {
-        await loadFromCloud(officeKey, tokenToCaseId);
-        if (cancelled) return;
-        cloudLoadStatusRef.current = "loaded";
-      } catch {
-        if (cancelled) return;
-        if (retriesLeft > 0) {
-          await new Promise((resolve) => setTimeout(resolve, 1500));
-          if (!cancelled) await attempt(retriesLeft - 1);
-          return;
-        }
-        cloudLoadStatusRef.current = "failed";
-        setSyncStatus("Could not load cloud state — sign in again to retry before making changes.");
+      const envelope = JSON.parse(await notesFile.text());
+      if (!isEncryptedEnvelope(envelope)) {
+        setNotesError("That file is not a SlateBuilder notes file.");
+        return;
       }
-    };
-    void attempt(2);
-
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [officeKey, signedInId, caseTokens]);
-
-  // Debounced auto-save of the (non-PHI) working state. A dirty check on the
-  // serialized state prevents save loops; version refs drive optimistic concurrency.
-  // Deliberately waits for the initial cloud load to succeed first: saving
-  // before that finishes could push a default/incomplete local state over
-  // real cloud data (see cloudLoadStatusRef above).
-  useEffect(() => {
-    if (!officeKey || !signedInId || Object.keys(caseTokens).length === 0) return;
-    if (cloudLoadStatusRef.current !== "loaded") return;
-    const handle = setTimeout(async () => {
-      const next = buildSyncedState();
-      const json = JSON.stringify(next);
-      if (json === lastSyncedJsonRef.current) return;
-      setSyncStatus("Saving…");
-      try {
-        const result = await putState(officeKey, next, syncVersionRef.current);
-        if ("conflict" in result) {
-          const { state, version } = await fetchState(officeKey);
-          syncVersionRef.current = version;
-          applySyncedState(state, tokenToCaseId);
-          setSyncStatus("Loaded a newer version from another device");
-        } else {
-          syncVersionRef.current = result.version;
-          lastSyncedJsonRef.current = json;
-          setSyncStatus(`Synced · v${result.version} · ${next.plan.status}`);
-        }
-      } catch {
-        setSyncStatus("Offline — changes not synced");
+      const decoded = await decryptJson<AnnotationsFile>(notesPassphrase, envelope);
+      if (!isAnnotationsFile(decoded)) {
+        setNotesError("That file is not a SlateBuilder notes file.");
+        return;
       }
-    }, 1200);
-    return () => clearTimeout(handle);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    officeKey,
-    signedInId,
-    caseTokens,
-    unavailableOverrides,
-    durationOverrides,
-    flagOverrides,
-    removedFromSlateSuggestions,
-    removedFromWaitlist,
-    slateDates,
-    slateCount,
-    orderedSlateCaseIds,
-    defaultDurations,
-    priorityMode,
-    planStatus,
-  ]);
+      if (decoded.settings) {
+        setDefaultDurations(decoded.settings.defaultDurations);
+        setPriorityMode(decoded.settings.priorityMode);
+        setSlateCount(decoded.settings.slateCount || 2);
+      }
+      if (cases.length === 0) {
+        // No waitlist on screen yet: hold the notes until one is uploaded.
+        pendingAnnotationsRef.current = decoded.annotations;
+        const n = Object.keys(decoded.annotations).length;
+        setNotesStatus(
+          `Notes for ${n} patient${n === 1 ? "" : "s"} are ready. Upload this week's waitlist and they will be applied to everyone still on it.`
+        );
+      } else {
+        const applied = applyAnnotations(cases, decoded.annotations);
+        setDurationOverrides(applied.durationOverrides);
+        setUnavailableOverrides(applied.unavailableOverrides);
+        setFlagOverrides(applied.flagOverrides);
+        setRemovedFromSlateSuggestions(applied.removedFromSlateSuggestions);
+        setRemovedFromWaitlist(applied.removedFromWaitlist);
+        setMovedCaseIds({});
+        setOrderedSlates([]);
+        setOrderedSlateCaseIds([]);
+        setOptimizeReport(null);
+        compositionSeedRef.current = "";
+        setNotesStatus(
+          `Applied notes to ${applied.matched} patient${applied.matched === 1 ? "" : "s"} on this week's list.`
+        );
+      }
+      setNotesPassphrase("");
+      setNotesPassphraseConfirm("");
+    } catch {
+      setNotesError("Could not open that file — check the passphrase and try again.");
+    } finally {
+      setNotesBusy(false);
+    }
+  };
+
 
   const updateSlateDate = (index: number, value: string) => {
     setSlateDates((prev) => {
@@ -1130,7 +866,12 @@ export default function Home() {
     });
     setLockedSlates({});
     setCollapsedSlates({});
-    window.sessionStorage.removeItem(OFFICE_AUTOSAVE_KEY);
+    setNotesStatus(null);
+    setNotesError(null);
+    setNotesFile(null);
+    setNotesPassphrase("");
+    setNotesPassphraseConfirm("");
+    pendingAnnotationsRef.current = null;
   };
 
   const resetWorkspace = () => {
@@ -1143,119 +884,23 @@ export default function Home() {
     clearWorkspaceState();
   };
 
-  // Always-visible "walk away from a shared computer" control: clears all
-  // local data (in-memory state + sessionStorage autosave) and, if signed in,
-  // signs out too. This is the only way to wipe data in guest mode, since
-  // there is nothing else to "sign out" of before a login exists.
-  const handleFullReset = async () => {
-    const hasAnything = Boolean(csvText || cases.length > 0 || signedInId);
+  // Always-visible "walk away from this computer" control. Everything about the
+  // uploaded waitlist lives in this tab's memory, so clearing it really does
+  // remove it — there is no copy in browser storage and none on a server. A
+  // saved notes file, if one was made, is a separate file and is not touched.
+  const handleFullReset = () => {
+    const hasAnything = Boolean(csvText || cases.length > 0);
     if (
       hasAnything &&
       !window.confirm(
-        signedInId
-          ? "Reset SlateBuilder? This signs you out and clears all data from this device. Work already synced to the cloud is not deleted."
-          : "Reset SlateBuilder? This clears all data from this device. This cannot be undone."
+        "Clear SlateBuilder? This removes the uploaded waitlist and all notes from this screen. Any notes file you saved is kept."
       )
     ) {
       return;
     }
-    if (signedInId) {
-      await handleSignOut();
-    }
     clearWorkspaceState();
   };
 
-  function buildSessionState(): OfficeSessionState {
-    return {
-      csvText,
-      durationOverrides,
-      unavailableOverrides,
-      flagOverrides,
-      removedFromSlateSuggestions,
-      removedFromWaitlist,
-      defaultDurations,
-      priorityMode,
-      slateCount,
-      slateDates,
-      orderedSlateCaseIds,
-      lockedSlateDates: Object.keys(lockedSlates).filter((d) => lockedSlates[d]),
-    };
-  }
-
-  function applySessionState(state: OfficeSessionState) {
-    setDurationOverrides(state.durationOverrides ?? {});
-    setUnavailableOverrides(state.unavailableOverrides ?? {});
-    setFlagOverrides(state.flagOverrides ?? {});
-    setRemovedFromSlateSuggestions(state.removedFromSlateSuggestions ?? {});
-    setRemovedFromWaitlist(state.removedFromWaitlist ?? {});
-    setDefaultDurations(state.defaultDurations);
-    setPriorityMode(state.priorityMode);
-    setSlateCount(state.slateCount);
-    setSlateDates(state.slateDates);
-
-    const nextCaseIds = state.orderedSlateCaseIds ?? [];
-    setOrderedSlateCaseIds(nextCaseIds);
-
-    // Rebuild the full slate composition directly from the parsed cases (the
-    // officeCasesWithOverrides memo won't reflect these overrides until the
-    // next render), so manually-added cases the optimizer wouldn't
-    // independently pick are preserved rather than dropped.
-    const byId = new Map(cases.map((c) => [c.caseId, c]));
-    const dur = state.durationOverrides ?? {};
-    const unavail = state.unavailableOverrides ?? {};
-    const flags = state.flagOverrides ?? {};
-    const settingsDurations = state.defaultDurations;
-    const withAllOverrides = (item: PatientCase): PatientCase => {
-      const withDefaults = applyDefaultDuration(item, settingsDurations);
-      const withFlags = applyFlagOverrides(withDefaults, flags);
-      const withUnavail = applyUnavailableOverrides(withFlags, unavail);
-      return {
-        ...withUnavail,
-        estimatedDurationMin: dur[item.caseId] ?? withDefaults.estimatedDurationMin,
-      };
-    };
-    const nextOrderedSlates = nextCaseIds.map((ids) =>
-      sortSlateByPriority(
-        scoreCases(
-          ids
-            .map((id) => byId.get(id))
-            .filter((c): c is PatientCase => Boolean(c))
-            .map(withAllOverrides)
-        )
-      )
-    );
-    setOrderedSlates(nextOrderedSlates);
-
-    const lockedMap: Record<string, boolean> = {};
-    (state.lockedSlateDates ?? []).forEach((d) => {
-      lockedMap[d] = true;
-    });
-    setLockedSlates(lockedMap);
-
-    justSyncedRef.current = true;
-  }
-
-  // Autosave to sessionStorage only: it survives an in-tab reload but is cleared
-  // when the tab closes and is never written to disk, so unencrypted PHI is not
-  // left on a shared workstation.
-  useEffect(() => {
-    if (!csvText && cases.length === 0) return;
-    window.sessionStorage.setItem(OFFICE_AUTOSAVE_KEY, JSON.stringify(buildSessionState()));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    csvText,
-    cases.length,
-    durationOverrides,
-    unavailableOverrides,
-    flagOverrides,
-    removedFromSlateSuggestions,
-    removedFromWaitlist,
-    defaultDurations,
-    priorityMode,
-    slateCount,
-    slateDates,
-    orderedSlateCaseIds,
-  ]);
 
   const handleUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -1263,26 +908,23 @@ export default function Home() {
     setUploadSummary(null);
     justUploadedRef.current = true;
 
-    // Snapshot the current per-patient edits so the parse effect can carry
-    // them over to matching patients in the new file. Nothing is cleared here:
-    // if the file turns out to be unreadable, the existing workspace stays
-    // intact, and on a successful parse the effect replaces every case-keyed
-    // map wholesale (so stale row-position edits can never leak through).
-    const snapshot = new Map<string, CarriedOverrides>();
-    for (const item of cases) {
-      const key = stablePatientKey(item);
-      if (!key) continue;
-      const entry: CarriedOverrides = {};
-      if (durationOverrides[item.caseId] !== undefined)
-        entry.duration = durationOverrides[item.caseId];
-      if (unavailableOverrides[item.caseId])
-        entry.unavailableUntil = unavailableOverrides[item.caseId];
-      if (flagOverrides[item.caseId]) entry.flags = flagOverrides[item.caseId];
-      if (removedFromSlateSuggestions[item.caseId]) entry.removedFromSlates = true;
-      if (removedFromWaitlist[item.caseId]) entry.removedFromWaitlist = true;
-      if (Object.keys(entry).length > 0) snapshot.set(key, entry);
-    }
-    pendingOverrideMigrationRef.current = snapshot;
+    // Snapshot the notes currently on screen so the parse effect can carry them
+    // over to matching patients in the new file. Nothing is cleared here: if the
+    // file turns out to be unreadable the existing screen stays intact, and on a
+    // successful parse the effect replaces every per-case map wholesale, so
+    // notes attached to a row position can never leak through.
+    //
+    // Notes loaded from a saved file but not yet applied (because no waitlist
+    // was open) take precedence — they are what the user just asked for.
+    pendingAnnotationsRef.current =
+      pendingAnnotationsRef.current ??
+      collectAnnotations(cases, {
+        durationOverrides,
+        unavailableOverrides,
+        flagOverrides,
+        removedFromSlateSuggestions,
+        removedFromWaitlist,
+      });
 
     const lowerName = file.name.toLowerCase();
 
@@ -2517,33 +2159,22 @@ export default function Home() {
               Waiting{" "}
               <span className="font-semibold text-slateBlue-900">{remainingByUrgency.length}</span>
             </button>
-            {signedInId &&
-              (() => {
-                // Condense the free-text sync status into a traffic-light dot
-                // so save state is visible from any tab; full text on hover.
-                const saving =
-                  syncStatus.startsWith("Saving") || syncStatus.endsWith("loading…");
-                const synced =
-                  syncStatus.startsWith("Synced") || syncStatus.startsWith("Loaded");
-                const dot = saving ? "bg-amber-500" : synced ? "bg-emerald-500" : "bg-rose-500";
-                const label = saving ? "Saving…" : synced ? "Synced" : "Not synced";
-                return (
-                  <span
-                    title={syncStatus || "Waiting for first sync"}
-                    className="inline-flex items-center gap-1.5 font-semibold text-sand-800"
-                  >
-                    <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
-                    {label}
-                  </span>
-                );
-              })()}
+            {cases.length > 0 && (
+              <span
+                title="This waitlist is held in this tab only. It is not saved to this computer or sent anywhere, and closing the tab clears it."
+                className="inline-flex items-center gap-1.5 font-semibold text-sand-800"
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                On this device only
+              </span>
+            )}
             <button
               type="button"
-              onClick={() => void handleFullReset()}
-              title="Clear all local data from this device (and sign out, if signed in)"
+              onClick={handleFullReset}
+              title="Clear the uploaded waitlist and all notes from this screen"
               className="rounded-full border border-rose-300 px-3 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-50"
             >
-              {signedInId ? "Sign out & reset" : "Reset device data"}
+              Clear screen
             </button>
           </div>
         </div>
@@ -2862,10 +2493,10 @@ export default function Home() {
             slated first. See the <a href="/guide" target="_blank" rel="noopener noreferrer" className="font-semibold text-slateBlue-700 underline">user guide</a> for exactly how the score is calculated.
           </p>
           <p className="mt-3 max-w-3xl text-xs leading-6 text-sand-600">
-            Patient names and PHNs never leave this device. Each case gets an opaque code (e.g.
-            C-001); exports use that code unless you opt to include names. When you sign in, only
-            pseudonymized, end-to-end-encrypted working data is synced to the cloud — never names,
-            PHNs, or diagnoses.
+            Nothing you upload leaves this computer. There is no account and no server to sync to:
+            the waitlist is read in your browser, held only while this tab is open, and never sent
+            anywhere. Each case gets an opaque code (e.g. C-001) and exports use that code unless
+            you opt to include names.
           </p>
           <div className="mt-6 flex flex-wrap items-center gap-3 text-xs text-sand-700">
             <a
@@ -2877,10 +2508,10 @@ export default function Home() {
               User guide ↗
             </a>
             <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
-              Names &amp; PHNs stay on device
+              Nothing leaves this computer
             </span>
             <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
-              Encrypted cloud sync
+              Encrypted notes file
             </span>
             <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
               Up to 3 selectable OR dates
@@ -2891,178 +2522,114 @@ export default function Home() {
 
 
       <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-semibold text-slateBlue-900">
-              Office Login: sign in to enable saving &amp; syncing
-            </h2>
-            <p className="text-sm text-sand-700">
-              Sign in to share draft slates across devices. Only pseudonymized, encrypted working
-              data is stored in the cloud — names and PHNs never leave this device.
+        <h2 className="text-lg font-semibold text-slateBlue-900">
+          Save your notes, or pick up where you left off
+        </h2>
+        <p className="mt-1 max-w-3xl text-sm text-sand-700">
+          SlateBuilder has no accounts and no cloud. To carry your notes from one week to the next,
+          save them as a file on this computer and load it again after you upload the new waitlist.
+        </p>
+
+        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+          <div className="rounded-2xl border border-sand-200 bg-white/70 p-4">
+            <p className="text-sm font-semibold text-sand-900">Save notes to this computer</p>
+            <p className="mt-1 text-xs text-sand-600">
+              {annotationsCount > 0
+                ? `${annotationsCount} patient${annotationsCount === 1 ? " has" : "s have"} notes to save: unavailable dates, case lengths you have adjusted, clinical flags, and anyone you have taken off the list.`
+                : "Nothing to save yet. Notes appear here once you set an unavailable date, adjust a case length, tick a clinical flag, or remove someone."}
             </p>
-          </div>
-          {signedInId && (
-            <div className="flex items-center gap-3">
-              <span className="inline-flex items-center gap-1.5 text-xs text-emerald-700">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                {signedInId}
-              </span>
+            <div className="mt-3 flex flex-col gap-3">
+              <label className="flex flex-col gap-1.5 text-xs text-sand-700">
+                Passphrase (at least {MIN_PASSPHRASE_LENGTH} characters)
+                <input
+                  type="password"
+                  value={notesPassphrase}
+                  onChange={(event) => setNotesPassphrase(event.target.value)}
+                  placeholder="Several words together work well"
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1.5 text-xs text-sand-700">
+                Confirm passphrase
+                <input
+                  type="password"
+                  value={notesPassphraseConfirm}
+                  onChange={(event) => setNotesPassphraseConfirm(event.target.value)}
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
               <button
                 type="button"
-                onClick={handleSignOut}
-                className="rounded-full border border-sand-300 px-3 py-1 text-xs font-semibold text-sand-800"
+                disabled={notesBusy || annotationsCount === 0}
+                onClick={() => void handleSaveNotes()}
+                className="self-start rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
               >
-                Sign out
+                {notesBusy ? "Working…" : "Save notes file"}
               </button>
             </div>
-          )}
+          </div>
+
+          <div className="rounded-2xl border border-sand-200 bg-white/70 p-4">
+            <p className="text-sm font-semibold text-sand-900">Load notes from a saved file</p>
+            <p className="mt-1 text-xs text-sand-600">
+              Upload this week&apos;s waitlist first, then load your notes — they will be matched to
+              everyone still on the list. Patients who are no longer waiting are left out.
+            </p>
+            <div className="mt-3 flex flex-col gap-3">
+              <label className="flex flex-col gap-1.5 text-xs text-sand-700">
+                Notes file
+                <input
+                  type="file"
+                  accept=".sbnotes,application/json"
+                  onChange={(event) => setNotesFile(event.target.files?.[0] ?? null)}
+                  className="text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1.5 text-xs text-sand-700">
+                Passphrase for this file
+                <input
+                  type="password"
+                  value={notesPassphrase}
+                  onChange={(event) => setNotesPassphrase(event.target.value)}
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <button
+                type="button"
+                disabled={notesBusy || !notesFile}
+                onClick={() => void handleLoadNotes()}
+                className="self-start rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700 disabled:opacity-50"
+              >
+                {notesBusy ? "Working…" : "Load notes"}
+              </button>
+            </div>
+          </div>
         </div>
 
-        {!signedInId ? (
-          <div className="mt-4 flex flex-wrap items-end gap-3">
-            <label className="flex min-w-[180px] flex-1 flex-col gap-2 text-xs text-sand-700">
-              Office name
-              <input
-                type="text"
-                value={officeIdInput}
-                onChange={(event) => setOfficeIdInput(event.target.value)}
-                placeholder="e.g. bcwh-gyne-collins"
-                className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-              />
-            </label>
-            <label className="flex min-w-[180px] flex-1 flex-col gap-2 text-xs text-sand-700">
-              Password
-              <input
-                type="password"
-                value={officePassword}
-                onChange={(event) => setOfficePassword(event.target.value)}
-                placeholder="Shared office password"
-                className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-              />
-            </label>
-            <button
-              type="button"
-              disabled={authBusy}
-              onClick={() => void handleLogin()}
-              className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
-            >
-              Sign in
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowReset((v) => !v)}
-              className="text-xs font-semibold text-slateBlue-700 underline"
-            >
-              Forgot password?
-            </button>
-            <p className="basis-full text-xs text-sand-600">
-              New office? Ask your SlateBuilder admin for shared login credentials.
-            </p>
+        {notesStatus && (
+          <div className="mt-4 rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs font-semibold text-emerald-800">
+            {notesStatus}
           </div>
-        ) : (
-          <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-sand-700">
-            <span className="font-semibold text-sand-900">
-              Draft status:
-              <span
-                className={`ml-2 rounded-full px-2 py-0.5 ${
-                  planStatus === "finalized"
-                    ? "bg-emerald-100 text-emerald-700"
-                    : "bg-amber-100 text-amber-800"
-                }`}
-              >
-                {planStatus}
-              </span>
-            </span>
-            <button
-              type="button"
-              onClick={() => setPlanStatus(planStatus === "finalized" ? "draft" : "finalized")}
-              className="rounded-full border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
-            >
-              {planStatus === "finalized" ? "Reopen as draft" : "Mark finalized"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowChangePw((v) => !v)}
-              className="font-semibold text-slateBlue-700 underline"
-            >
-              Change password
-            </button>
-            {cases.length === 0 && (
-              <span className="text-sand-500">Upload this month&apos;s waitlist to re-link saved work.</span>
-            )}
+        )}
+        {notesError && (
+          <div className="mt-4 rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-800">
+            {notesError}
           </div>
         )}
 
-        {!signedInId && showReset && (
-          <div className="mt-4 rounded-xl border border-sand-200 bg-white/70 p-4">
-            <p className="text-xs font-semibold text-sand-900">Reset password with recovery code</p>
-            <div className="mt-3 flex flex-wrap items-end gap-3">
-              <label className="flex min-w-[220px] flex-1 flex-col gap-2 text-xs text-sand-700">
-                Recovery code
-                <input
-                  type="text"
-                  value={recoveryCodeInput}
-                  onChange={(event) => setRecoveryCodeInput(event.target.value)}
-                  placeholder="From your administrator"
-                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-                />
-              </label>
-              <label className="flex min-w-[160px] flex-1 flex-col gap-2 text-xs text-sand-700">
-                New password
-                <input
-                  type="password"
-                  value={newPassword}
-                  onChange={(event) => setNewPassword(event.target.value)}
-                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-                />
-              </label>
-              <button
-                type="button"
-                disabled={authBusy}
-                onClick={() => void handleReset()}
-                className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
-              >
-                Reset &amp; sign in
-              </button>
-            </div>
-          </div>
-        )}
-
-        {signedInId && showChangePw && (
-          <div className="mt-4 rounded-xl border border-sand-200 bg-white/70 p-4">
-            <p className="text-xs font-semibold text-sand-900">Change password</p>
-            <div className="mt-3 flex flex-wrap items-end gap-3">
-              <label className="flex min-w-[160px] flex-1 flex-col gap-2 text-xs text-sand-700">
-                Current password
-                <input
-                  type="password"
-                  value={officePassword}
-                  onChange={(event) => setOfficePassword(event.target.value)}
-                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-                />
-              </label>
-              <label className="flex min-w-[160px] flex-1 flex-col gap-2 text-xs text-sand-700">
-                New password
-                <input
-                  type="password"
-                  value={newPassword}
-                  onChange={(event) => setNewPassword(event.target.value)}
-                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-                />
-              </label>
-              <button
-                type="button"
-                disabled={authBusy}
-                onClick={() => void handleChangePassword()}
-                className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
-              >
-                Update password
-              </button>
-            </div>
-          </div>
-        )}
-
-        {syncStatus && <p className="mt-3 text-xs text-sand-600">{syncStatus}</p>}
+        <div className="mt-4 rounded-2xl border border-sand-200 bg-sand-50 px-4 py-3 text-xs text-sand-700">
+          <p className="font-semibold text-sand-900">What is in the notes file</p>
+          <p className="mt-1">
+            Only your notes, locked with your passphrase: each patient&apos;s PHN, any unavailable
+            date, adjusted case length, clinical flags, and whether you removed them. It does{" "}
+            <span className="font-semibold">not</span> contain patient names, diagnoses, or the
+            waitlist itself — the hospital&apos;s file stays the only list.
+          </p>
+          <p className="mt-1">
+            It is still a health record: keep it somewhere your office keeps confidential files, and
+            delete it when the pilot ends. Nobody can recover it if the passphrase is lost.
+          </p>
+        </div>
       </section>
         </>
       )}
