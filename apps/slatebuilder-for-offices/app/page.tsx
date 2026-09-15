@@ -141,6 +141,34 @@ function normalizeOfficeWorkbookToCsv(rows: SpreadsheetRow[]): string {
   return lines.join("\n");
 }
 
+// Numbered heading for the Setup tab. The numbers are not decoration: the
+// three steps are genuinely sequential — a waitlist has to be loaded before
+// notes can be matched against it, and the rules affect what the slates look
+// like once both are in.
+function StepHeading({
+  step,
+  title,
+  optional = false,
+}: {
+  step: number;
+  title: string;
+  optional?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slateBlue-700 text-xs font-semibold text-white">
+        {step}
+      </span>
+      <h2 className="text-lg font-semibold text-slateBlue-900">{title}</h2>
+      {optional && (
+        <span className="rounded-full border border-sand-300 px-2 py-0.5 text-[11px] font-semibold text-sand-600">
+          Optional
+        </span>
+      )}
+    </div>
+  );
+}
+
 function StatCard({
   label,
   value,
@@ -383,6 +411,9 @@ export default function Home() {
   const [notesStatus, setNotesStatus] = useState<string | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
   const [notesBusy, setNotesBusy] = useState(false);
+  // Which of the two notes actions produced the current message, so feedback
+  // appears in the card the user just used rather than in both of them.
+  const [notesScope, setNotesScope] = useState<"save" | "load" | null>(null);
   // Tracks the last "structural" signature (case-id-set + active dates +
   // priority mode) that the slate composition was auto-generated from, so
   // manual edits (drag, lock, remove/restore, duration/flag tweaks) are never
@@ -713,6 +744,7 @@ export default function Home() {
   const handleSaveNotes = async () => {
     setNotesError(null);
     setNotesStatus(null);
+    setNotesScope("save");
     if (notesPassphrase.length < MIN_PASSPHRASE_LENGTH) {
       setNotesError(
         `Use a passphrase of at least ${MIN_PASSPHRASE_LENGTH} characters. Several words together work well and are easier to remember.`
@@ -760,6 +792,7 @@ export default function Home() {
   const handleLoadNotes = async () => {
     setNotesError(null);
     setNotesStatus(null);
+    setNotesScope("load");
     if (!notesFile) {
       setNotesError("Choose a saved notes file first.");
       return;
@@ -868,6 +901,7 @@ export default function Home() {
     setCollapsedSlates({});
     setNotesStatus(null);
     setNotesError(null);
+    setNotesScope(null);
     setNotesFile(null);
     setNotesPassphrase("");
     setNotesPassphraseConfirm("");
@@ -2221,11 +2255,12 @@ export default function Home() {
 
       {activeTab === "setup" && (
         <>
-      <section className="grid gap-6 lg:grid-cols-[0.95fr_1.05fr]">
+      <section className="grid gap-6 lg:grid-cols-2">
         <div className="card p-6">
-          <h2 className="text-lg font-semibold text-slateBlue-900">Load Office Waitlist</h2>
+          <StepHeading step={1} title="Load this week's waitlist" />
           <p className="mt-1 text-sm text-sand-700">
-            Import the office&apos;s own CSV or Excel waitlist. All calculations stay in the browser.
+            The file the hospital sent, as CSV or Excel. It is read here in your browser and is
+            not uploaded anywhere.
           </p>
           <div className="mt-4 flex flex-col gap-4">
             <div className="rounded-2xl border border-dashed border-sand-300 bg-white/70 p-4">
@@ -2291,7 +2326,58 @@ export default function Home() {
         </div>
 
         <div className="card p-6">
-          <h2 className="text-lg font-semibold text-slateBlue-900">Configure Scheduling Rules</h2>
+          <StepHeading step={2} title="Restore your notes" optional />
+          <p className="mt-1 text-sm text-sand-700">
+            Your notes from last week — unavailable dates, case lengths, clinical flags. They are
+            matched to whoever is still on the list you just loaded.
+          </p>
+          <div className="mt-4 flex flex-col gap-3">
+            <label className="flex flex-col gap-1.5 text-xs text-sand-700">
+              Notes file
+              <input
+                type="file"
+                accept=".sbnotes,application/json"
+                onChange={(event) => setNotesFile(event.target.files?.[0] ?? null)}
+                className="text-sm"
+              />
+            </label>
+            <label className="flex flex-col gap-1.5 text-xs text-sand-700">
+              Passphrase for this file
+              <input
+                type="password"
+                value={notesPassphrase}
+                onChange={(event) => setNotesPassphrase(event.target.value)}
+                className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={notesBusy || !notesFile}
+              onClick={() => void handleLoadNotes()}
+              className="self-start rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700 disabled:opacity-50"
+            >
+              {notesBusy ? "Working…" : "Load notes"}
+            </button>
+            {notesScope === "load" && notesStatus && (
+              <div className="rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs font-semibold text-emerald-800">
+                {notesStatus}
+              </div>
+            )}
+            {notesScope === "load" && notesError && (
+              <div className="rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-800">
+                {notesError}
+              </div>
+            )}
+            <p className="text-xs text-sand-600">
+              First time using SlateBuilder, or no notes yet? Skip this — you can save a notes file
+              at the end of the session.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="card p-6">
+        <StepHeading step={3} title="Check the scheduling rules" />
           <div className="mt-4 grid gap-6">
             <div className="rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2411,7 +2497,6 @@ export default function Home() {
               </div>
             </div>
           </div>
-        </div>
       </section>
 
       <section className="card p-6">
@@ -2475,6 +2560,79 @@ export default function Home() {
         </div>
       </section>
 
+      <section className="card p-6">
+        <h2 className="text-lg font-semibold text-slateBlue-900">
+          Before you finish: save your notes
+        </h2>
+        <p className="mt-1 max-w-3xl text-sm text-sand-700">
+          Closing the tab clears everything. Save your notes to this computer and you can restore
+          them at step 2 next week, instead of entering them again.
+        </p>
+
+        <div className="mt-4 grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
+          <div className="rounded-2xl border border-sand-200 bg-white/70 p-4">
+            <p className="text-xs text-sand-600">
+              {annotationsCount > 0
+                ? `${annotationsCount} patient${annotationsCount === 1 ? " has" : "s have"} notes to save: unavailable dates, case lengths you have adjusted, clinical flags, and anyone you have taken off the list.`
+                : "Nothing to save yet. Notes appear here once you set an unavailable date, adjust a case length, tick a clinical flag, or remove someone."}
+            </p>
+            <div className="mt-3 flex flex-col gap-3">
+              <label className="flex flex-col gap-1.5 text-xs text-sand-700">
+                Passphrase (at least {MIN_PASSPHRASE_LENGTH} characters)
+                <input
+                  type="password"
+                  value={notesPassphrase}
+                  onChange={(event) => setNotesPassphrase(event.target.value)}
+                  placeholder="Several words together work well"
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1.5 text-xs text-sand-700">
+                Confirm passphrase
+                <input
+                  type="password"
+                  value={notesPassphraseConfirm}
+                  onChange={(event) => setNotesPassphraseConfirm(event.target.value)}
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <button
+                type="button"
+                disabled={notesBusy || annotationsCount === 0}
+                onClick={() => void handleSaveNotes()}
+                className="self-start rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+              >
+                {notesBusy ? "Working…" : "Save notes file"}
+              </button>
+              {notesScope === "save" && notesStatus && (
+                <div className="rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs font-semibold text-emerald-800">
+                  {notesStatus}
+                </div>
+              )}
+              {notesScope === "save" && notesError && (
+                <div className="rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-800">
+                  {notesError}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-sand-200 bg-sand-50 px-4 py-3 text-xs text-sand-700">
+            <p className="font-semibold text-sand-900">What is in the notes file</p>
+            <p className="mt-1">
+              Only your notes, locked with your passphrase: each patient&apos;s PHN, any unavailable
+              date, adjusted case length, clinical flags, and whether you removed them. It does{" "}
+              <span className="font-semibold">not</span> contain patient names, diagnoses, or the
+              waitlist itself — the hospital&apos;s file stays the only list.
+            </p>
+            <p className="mt-1">
+              It is still a health record: keep it somewhere your office keeps confidential files, and
+              delete it when the pilot ends. Nobody can recover it if the passphrase is lost.
+            </p>
+          </div>
+        </div>
+      </section>
+
       <header>
         <div className="card p-8">
           <p className="text-sm uppercase tracking-[0.26em] text-sand-600">
@@ -2520,117 +2678,6 @@ export default function Home() {
         </div>
       </header>
 
-
-      <section className="card p-6">
-        <h2 className="text-lg font-semibold text-slateBlue-900">
-          Save your notes, or pick up where you left off
-        </h2>
-        <p className="mt-1 max-w-3xl text-sm text-sand-700">
-          SlateBuilder has no accounts and no cloud. To carry your notes from one week to the next,
-          save them as a file on this computer and load it again after you upload the new waitlist.
-        </p>
-
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <div className="rounded-2xl border border-sand-200 bg-white/70 p-4">
-            <p className="text-sm font-semibold text-sand-900">Save notes to this computer</p>
-            <p className="mt-1 text-xs text-sand-600">
-              {annotationsCount > 0
-                ? `${annotationsCount} patient${annotationsCount === 1 ? " has" : "s have"} notes to save: unavailable dates, case lengths you have adjusted, clinical flags, and anyone you have taken off the list.`
-                : "Nothing to save yet. Notes appear here once you set an unavailable date, adjust a case length, tick a clinical flag, or remove someone."}
-            </p>
-            <div className="mt-3 flex flex-col gap-3">
-              <label className="flex flex-col gap-1.5 text-xs text-sand-700">
-                Passphrase (at least {MIN_PASSPHRASE_LENGTH} characters)
-                <input
-                  type="password"
-                  value={notesPassphrase}
-                  onChange={(event) => setNotesPassphrase(event.target.value)}
-                  placeholder="Several words together work well"
-                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-                />
-              </label>
-              <label className="flex flex-col gap-1.5 text-xs text-sand-700">
-                Confirm passphrase
-                <input
-                  type="password"
-                  value={notesPassphraseConfirm}
-                  onChange={(event) => setNotesPassphraseConfirm(event.target.value)}
-                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-                />
-              </label>
-              <button
-                type="button"
-                disabled={notesBusy || annotationsCount === 0}
-                onClick={() => void handleSaveNotes()}
-                className="self-start rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
-              >
-                {notesBusy ? "Working…" : "Save notes file"}
-              </button>
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-sand-200 bg-white/70 p-4">
-            <p className="text-sm font-semibold text-sand-900">Load notes from a saved file</p>
-            <p className="mt-1 text-xs text-sand-600">
-              Upload this week&apos;s waitlist first, then load your notes — they will be matched to
-              everyone still on the list. Patients who are no longer waiting are left out.
-            </p>
-            <div className="mt-3 flex flex-col gap-3">
-              <label className="flex flex-col gap-1.5 text-xs text-sand-700">
-                Notes file
-                <input
-                  type="file"
-                  accept=".sbnotes,application/json"
-                  onChange={(event) => setNotesFile(event.target.files?.[0] ?? null)}
-                  className="text-sm"
-                />
-              </label>
-              <label className="flex flex-col gap-1.5 text-xs text-sand-700">
-                Passphrase for this file
-                <input
-                  type="password"
-                  value={notesPassphrase}
-                  onChange={(event) => setNotesPassphrase(event.target.value)}
-                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-                />
-              </label>
-              <button
-                type="button"
-                disabled={notesBusy || !notesFile}
-                onClick={() => void handleLoadNotes()}
-                className="self-start rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700 disabled:opacity-50"
-              >
-                {notesBusy ? "Working…" : "Load notes"}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {notesStatus && (
-          <div className="mt-4 rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs font-semibold text-emerald-800">
-            {notesStatus}
-          </div>
-        )}
-        {notesError && (
-          <div className="mt-4 rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-800">
-            {notesError}
-          </div>
-        )}
-
-        <div className="mt-4 rounded-2xl border border-sand-200 bg-sand-50 px-4 py-3 text-xs text-sand-700">
-          <p className="font-semibold text-sand-900">What is in the notes file</p>
-          <p className="mt-1">
-            Only your notes, locked with your passphrase: each patient&apos;s PHN, any unavailable
-            date, adjusted case length, clinical flags, and whether you removed them. It does{" "}
-            <span className="font-semibold">not</span> contain patient names, diagnoses, or the
-            waitlist itself — the hospital&apos;s file stays the only list.
-          </p>
-          <p className="mt-1">
-            It is still a health record: keep it somewhere your office keeps confidential files, and
-            delete it when the pilot ends. Nobody can recover it if the passphrase is lost.
-          </p>
-        </div>
-      </section>
         </>
       )}
 
