@@ -275,10 +275,11 @@ export default function Guide() {
 
         <p className="font-semibold text-sand-900">Link one file, once</p>
         <p>
-          The first time you save, use <span className="font-semibold">Choose the file</span> in step
-          2 to pick where your notes live. From then on every save replaces that one file instead of
-          leaving a new copy in Downloads each week, which is what stops an office ending up with
-          several notes files and loading the wrong one. Step 2 shows which file you are linked to.
+          In step 2, choose <span className="font-semibold">Create a new notes file</span> the first
+          time, or <span className="font-semibold">use one you already have</span> if this office has
+          saved notes before. From then on every save replaces that one file instead of leaving a new
+          copy in Downloads each week, which is what stops an office ending up with several notes
+          files and loading the wrong one. Step 2 shows which file you are linked to.
         </p>
         <p>
           Pick a folder your office already uses for confidential documents, and{" "}
@@ -290,6 +291,27 @@ export default function Guide() {
           can any browser when the app is opened over an insecure address. If yours cannot, the app
           says so and saves a downloaded copy instead — in that case keep only the newest file and
           delete the rest.
+        </p>
+
+        <p className="font-semibold text-sand-900">You do not have to remember to save</p>
+        <p>
+          Once a file is linked, <span className="font-semibold">your notes save themselves</span> — a
+          couple of seconds after you stop typing, wherever you are in the app. There is no trip back
+          to the Setup tab and no passphrase to retype. The top bar tells you where things stand from
+          every tab: <span className="font-semibold">Notes saved</span> with the time, or{" "}
+          <span className="font-semibold">Unsaved notes</span> with a button if anything is still
+          outstanding.
+        </p>
+        <p>
+          <span className="font-semibold">The passphrase is asked for once per file.</span> You set it
+          when you create the file, and you enter it again only when the file is opened afresh — next
+          week, on another computer, or by whoever you share it with. While the file is open the app
+          holds the key it unlocked rather than the passphrase itself, and it lets go of both when you
+          use Clear screen, unlink the file, or close the tab.
+        </p>
+        <p>
+          A browser that cannot link a file cannot save automatically either, because each save would
+          drop a fresh copy into Downloads. There, saving stays a deliberate click.
         </p>
 
         <p className="font-semibold text-sand-900">Working with someone else</p>
@@ -308,15 +330,13 @@ export default function Guide() {
 
         <p className="font-semibold text-sand-900">When the app asks you to confirm</p>
         <p>
-          Every saved file carries a revision number, which goes up by one each time. The filename
-          shows it — <span className="font-mono text-xs">slatebuilder-notes-r007-2026-09-15-MOA.sbnotes</span>{" "}
-          — so the newest file in a folder is the one with the highest number. Before loading, the app
-          will stop and ask if:
+          Every saved file records when it was written, and that is what the app compares. Before
+          loading, it will stop and ask if:
         </p>
         <ul className="list-disc pl-5">
           <li>
-            the file is an <span className="font-semibold">older revision</span> than one already used
-            on this computer, which usually means it is an out-of-date copy;
+            the file was <span className="font-semibold">saved earlier</span> than one already used on
+            this computer, which usually means it is an out-of-date copy;
           </li>
           <li>it was last saved more than two weeks ago;</li>
           <li>
@@ -331,6 +351,12 @@ export default function Guide() {
         </ul>
         <p>
           You can go ahead in each case. The point is that nothing is replaced silently.
+        </p>
+        <p>
+          There is one case the app will not let you past: if the linked file was last written under a
+          different passphrase, it stops rather than saving over it. It cannot read that file, so it
+          cannot merge with it, and overwriting would destroy work it never saw. Load the file under
+          the right passphrase, or link a different one.
         </p>
 
         <p className="font-semibold text-sand-900">Things to know</p>
@@ -395,6 +421,21 @@ export default function Guide() {
           diagnoses. Someone who has both the file and the passphrase can read your notes, including
           PHNs, which is exactly why the passphrase should be a real one. Several unrelated words
           together are both stronger and easier to remember than a short password with symbols in it.
+        </p>
+        <p className="font-semibold text-sand-900">While the file is open</p>
+        <p>
+          So that you are not asked for the passphrase every time something is saved, the app keeps
+          the key your passphrase unlocked for as long as the file is open. It keeps the{" "}
+          <span className="font-semibold">key</span>, not the passphrase: the key is held in a form
+          the browser will not let any code read back out, and the passphrase itself is discarded the
+          moment it has been used. Nothing is written to this computer — closing the tab ends it, and
+          so do Clear screen and unlinking the file.
+        </p>
+        <p>
+          What this means in practice: while SlateBuilder is open on an unlocked computer, someone at
+          that keyboard could save to your notes file. They could also read every patient name on the
+          screen in front of them, which is the larger problem and the reason the same advice applies
+          either way — lock the screen, or use Clear screen, before you walk away.
         </p>
         <p>
           Because there is no server, there is no database to be breached, no account to be taken
@@ -517,6 +558,7 @@ export default function Guide() {
             ["No outside connections", "No analytics or trackers, and no files loaded from anyone else's website."],
             ["Encryption of saved notes", "AES-256 with authentication, and a key stretched from your passphrase in a deliberately slow way so guessing is expensive. A tampered file is refused rather than silently accepted."],
             ["Passphrase floor", "At least 12 characters, with several words recommended. There is no recovery: nobody can open the file without it."],
+            ["Passphrase handling", "Entered once per file, when it is created or opened. The derived key is held in memory, non-extractable, for as long as that file is open; the passphrase itself is discarded after use and neither is ever written to the device. Cleared by Clear screen, by unlinking, and by closing the tab."],
             ["Only notes are saved", "Names, diagnoses and the waitlist itself are left out, and notes for patients no longer waiting are discarded when you load."],
             ["Notes follow the patient, not the row", "Matching is by PHN, so one patient's notes can never attach to whoever happens to occupy their old row next week."],
             ["Exports minimised", "Case codes by default; including names is a deliberate action each session."],
@@ -632,6 +674,23 @@ export default function Guide() {
             they like. The design makes each attempt deliberately expensive, but the real protection is
             the passphrase itself. Several unrelated words are far stronger — and easier to remember —
             than a short password with symbols in it.
+          </p>
+        </Risk>
+
+        <Risk id="R-12" title="An unlocked screen can write to the notes file" level="Low">
+          <p>
+            So that saving does not demand a passphrase for every edit, the key unlocked by the
+            passphrase is held for as long as the notes file is open, and notes are written to it
+            automatically. Someone who sits down at an unattended, unlocked machine could therefore
+            save to that file.
+          </p>
+          <p>
+            What limits this is that the same person is already looking at every patient name on the
+            screen, so the exposure is not meaningfully widened by the ability to save. Nothing is
+            written to the device: the key exists only in the page&apos;s memory, in a form the
+            browser will not allow any code to read back out, and the passphrase is discarded as soon
+            as it has been used. Clear screen, unlinking the file, and closing the tab each end it.
+            The control is the same one R-01 already asks for — the workstation locking itself.
           </p>
         </Risk>
 

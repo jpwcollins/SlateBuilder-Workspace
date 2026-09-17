@@ -116,6 +116,110 @@ export async function decryptJson<T = unknown>(
   return JSON.parse(new TextDecoder().decode(plaintext)) as T;
 }
 
+// ---- Session keys ---------------------------------------------------------
+//
+// Deriving a key costs 600,000 PBKDF2 iterations -- around a second. That is
+// the right price to pay once, and the wrong price to pay on every save: it is
+// the reason the app used to demand the passphrase each time, which in an
+// office means typing it twice for every case length you adjust.
+//
+// A session key is derived once, when a notes file is created or opened, and
+// held in memory for as long as that file is open. Two properties make this
+// safe to do:
+//
+//   * The key is non-extractable (see deriveKey). Once derived it cannot be
+//     read back out by any script, so what is held in memory is strictly less
+//     dangerous than the passphrase string it came from -- which is no longer
+//     kept at all.
+//
+//   * The salt belongs to the file, not to the save. It is fixed when the file
+//     is created and preserved by everyone who writes to it afterwards, so a
+//     colleague's save can still be read back with the same session key. Only
+//     the IV is fresh per save, which is what AES-GCM actually requires.
+//
+// Nothing here is persisted. Closing the tab ends the session and the key with
+// it; reopening the file asks for the passphrase again.
+
+export type SessionKey = {
+  /** Non-extractable AES-GCM key. Cannot be serialized, and deliberately so. */
+  key: CryptoKey;
+  /** The file's salt, in the same base64 form the envelope stores. */
+  salt: string;
+  iterations: number;
+};
+
+/** A session key for a brand-new file: fresh salt, current iteration count. */
+export async function createSessionKey(passphrase: string): Promise<SessionKey> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await deriveKey(passphrase, salt, PBKDF2_ITERATIONS);
+  return { key, salt: toBase64(salt), iterations: PBKDF2_ITERATIONS };
+}
+
+/**
+ * A session key for a file being opened: adopts the salt and iteration count
+ * recorded in the envelope, so later saves stay readable by everyone else
+ * working on the same file.
+ *
+ * Throws if the passphrase is wrong, exactly as decryptJson does.
+ */
+export async function openSessionKey(
+  passphrase: string,
+  envelope: EncryptedEnvelope
+): Promise<SessionKey> {
+  const salt = fromBase64(envelope.salt);
+  const key = await deriveKey(passphrase, salt, envelope.iterations);
+  // Prove the passphrase before handing back a key that will be trusted for
+  // the rest of the session; GCM authentication fails on a wrong passphrase.
+  const iv = fromBase64(envelope.iv);
+  await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, fromBase64(envelope.ciphertext));
+  return { key, salt: envelope.salt, iterations: envelope.iterations };
+}
+
+/**
+ * Whether a session key can read this envelope.
+ *
+ * A false here means someone wrote the file with a different salt -- an older
+ * build, or a different passphrase entirely. The caller must not overwrite a
+ * file it cannot read: that is how a colleague's work disappears.
+ */
+export function sessionKeyCanRead(session: SessionKey, envelope: EncryptedEnvelope): boolean {
+  return session.salt === envelope.salt && session.iterations === envelope.iterations;
+}
+
+export async function encryptJsonWithSessionKey(
+  session: SessionKey,
+  value: unknown
+): Promise<EncryptedEnvelope> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const plaintext = new TextEncoder().encode(JSON.stringify(value));
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, session.key, plaintext);
+  return {
+    v: 1,
+    alg: "AES-GCM",
+    kdf: "PBKDF2-SHA256",
+    iterations: session.iterations,
+    salt: session.salt,
+    iv: toBase64(iv),
+    ciphertext: toBase64(new Uint8Array(ciphertext)),
+  };
+}
+
+export async function decryptJsonWithSessionKey<T = unknown>(
+  session: SessionKey,
+  envelope: EncryptedEnvelope
+): Promise<T> {
+  if (!sessionKeyCanRead(session, envelope)) {
+    throw new Error("This file was written with a different passphrase or an older version.");
+  }
+  const iv = fromBase64(envelope.iv);
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv },
+    session.key,
+    fromBase64(envelope.ciphertext)
+  );
+  return JSON.parse(new TextDecoder().decode(plaintext)) as T;
+}
+
 /** Strip everything but digits so the same PHN matches across uploads. */
 export function normalizePhn(phn: string): string {
   return (phn ?? "").replace(/\D/g, "");

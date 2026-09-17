@@ -38,9 +38,14 @@ import {
   summarizeImport,
   ClinicalFlagKey,
   collectAnnotations,
-  decryptJson,
+  createSessionKey,
+  decryptJsonWithSessionKey,
+  encryptJsonWithSessionKey,
+  isClearedAnnotation,
+  openSessionKey,
+  sessionKeyCanRead,
+  SessionKey,
   DefaultDurations,
-  encryptJson,
   fingerprintWaitlist,
   isAnnotationsFile,
   isEncryptedEnvelope,
@@ -100,6 +105,15 @@ type OfficeTab = "setup" | "slates" | "waitlist" | "long";
 const OFFICE_TAB_KEY = "slatebuilder-office-tab";
 // Highest notes revision seen on this machine. A number, not patient data.
 const NOTES_REVISION_KEY = "slatebuilder-office-notes-revision";
+// The newest notes timestamp this computer has worked with. Timestamps rather
+// than revision numbers: autosave bumps the revision on every write, so "this
+// file is revision 12 and you have seen 340" says nothing useful about age,
+// whereas "saved three days before the version you already have" always does.
+const NOTES_SEEN_AT_KEY = "slatebuilder-office-notes-seen-at";
+// How long editing has to stop before an autosave fires. Long enough that
+// typing a case length is one save rather than three; short enough that
+// walking away from the desk leaves nothing unwritten.
+const AUTOSAVE_DELAY_MS = 2500;
 const AUTHOR_LABEL_KEY = "slatebuilder-office-author";
 
 function downloadTextFile(filename: string, contents: string, mime: string) {
@@ -223,6 +237,84 @@ function ImportCheckPanel({
         </span>
       </div>
     </section>
+  );
+}
+
+// Whether the notes on screen have reached the file, shown in the header so
+// it is answerable from any tab rather than only from Setup.
+//
+// The three states say different things and are worth distinguishing: a linked
+// file writes itself and only needs reporting, an unlinked one needs a
+// deliberate click, and a file nobody has unlocked yet needs a passphrase
+// before either can happen.
+function NotesSaveState({
+  busy,
+  dirty,
+  count,
+  linked,
+  unlocked,
+  savedAt,
+  onSave,
+}: {
+  busy: boolean;
+  dirty: boolean;
+  count: number;
+  linked: boolean;
+  unlocked: boolean;
+  savedAt: string | null;
+  onSave: () => void;
+}) {
+  if (count === 0 && !savedAt) return null;
+
+  if (busy) {
+    return <span className="font-semibold text-sand-700">Saving notes…</span>;
+  }
+
+  if (dirty) {
+    const label = !unlocked
+      ? "Set a passphrase to save"
+      : linked
+        ? "Save now"
+        : `Save ${count} note${count === 1 ? "" : "s"}`;
+    return (
+      <span className="inline-flex items-center gap-2">
+        <span className="inline-flex items-center gap-1.5 font-semibold text-amber-700">
+          <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+          Unsaved notes
+        </span>
+        <button
+          type="button"
+          onClick={onSave}
+          className="rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-100"
+        >
+          {label}
+        </button>
+      </span>
+    );
+  }
+
+  if (!savedAt) return null;
+  const at = new Date(savedAt);
+  const when = Number.isFinite(at.getTime())
+    ? at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : "";
+  return (
+    <span
+      title={linked ? "Notes are written to the linked file as you work." : undefined}
+      className="inline-flex items-center gap-1.5 font-semibold text-emerald-700"
+    >
+      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+      Notes saved{when ? ` ${when}` : ""}
+    </span>
+  );
+}
+
+/** Order-independent rendering of a note set, for "has anything changed?". */
+function signatureOf(annotations: Record<string, PatientAnnotation>): string {
+  return JSON.stringify(
+    Object.keys(annotations)
+      .sort()
+      .map((key) => [key, annotations[key]])
   );
 }
 
@@ -515,6 +607,18 @@ export default function Home() {
   // Which of the two notes actions produced the current message, so feedback
   // appears in the card the user just used rather than in both of them.
   const [notesScope, setNotesScope] = useState<"save" | "load" | null>(null);
+  // The key for the notes file currently open, derived once when that file is
+  // created or unlocked and held only in memory. It is non-extractable, so it
+  // cannot be read back out; the passphrase it came from is not kept at all.
+  // Closing the tab ends the session and the key with it.
+  const [sessionKey, setSessionKey] = useState<SessionKey | null>(null);
+  // What the notes looked like when they were last written to the file, and
+  // when that was. The comparison against the live state is what "unsaved"
+  // means anywhere in the app.
+  const [savedSignature, setSavedSignature] = useState<string | null>(null);
+  const [notesSavedAt, setNotesSavedAt] = useState<string | null>(null);
+  // Guards against a manual save and an autosave overlapping on one file.
+  const savingRef = useRef(false);
   // Free-text label recorded against each edit and each save, so a merged file
   // can say who changed what. Remembered per machine; it names a role, not a
   // person's health information.
@@ -884,14 +988,22 @@ export default function Home() {
     }));
   };
 
-  const annotationsCount = useMemo(
-    () => Object.keys(collectAnnotations(cases, {
-      durationOverrides,
-      unavailableOverrides,
-      flagOverrides,
-      removedFromSlateSuggestions,
-      removedFromWaitlist,
-    })).length,
+  // The notes as they stand right now, keyed by patient identity. Collected
+  // once and reused for the count, the unsaved check and the save itself, so
+  // all three can never disagree about what is on screen.
+  const currentAnnotations = useMemo(
+    () =>
+      collectAnnotations(
+        cases,
+        {
+          durationOverrides,
+          unavailableOverrides,
+          flagOverrides,
+          removedFromSlateSuggestions,
+          removedFromWaitlist,
+        },
+        annotationTimes
+      ),
     [
       cases,
       durationOverrides,
@@ -899,8 +1011,24 @@ export default function Home() {
       flagOverrides,
       removedFromSlateSuggestions,
       removedFromWaitlist,
+      annotationTimes,
     ]
   );
+
+  // Cleared entries are tombstones -- they exist so that merging with an older
+  // file cannot resurrect notes someone deliberately removed. They are not
+  // notes anyone has, so they are not counted as such on screen.
+  const annotationsCount = useMemo(
+    () => Object.values(currentAnnotations).filter((entry) => !isClearedAnnotation(entry)).length,
+    [currentAnnotations]
+  );
+
+  // A stable rendering of the notes, compared against the last thing written
+  // to the file to decide whether anything is outstanding. Keys are sorted so
+  // that collection order can never make identical notes look different.
+  const annotationsSignature = useMemo(() => signatureOf(currentAnnotations), [currentAnnotations]);
+
+  const notesDirty = annotationsCount > 0 && annotationsSignature !== savedSignature;
 
   // The highest notes revision this machine has seen, kept in localStorage.
   // It is a counter, not patient information, so it can persist where the
@@ -924,15 +1052,40 @@ export default function Home() {
     }
   };
 
+  // The newest notes this computer has worked with, by the time they were
+  // saved rather than by revision number: autosave makes revisions climb
+  // constantly, so only the clock says anything meaningful about which of two
+  // files is older.
+  const lastSeenAt = (): string => {
+    try {
+      return window.localStorage.getItem(NOTES_SEEN_AT_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  };
+
+  const rememberSeenAt = (iso: string) => {
+    if (!iso) return;
+    try {
+      const seen = lastSeenAt();
+      if (!seen || Date.parse(iso) > Date.parse(seen)) {
+        window.localStorage.setItem(NOTES_SEEN_AT_KEY, iso);
+      }
+    } catch {
+      // Storage disabled; the staleness check is simply unavailable.
+    }
+  };
+
   // Reasons to pause before loading a file. Deliberately excludes "these notes
   // were saved against a different waitlist", which is the normal weekly case
   // and would train people to click through the warning.
-  const describeNotesConcerns = (file: AnnotationsFile, incomingRevision: number): string[] => {
+  const describeNotesConcerns = (file: AnnotationsFile): string[] => {
     const out: string[] = [];
-    const seen = lastSeenRevision();
-    if (incomingRevision > 0 && incomingRevision < seen) {
+    const seen = lastSeenAt();
+    const incomingAt = file.updatedAt ?? "";
+    if (seen && incomingAt && Date.parse(incomingAt) < Date.parse(seen)) {
       out.push(
-        `This file is revision ${incomingRevision}, but revision ${seen} has already been used on this computer. It may be an older copy, and loading it could bring back notes that were since changed.`
+        `These notes were saved on ${incomingAt.slice(0, 10)}, but this computer has already worked with a newer version saved on ${seen.slice(0, 10)}. This may be an older copy, and loading it could bring back notes that were since changed.`
       );
     }
     const savedAt = Date.parse(file.updatedAt ?? "");
@@ -984,7 +1137,13 @@ export default function Home() {
     await forgetNotesHandle();
     setNotesHandle(null);
     setNotesScope("save");
-    setNotesStatus("No longer linked to a file. Saving will download a copy instead.");
+    // The key belonged to that file. Whatever is saved next is a new file and
+    // needs its own passphrase, so autosave stops here too.
+    setSessionKey(null);
+    setSavedSignature(null);
+    setNotesStatus(
+      "No longer linked to a file. Saving will download a copy instead, and will ask for a passphrase for it."
+    );
   };
 
   // Builds the file that would be saved right now, including provenance.
@@ -1012,34 +1171,55 @@ export default function Home() {
     settings: { defaultDurations, priorityMode, slateCount },
   });
 
-  const handleSaveNotes = async () => {
-    setNotesError(null);
-    setNotesStatus(null);
-    setNotesScope("save");
-    if (notesPassphrase.length < MIN_PASSPHRASE_LENGTH) {
-      setNotesError(
-        `Use a passphrase of at least ${MIN_PASSPHRASE_LENGTH} characters. Several words together work well and are easier to remember.`
-      );
-      return;
+  /**
+   * Writes the notes to the linked file, or downloads a copy when there is no
+   * linked file.
+   *
+   * The passphrase is only ever asked for once per file: the first save of a
+   * new file establishes the session key, and every save after that -- manual
+   * or automatic -- uses it. `silent` is what autosave passes, so that a save
+   * nobody asked for does not plant a status banner on the Setup tab.
+   */
+  const saveNotes = async ({ silent = false }: { silent?: boolean } = {}) => {
+    if (savingRef.current) return;
+    if (!silent) {
+      setNotesError(null);
+      setNotesStatus(null);
+      setNotesScope("save");
     }
-    if (notesPassphrase !== notesPassphraseConfirm) {
-      setNotesError("The two passphrases do not match.");
-      return;
+
+    // First save of a brand-new file: this is the one moment a passphrase is
+    // required, and the one moment it is worth confirming, since there is no
+    // existing file to check it against.
+    let session = sessionKey;
+    if (!session) {
+      if (silent) return;
+      if (notesPassphrase.length < MIN_PASSPHRASE_LENGTH) {
+        setNotesError(
+          `Use a passphrase of at least ${MIN_PASSPHRASE_LENGTH} characters. Several words together work well and are easier to remember.`
+        );
+        return;
+      }
+      if (notesPassphrase !== notesPassphraseConfirm) {
+        setNotesError("The two passphrases do not match.");
+        return;
+      }
+      try {
+        session = await createSessionKey(notesPassphrase);
+      } catch {
+        setNotesError("Could not prepare the notes file for saving.");
+        return;
+      }
+      setSessionKey(session);
+      setNotesPassphrase("");
+      setNotesPassphraseConfirm("");
     }
+
+    savingRef.current = true;
     setNotesBusy(true);
     try {
       let baseRevision = loadedNotes?.revision ?? lastSeenRevision();
-      let mine = collectAnnotations(
-        cases,
-        {
-          durationOverrides,
-          unavailableOverrides,
-          flagOverrides,
-          removedFromSlateSuggestions,
-          removedFromWaitlist,
-        },
-        annotationTimes
-      );
+      let mine = currentAnnotations;
       let mergedInFirst = 0;
 
       // Writing to a shared file is the one case where saving can destroy
@@ -1047,11 +1227,29 @@ export default function Home() {
       // the file, a plain overwrite erases everything they did. Re-read first,
       // and if the file has moved on, merge into it rather than over it.
       if (notesHandle && (await ensureHandlePermission(notesHandle, "readwrite"))) {
+        let existingEnvelope: unknown = null;
         try {
-          const existingText = await readNotesHandle(notesHandle);
-          const existingEnvelope = JSON.parse(existingText);
-          if (isEncryptedEnvelope(existingEnvelope)) {
-            const existing = await decryptJson<AnnotationsFile>(notesPassphrase, existingEnvelope);
+          existingEnvelope = JSON.parse(await readNotesHandle(notesHandle));
+        } catch {
+          // A file that is empty or not JSON is one this session is about to
+          // write for the first time. There is nothing to merge.
+        }
+        if (isEncryptedEnvelope(existingEnvelope)) {
+          if (!sessionKeyCanRead(session, existingEnvelope)) {
+            // Someone wrote this file with a different passphrase, or an older
+            // build. Overwriting it would destroy work we cannot even read, so
+            // stop and make the mismatch visible instead.
+            setNotesScope("save");
+            setNotesError(
+              `${notesHandle.name} was last written with a different passphrase. Load it under that passphrase before saving, or link a different file — saving now would overwrite work this session cannot read.`
+            );
+            return;
+          }
+          try {
+            const existing = await decryptJsonWithSessionKey<AnnotationsFile>(
+              session,
+              existingEnvelope
+            );
             if (isAnnotationsFile(existing)) {
               const existingRevision = existing.revision ?? 0;
               if (existingRevision > baseRevision) {
@@ -1061,16 +1259,19 @@ export default function Home() {
                 baseRevision = existingRevision;
               }
             }
+          } catch {
+            setNotesScope("save");
+            setNotesError(
+              `${notesHandle.name} could not be read back before saving, so it has been left untouched.`
+            );
+            return;
           }
-        } catch {
-          // An unreadable or differently-locked existing file must not block
-          // saving; it is treated as though there were nothing to merge.
         }
       }
 
       const revision = baseRevision + 1;
       const file: AnnotationsFile = { ...buildNotesFile(revision), annotations: mine };
-      const envelope = await encryptJson(notesPassphrase, file);
+      const envelope = await encryptJsonWithSessionKey(session, file);
       const payload = JSON.stringify(envelope, null, 2);
       const who = authorLabel.trim() ? `-${authorLabel.trim().replace(/[^A-Za-z0-9]+/g, "")}` : "";
       // Revision and author in the filename so that, in a folder listing, the
@@ -1086,6 +1287,7 @@ export default function Home() {
       }
 
       rememberRevision(revision);
+      rememberSeenAt(file.updatedAt);
       setLoadedNotes({
         revision,
         savedBy: file.savedBy,
@@ -1093,6 +1295,10 @@ export default function Home() {
         fingerprint: file.waitlist?.fingerprint,
         patientCount: file.waitlist?.patientCount,
       });
+      // Everything on screen is now in the file, so nothing is outstanding.
+      setSavedSignature(annotationsSignature);
+      setNotesSavedAt(file.updatedAt);
+
       const n = Object.keys(file.annotations).length;
       const mergedNote =
         mergedInFirst > 0
@@ -1101,17 +1307,37 @@ export default function Home() {
       const keepNote = notesHandle
         ? ""
         : " Keep the file and its passphrase somewhere safe: it cannot be opened without the passphrase, and there is no way to reset it.";
-      setNotesStatus(
-        `Saved revision ${revision} to ${wroteTo} — notes for ${n} patient${n === 1 ? "" : "s"}.${mergedNote}${keepNote}`
-      );
-      setNotesPassphrase("");
-      setNotesPassphraseConfirm("");
+
+      // A merge is news whoever asked for the save: it means a colleague's
+      // work was nearly lost. Everything else about an autosave is noise.
+      if (!silent || mergedInFirst > 0) {
+        setNotesScope("save");
+        setNotesStatus(
+          `Saved revision ${revision} to ${wroteTo} — notes for ${n} patient${n === 1 ? "" : "s"}.${mergedNote}${keepNote}`
+        );
+      }
     } catch {
-      setNotesError("Could not save the notes file.");
+      if (!silent) setNotesError("Could not save the notes file.");
     } finally {
+      savingRef.current = false;
       setNotesBusy(false);
     }
   };
+
+  const handleSaveNotes = () => void saveNotes();
+
+  // Autosave, for a linked file only. With one file to replace there is
+  // nothing to accumulate and the read-before-write above still protects a
+  // colleague; in download mode the same behaviour would rain a new file into
+  // Downloads every few seconds, so it stays manual there.
+  useEffect(() => {
+    if (!notesHandle || !sessionKey || !notesDirty) return;
+    const timer = window.setTimeout(() => void saveNotes({ silent: true }), AUTOSAVE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+    // annotationsSignature is what restarts the timer as editing continues, so
+    // a burst of edits writes once at the end rather than once per keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notesHandle, sessionKey, notesDirty, annotationsSignature]);
 
   const handleLoadNotes = async () => {
     setNotesError(null);
@@ -1142,14 +1368,23 @@ export default function Home() {
         setNotesError("That file is not a SlateBuilder notes file.");
         return;
       }
-      const decoded = await decryptJson<AnnotationsFile>(notesPassphrase, envelope);
+      // Unlocking the file is also what establishes the key for the rest of
+      // the session, so the passphrase is never asked for again.
+      let session: SessionKey;
+      try {
+        session = await openSessionKey(notesPassphrase, envelope);
+      } catch {
+        setNotesError("That passphrase does not open this file.");
+        return;
+      }
+      const decoded = await decryptJsonWithSessionKey<AnnotationsFile>(session, envelope);
       if (!isAnnotationsFile(decoded)) {
         setNotesError("That file is not a SlateBuilder notes file.");
         return;
       }
 
       const incomingRevision = decoded.revision ?? 0;
-      const concerns = describeNotesConcerns(decoded, incomingRevision);
+      const concerns = describeNotesConcerns(decoded);
       if (
         concerns.length > 0 &&
         !window.confirm(`${concerns.join("\n\n")}\n\nLoad this file anyway?`)
@@ -1163,20 +1398,14 @@ export default function Home() {
         setSlateCount(decoded.settings.slateCount || 2);
       }
 
+      setSessionKey(session);
+      setNotesPassphrase("");
+
       // Combine rather than replace, so loading a colleague's file adds their
       // work to yours instead of discarding whoever saved first.
-      const mine = collectAnnotations(
-        cases,
-        {
-          durationOverrides,
-          unavailableOverrides,
-          flagOverrides,
-          removedFromSlateSuggestions,
-          removedFromWaitlist,
-        },
-        annotationTimes
-      );
+      const mine = currentAnnotations;
       const merged = mergeAnnotations(mine, decoded.annotations);
+      setNotesSavedAt(decoded.updatedAt ?? null);
 
       setLoadedNotes({
         revision: Math.max(incomingRevision, loadedNotes?.revision ?? 0),
@@ -1202,6 +1431,26 @@ export default function Home() {
         setRemovedFromSlateSuggestions(applied.removedFromSlateSuggestions);
         setRemovedFromWaitlist(applied.removedFromWaitlist);
         setAnnotationTimes(applied.times);
+        // What the screen will hold once those settle. If the merge kept
+        // anything of ours the file is now behind it and wants writing back;
+        // otherwise the two agree and nothing is outstanding.
+        setSavedSignature(
+          merged.kept > 0
+            ? null
+            : signatureOf(
+                collectAnnotations(
+                  cases,
+                  {
+                    durationOverrides: applied.durationOverrides,
+                    unavailableOverrides: applied.unavailableOverrides,
+                    flagOverrides: applied.flagOverrides,
+                    removedFromSlateSuggestions: applied.removedFromSlateSuggestions,
+                    removedFromWaitlist: applied.removedFromWaitlist,
+                  },
+                  applied.times
+                )
+              )
+        );
         setMovedCaseIds({});
         setOrderedSlates([]);
         setOrderedSlateCaseIds([]);
@@ -1284,6 +1533,11 @@ export default function Home() {
     setNotesFile(null);
     setNotesPassphrase("");
     setNotesPassphraseConfirm("");
+    // Walking away from the computer must end the session in every sense: the
+    // key goes with the notes it unlocked.
+    setSessionKey(null);
+    setSavedSignature(null);
+    setNotesSavedAt(null);
     pendingAnnotationsRef.current = null;
   };
 
@@ -1500,21 +1754,18 @@ export default function Home() {
     backfillSlate(current.slateIndex, current.caseId);
   };
 
-  const updateDuration = (slateIndex: number, caseId: string, value: string) => {
+  // Case lengths are a note like any other, so this takes only a caseId: it
+  // works from the waitlist, the embedded panel, or a slate, and finds the
+  // slate copy itself if the patient happens to be on one. It used to require
+  // the caller to know the slate index, which is why the control existed only
+  // on slate cards -- the one annotation that could not be edited from the
+  // list where staff actually review patients.
+  const updateDuration = (caseId: string, value: string) => {
     const minutes = Number(value);
     if (!Number.isFinite(minutes) || minutes <= 0) return;
     setDurationOverrides((prev) => ({ ...prev, [caseId]: minutes }));
     touchAnnotations(caseId);
-    setOrderedSlates((prev) => {
-      const next = prev.map((slate) => [...slate]);
-      const slate = next[slateIndex];
-      if (!slate) return prev;
-      const idx = slate.findIndex((item) => item.caseId === caseId);
-      if (idx < 0) return prev;
-      slate[idx] = { ...slate[idx], estimatedDurationMin: minutes };
-      setOrderedSlateCaseIds(next.map((ordered) => ordered.map((item) => item.caseId)));
-      return next;
-    });
+    patchCaseInSlates(caseId, (item) => ({ ...item, estimatedDurationMin: minutes }));
   };
 
   // Patches a case's live copy inside whichever slate currently holds it (a
@@ -2431,6 +2682,17 @@ export default function Home() {
                     </label>
                   ))}
                   <label className="flex items-center gap-2">
+                    Duration (min)
+                    <input
+                      type="number"
+                      min={10}
+                      step={5}
+                      value={item.estimatedDurationMin}
+                      onChange={(event) => updateDuration(item.caseId, event.target.value)}
+                      className="w-20 rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
+                    />
+                  </label>
+                  <label className="flex items-center gap-2">
                     Patient unavailable until
                     <input
                       type="date"
@@ -2592,6 +2854,27 @@ export default function Home() {
                 On this device only
               </span>
             )}
+            <NotesSaveState
+              busy={notesBusy}
+              dirty={notesDirty}
+              count={annotationsCount}
+              linked={Boolean(notesHandle)}
+              unlocked={Boolean(sessionKey)}
+              savedAt={notesSavedAt}
+              onSave={() => {
+                // Without a key there is no passphrase yet, and asking for one
+                // belongs where it is explained rather than in a toolbar.
+                if (!sessionKey) {
+                  setActiveTab("setup");
+                  setNotesScope("save");
+                  window.requestAnimationFrame(() =>
+                    document.getElementById("notes-save-card")?.scrollIntoView({ block: "center" })
+                  );
+                  return;
+                }
+                void saveNotes();
+              }}
+            />
             <button
               type="button"
               onClick={handleFullReset}
@@ -3010,13 +3293,14 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="card p-6">
+      <section className="card p-6" id="notes-save-card">
         <h2 className="text-lg font-semibold text-slateBlue-900">
-          Before you finish: save your notes
+          {sessionKey && notesHandle ? "Your notes are saving themselves" : "Before you finish: save your notes"}
         </h2>
         <p className="mt-1 max-w-3xl text-sm text-sand-700">
-          Closing the tab clears everything. Save your notes to this computer and you can restore
-          them at step 2 next week, instead of entering them again.
+          {sessionKey && notesHandle
+            ? `Every change you make is written to ${notesHandle.name} a couple of seconds later, without asking for the passphrase again. The header shows whether anything is still outstanding, from whichever tab you are on.`
+            : "Closing the tab clears everything. Save your notes to this computer and you can restore them at step 2 next week, instead of entering them again."}
         </p>
 
         {loadedNotes && (
@@ -3056,32 +3340,49 @@ export default function Home() {
                   className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
                 />
               </label>
-              <label className="flex flex-col gap-1.5 text-xs text-sand-700">
-                Passphrase (at least {MIN_PASSPHRASE_LENGTH} characters)
-                <input
-                  type="password"
-                  value={notesPassphrase}
-                  onChange={(event) => setNotesPassphrase(event.target.value)}
-                  placeholder="Several words together work well"
-                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-                />
-              </label>
-              <label className="flex flex-col gap-1.5 text-xs text-sand-700">
-                Confirm passphrase
-                <input
-                  type="password"
-                  value={notesPassphraseConfirm}
-                  onChange={(event) => setNotesPassphraseConfirm(event.target.value)}
-                  className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-                />
-              </label>
+              {/* Asked for once, when this file is first created. After that
+                  the key lives in memory for the session and neither a manual
+                  save nor an autosave needs it again. */}
+              {!sessionKey && (
+                <>
+                  <label className="flex flex-col gap-1.5 text-xs text-sand-700">
+                    Passphrase (at least {MIN_PASSPHRASE_LENGTH} characters)
+                    <input
+                      type="password"
+                      value={notesPassphrase}
+                      onChange={(event) => setNotesPassphrase(event.target.value)}
+                      placeholder="Several words together work well"
+                      className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1.5 text-xs text-sand-700">
+                    Confirm passphrase
+                    <input
+                      type="password"
+                      value={notesPassphraseConfirm}
+                      onChange={(event) => setNotesPassphraseConfirm(event.target.value)}
+                      className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                    />
+                  </label>
+                  <p className="text-xs text-sand-600">
+                    You will be asked for this once. It is needed again only when this file is
+                    opened afresh — next week, or by whoever you share it with.
+                  </p>
+                </>
+              )}
               <button
                 type="button"
-                disabled={notesBusy || annotationsCount === 0}
+                disabled={notesBusy || annotationsCount === 0 || (Boolean(sessionKey) && !notesDirty)}
                 onClick={() => void handleSaveNotes()}
                 className="self-start rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
               >
-                {notesBusy ? "Working…" : "Save notes file"}
+                {notesBusy
+                  ? "Working…"
+                  : sessionKey
+                    ? notesDirty
+                      ? "Save now"
+                      : "Everything is saved"
+                    : "Save notes file"}
               </button>
               {notesScope === "save" && notesStatus && (
                 <div className="rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs font-semibold text-emerald-800">
@@ -3471,7 +3772,7 @@ export default function Home() {
                                 step={5}
                                 value={item.estimatedDurationMin}
                                 onChange={(event) =>
-                                  updateDuration(slateIndex, item.caseId, event.target.value)
+                                  updateDuration(item.caseId, event.target.value)
                                 }
                                 className="w-20 rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
                               />
