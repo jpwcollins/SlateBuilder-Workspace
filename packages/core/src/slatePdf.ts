@@ -1,8 +1,10 @@
 import { jsPDF } from "jspdf";
+import { BOOKING_ORDER_STATUSES, BOOKING_ORDER_TEXT, BookingOrderStatus } from "./bookingOrder";
 
 // Single letter-size (portrait) OR slate sheets and a paginated priority
-// waitlist. Built from text, lines and filled rectangles only (no images /
-// forms / HTML), so none of jsPDF's parsing surface is exercised.
+// waitlist. Built from text and drawn vector shapes only -- lines, rectangles,
+// circles and curves, including the booking-order icons -- with no images,
+// forms or HTML, so none of jsPDF's parsing surface is exercised.
 
 export type SlatePdfCase = {
   order: number;
@@ -17,6 +19,12 @@ export type SlatePdfCase = {
   procedure: string;
   flags: string[]; // active clinical flag labels
   inpatient: boolean;
+  /**
+   * Whether the case was booked in priority order and, if not, why. Printed as
+   * an icon plus a word at the top of the notes column, with a key at the foot
+   * of the page. Omit to leave the sheet as it was before the indicator existed.
+   */
+  bookingOrder?: { status: BookingOrderStatus; reasons: string[] };
 };
 
 export type SlatePdfOptions = {
@@ -24,6 +32,12 @@ export type SlatePdfOptions = {
   orDateLabel: string; // "Thursday, 8 January 2026"
   blockLabel: string; // "0800–1600 · 480 min"
   summaryLabel: string; // "5 cases · 78% utilization"
+  /**
+   * One line printed in red under the block details, for something about the
+   * slate as a whole that no single row carries — in practice, that a
+   * higher-ranked patient was held back from it with no reason recorded.
+   */
+  slateNote?: string;
   cases: SlatePdfCase[];
   fileName: string;
 };
@@ -55,6 +69,8 @@ const RULE: RGB = [203, 203, 203];
 const FAINT: RGB = [225, 225, 225];
 const RED: RGB = [178, 34, 52];
 const WHITE: RGB = [255, 255, 255];
+const GREEN: RGB = [22, 128, 84];
+const BLUE: RGB = [36, 104, 168];
 
 type RGB = [number, number, number];
 
@@ -86,7 +102,118 @@ const COLS = {
 function renderSlatePage(doc: jsPDF, opts: SlatePdfOptions): void {
   drawSlateHeader(doc, opts);
   drawSlateTable(doc, opts.cases);
-  drawFooter(doc);
+  const showKey = opts.cases.some((c) => c.bookingOrder);
+  if (showKey) drawBookingOrderKey(doc);
+  drawFooter(doc, showKey);
+}
+
+// ------------------------------------------------------- Booking-order marks
+
+function bookingOrderColor(status: BookingOrderStatus): RGB {
+  if (status === "fifo") return GREEN;
+  if (status === "unexplained") return RED;
+  return BLUE;
+}
+
+/**
+ * Draws the status icon centred on (cx, cy), about 10pt across. Each status
+ * has its own shape as well as its own colour, because these sheets are often
+ * printed in black and white: a tick, a stethoscope, a clock, an exclamation.
+ */
+function drawBookingOrderIcon(
+  doc: jsPDF,
+  status: BookingOrderStatus,
+  cx: number,
+  cy: number
+): void {
+  const color = bookingOrderColor(status);
+  doc.setLineCap("round");
+  doc.setLineJoin("round");
+
+  if (status === "fifo") {
+    doc.setFillColor(...color);
+    doc.circle(cx, cy, 5, "F");
+    doc.setDrawColor(...WHITE);
+    doc.setLineWidth(1.3);
+    doc.line(cx - 2.5, cy + 0.2, cx - 0.7, cy + 2.1);
+    doc.line(cx - 0.7, cy + 2.1, cx + 2.6, cy - 1.9);
+  } else if (status === "unexplained") {
+    doc.setFillColor(...color);
+    doc.circle(cx, cy, 5, "F");
+    doc.setDrawColor(...WHITE);
+    doc.setLineWidth(1.4);
+    doc.line(cx, cy - 2.8, cx, cy + 0.7);
+    doc.setFillColor(...WHITE);
+    doc.circle(cx, cy + 2.7, 0.8, "F");
+  } else if (status === "optimization") {
+    doc.setDrawColor(...color);
+    doc.setLineWidth(1.1);
+    doc.circle(cx, cy, 4.5, "S");
+    doc.line(cx, cy - 2.6, cx, cy);
+    doc.line(cx, cy, cx + 2, cy + 1.3);
+  } else {
+    // Stethoscope: the two earpiece tubes joined in a U, a tube looping out
+    // from the bottom of it, and the round chest piece at the end.
+    doc.setDrawColor(...color);
+    doc.setLineWidth(1.1);
+    doc.lines(
+      [
+        [0, 3],
+        [0, 2.6, 4, 2.6, 4, 0],
+        [0, -3],
+      ],
+      cx - 4.4,
+      cy - 4.6,
+      [1, 1],
+      "S"
+    );
+    doc.lines(
+      [
+        [0, 1.2],
+        [0, 3, 5.6, 3, 5.6, 0.2],
+      ],
+      cx - 2.4,
+      cy + 0.35,
+      [1, 1],
+      "S"
+    );
+    doc.circle(cx + 3.2, cy + 0.2, 1.6, "S");
+  }
+
+  doc.setLineCap("butt");
+  doc.setLineJoin("miter");
+}
+
+/** One line at the foot of the sheet saying what the four marks mean. */
+function drawBookingOrderKey(doc: jsPDF): void {
+  const y = PAGE_H - 33;
+  const gap = 14;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.5);
+  const lead = "Booking order:";
+  const items = [...BOOKING_ORDER_STATUSES].reverse().map((status) => {
+    const text = BOOKING_ORDER_TEXT[status].label.replace(/^Out of order: /, "");
+    return { status, text: text.charAt(0).toUpperCase() + text.slice(1) };
+  });
+  const iconSpace = 14;
+  const widthOf = (text: string) => doc.getTextWidth(text);
+  const total =
+    widthOf(lead) + items.reduce((sum, item) => sum + gap + iconSpace + widthOf(item.text), 0);
+  let x = (PAGE_W - total) / 2;
+
+  doc.setTextColor(...GREY);
+  doc.text(lead, x, y);
+  x += widthOf(lead);
+  items.forEach((item) => {
+    x += gap;
+    drawBookingOrderIcon(doc, item.status, x + 5, y - 2.6);
+    x += iconSpace;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7.5);
+    doc.setTextColor(...GREY);
+    doc.text(item.text, x, y);
+    x += widthOf(item.text);
+  });
 }
 
 export function buildSlatePdfDoc(opts: SlatePdfOptions): jsPDF {
@@ -136,6 +263,11 @@ function drawSlateHeader(doc: jsPDF, opts: SlatePdfOptions): void {
   doc.setTextColor(...GREY);
   doc.text(opts.summaryLabel, RIGHT, top, { align: "right" });
   doc.text(opts.blockLabel, RIGHT, top + 14, { align: "right" });
+  if (opts.slateNote) {
+    doc.setFontSize(9);
+    doc.setTextColor(...RED);
+    doc.text(opts.slateNote, RIGHT, top + 50, { align: "right" });
+  }
 
   doc.setDrawColor(...NAVY);
   doc.setLineWidth(1);
@@ -239,10 +371,33 @@ function drawSlateTable(doc: jsPDF, cases: SlatePdfCase[]): void {
     const procLines = doc.splitTextToSize(c.procedure || "—", COLS.proc[1] - 8).slice(0, 4);
     doc.text(procLines, COLS.proc[0] + 4, rowTop + 20);
 
-    // Notes: faint guide lines for handwriting.
+    // Booking order: icon and word at the top of the notes column, where the
+    // eye can run straight down the right-hand edge of the sheet.
+    if (c.bookingOrder) {
+      const { status, reasons } = c.bookingOrder;
+      drawBookingOrderIcon(doc, status, COLS.notes[0] + 12, rowTop + 15);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8.5);
+      doc.setTextColor(...bookingOrderColor(status));
+      doc.text(BOOKING_ORDER_TEXT[status].short, COLS.notes[0] + 21, rowTop + 18);
+      // Only a clinical exception has a reason worth the space: the other
+      // statuses say everything in their one word.
+      if (status === "clinical" && reasons.length > 0) {
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(7);
+        doc.setTextColor(...GREY);
+        const reasonLines = doc
+          .splitTextToSize(reasons.join("; "), COLS.notes[1] - 12)
+          .slice(0, 2);
+        doc.text(reasonLines, COLS.notes[0] + 6, rowTop + 29);
+      }
+    }
+
+    // Notes: faint guide lines for handwriting, moved down to clear the
+    // booking-order mark when there is one.
     doc.setDrawColor(...FAINT);
     doc.setLineWidth(0.5);
-    [38, 60].forEach((dy) => {
+    (c.bookingOrder ? [50, 70] : [38, 60]).forEach((dy) => {
       doc.line(COLS.notes[0] + 6, rowTop + dy, COLS.notes[0] + COLS.notes[1] - 6, rowTop + dy);
     });
   });
@@ -390,13 +545,17 @@ function drawWaitlistRows(doc: jsPDF, rows: WaitlistPdfRow[]): void {
 
 // ------------------------------------------------------------------- Shared
 
-function drawFooter(doc: jsPDF): void {
+function drawFooter(doc: jsPDF, belowKey = false): void {
   doc.setDrawColor(...FAINT);
   doc.setLineWidth(0.5);
   doc.line(MARGIN, PAGE_H - 44, RIGHT, PAGE_H - 44);
 
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(9);
+  doc.setFontSize(belowKey ? 8 : 9);
   doc.setTextColor(...GREY);
-  doc.text("Generated with SlateBuilder", PAGE_W / 2, PAGE_H - 28, { align: "center" });
+  // A slate sheet with a booking-order key gives that line the usual spot and
+  // sits just beneath it.
+  doc.text("Generated with SlateBuilder", PAGE_W / 2, PAGE_H - (belowKey ? 21 : 28), {
+    align: "center",
+  });
 }

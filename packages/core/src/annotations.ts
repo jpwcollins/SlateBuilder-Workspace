@@ -15,6 +15,7 @@
 //     a parallel record of who is waiting. Notes for patients no longer on the
 //     hospital's list are simply ignored on load.
 
+import { OrderReason, parseOrderReason } from "./bookingOrder";
 import { ClinicalFlagKey, DefaultDurations, PatientCase, PriorityMode } from "./types";
 import { normalizePhn } from "./security";
 
@@ -33,6 +34,12 @@ export type PatientAnnotation = {
   flags?: Partial<Record<ClinicalFlagKey, boolean>>;
   removedFromSlates?: boolean;
   removedFromWaitlist?: boolean;
+  /**
+   * Why this patient was booked out of priority order — moved onto a slate
+   * ahead of others, or held back from one. A code from a fixed list plus an
+   * optional typed note; the note never appears in an export.
+   */
+  orderReason?: OrderReason;
   /** ISO timestamp of when this patient's notes last changed. */
   updatedAt: string;
   /** Free-text label for whoever changed them, e.g. "MOA". */
@@ -46,7 +53,8 @@ export function isClearedAnnotation(entry: PatientAnnotation): boolean {
     entry.durationOverrideMin === undefined &&
     entry.flags === undefined &&
     !entry.removedFromSlates &&
-    !entry.removedFromWaitlist
+    !entry.removedFromWaitlist &&
+    entry.orderReason === undefined
   );
 }
 
@@ -127,6 +135,8 @@ export type AnnotationSource = {
   flagOverrides: Record<string, Partial<Record<ClinicalFlagKey, boolean>>>;
   removedFromSlateSuggestions: Record<string, boolean>;
   removedFromWaitlist: Record<string, boolean>;
+  /** Recorded reasons for booking out of priority order, by case code. */
+  orderReasons?: Record<string, OrderReason>;
 };
 
 /** When each patient's notes last changed, keyed by case code. */
@@ -162,6 +172,8 @@ export function collectAnnotations(
     if (source.flagOverrides[item.caseId]) entry.flags = source.flagOverrides[item.caseId];
     if (source.removedFromSlateSuggestions[item.caseId]) entry.removedFromSlates = true;
     if (source.removedFromWaitlist[item.caseId]) entry.removedFromWaitlist = true;
+    const orderReason = source.orderReasons?.[item.caseId];
+    if (orderReason) entry.orderReason = orderReason;
     // Keep it only if it says something: real notes, or a recorded clearing.
     if (!isClearedAnnotation(entry) || stamp) out[key] = entry;
   }
@@ -174,6 +186,7 @@ export type AppliedAnnotations = {
   flagOverrides: Record<string, Partial<Record<ClinicalFlagKey, boolean>>>;
   removedFromSlateSuggestions: Record<string, boolean>;
   removedFromWaitlist: Record<string, boolean>;
+  orderReasons: Record<string, OrderReason>;
   /**
    * The loaded timestamps, re-keyed onto this file's case codes, so that a
    * later save preserves when each patient's notes actually changed instead of
@@ -199,6 +212,7 @@ export function applyAnnotations(
     flagOverrides: {},
     removedFromSlateSuggestions: {},
     removedFromWaitlist: {},
+    orderReasons: {},
     times: {},
     matched: 0,
   };
@@ -221,6 +235,10 @@ export function applyAnnotations(
     if (entry.flags) applied.flagOverrides[item.caseId] = entry.flags;
     if (entry.removedFromSlates) applied.removedFromSlateSuggestions[item.caseId] = true;
     if (entry.removedFromWaitlist) applied.removedFromWaitlist[item.caseId] = true;
+    // Validated rather than trusted: a file from another build may carry a
+    // reason code this one does not know.
+    const orderReason = parseOrderReason(entry.orderReason);
+    if (orderReason) applied.orderReasons[item.caseId] = orderReason;
   }
   return applied;
 }

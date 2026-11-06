@@ -28,8 +28,21 @@ import {
   toLocalDateOnly,
   urgencyChipClasses,
   TURNAROUND_MINUTES,
+  BOOKING_ORDER_TEXT,
+  classifyBookingOrder,
+  countBookingOrder,
+  findUnexplainedPutOffs,
+  unexplainedPutOffNote,
+  OrderReason,
 } from "@slatebuilder/core";
 import { downloadWaitlistPdf, WaitlistPdfRow } from "@slatebuilder/core/slatePdf";
+import {
+  BookingOrderBadge,
+  BookingOrderLegend,
+  BookingOrderTally,
+  OrderReasonEditor,
+  OrderReasonPrompt,
+} from "./bookingOrderUi";
 
 // Aggregate sanity checks on a freshly uploaded waitlist.
 //
@@ -195,6 +208,14 @@ export default function Home() {
   // Case IDs the user has manually reordered via drag, so their card can show
   // a "moved from suggestion" hint.
   const [movedCaseIds, setMovedCaseIds] = useState<Record<string, true>>({});
+  // Why a patient was held back from the suggested slates, where someone has
+  // said. This app keeps nothing between sessions, so neither is this.
+  const [orderReasons, setOrderReasons] = useState<Record<string, OrderReason>>({});
+  // Asking for the reason at the moment a patient is held back: the handler
+  // names the patient, and an effect opens the prompt once the slates have
+  // been rebuilt without them, if the hold-back turns out to need a reason.
+  const [reasonCheckCaseId, setReasonCheckCaseId] = useState<string | null>(null);
+  const [reasonPromptCaseId, setReasonPromptCaseId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ProTab>("setup");
   const [expandedCaseIds, setExpandedCaseIds] = useState<Record<string, boolean>>({});
   const [waitlistQuery, setWaitlistQuery] = useState("");
@@ -393,6 +414,9 @@ export default function Home() {
     setUnavailableOverrides({});
     setFlagOverrides({});
     setRemovedFromSlateSuggestions({});
+    setOrderReasons({});
+    setReasonCheckCaseId(null);
+    setReasonPromptCaseId(null);
     setMovedCaseIds({});
     setOrderedSlates([]);
     setOrderedSlateCaseIds([]);
@@ -489,6 +513,7 @@ export default function Home() {
       ...prev,
       [caseId]: true,
     }));
+    setReasonCheckCaseId(caseId);
   };
 
   const restoreToSuggestedSlates = (caseId: string) => {
@@ -498,6 +523,80 @@ export default function Home() {
       return next;
     });
   };
+
+  // Records, changes or clears the reason a patient was held back.
+  const updateOrderReason = (caseId: string, reason: OrderReason | undefined) => {
+    setOrderReasons((prev) => {
+      const next = { ...prev };
+      if (reason) next[caseId] = reason;
+      else delete next[caseId];
+      return next;
+    });
+  };
+
+  // Whether each slated case was booked in priority order and, if not, why.
+  // Slates here are always the optimizer's own (dragging only changes the
+  // running order within a day), so a case is either in order or out of order
+  // for fit. Holding a patient back never changes the marks on the cases
+  // behind them; an unexplained hold-back is listed and noted on the slate.
+  const bookingOrderInput = useMemo(
+    () => ({
+      slates: (slates ?? []).map((slate, i) => ({
+        dateISO: slate.dateISO,
+        cases: orderedSlates[i] ?? slate.selected,
+      })),
+      candidates: filteredCasesWithOverrides,
+      priorityMode,
+      heldBack: removedFromSlateSuggestions,
+      reasons: orderReasons,
+    }),
+    [
+      slates,
+      orderedSlates,
+      filteredCasesWithOverrides,
+      priorityMode,
+      removedFromSlateSuggestions,
+      orderReasons,
+    ]
+  );
+  const bookingOrder = useMemo(() => classifyBookingOrder(bookingOrderInput), [bookingOrderInput]);
+
+  const unexplainedPutOffs = useMemo(
+    () => findUnexplainedPutOffs(bookingOrderInput),
+    [bookingOrderInput]
+  );
+  const putOffCountByDate = useMemo(() => {
+    const counts: Record<string, number> = {};
+    unexplainedPutOffs.forEach((entry) =>
+      entry.slateDates.forEach((dateISO) => {
+        counts[dateISO] = (counts[dateISO] ?? 0) + 1;
+      })
+    );
+    return counts;
+  }, [unexplainedPutOffs]);
+
+  // Held-back patients with nothing to account for it, each listed once.
+  const patientsNeedingReason = useMemo(() => {
+    const ids = new Set(unexplainedPutOffs.map((entry) => entry.caseId));
+    return filteredCasesWithOverrides.filter((item) => ids.has(item.caseId));
+  }, [unexplainedPutOffs, filteredCasesWithOverrides]);
+
+  // Open the prompt for a patient who was just held back, if that needs a
+  // reason. The slate cards are rebuilt one render after the optimizer's own
+  // result changes, so wait until the patient has actually left them: judging
+  // any earlier would still see them as booked.
+  const slatedIdsKey = useMemo(
+    () => orderedSlates.flatMap((slate) => slate.map((item) => item.caseId)).join(","),
+    [orderedSlates]
+  );
+  useEffect(() => {
+    if (!reasonCheckCaseId) return;
+    if (slatedIdsKey.split(",").includes(reasonCheckCaseId)) return;
+    if (patientsNeedingReason.some((item) => item.caseId === reasonCheckCaseId)) {
+      setReasonPromptCaseId(reasonCheckCaseId);
+    }
+    setReasonCheckCaseId(null);
+  }, [reasonCheckCaseId, slatedIdsKey, patientsNeedingReason]);
 
   const resetDurationOverrides = () => {
     setDurationOverrides({});
@@ -538,6 +637,9 @@ export default function Home() {
         "surgeon_id",
         ...clinicalFlagDefinitions.map((flag) => flag.csvColumn),
         "priority_score",
+        "booking_order",
+        "booking_order_reason",
+        "slate_held_back_no_reason",
       ],
     ];
 
@@ -547,6 +649,7 @@ export default function Home() {
       const end = cursor + Math.round(item.estimatedDurationMin);
       const tatAfter = index < orderedSlate.length - 1;
       cursor = end + (tatAfter ? TURNAROUND_MINUTES : 0);
+      const order = bookingOrder[item.caseId];
       rows.push([
         String(index + 1),
         item.caseId,
@@ -563,6 +666,12 @@ export default function Home() {
         item.surgeonId,
         ...clinicalFlagDefinitions.map((flag) => (item.flags?.[flag.key] ? "yes" : "no")),
         item.priorityScore.toFixed(2),
+        order ? BOOKING_ORDER_TEXT[order.status].label : "",
+        order ? order.reasons.join("; ") : "",
+        // About the slate, not the row: how many higher-ranked patients were
+        // held back from it with no reason recorded. Repeated on every row so
+        // the figure survives sorting and filtering in a spreadsheet.
+        String(putOffCountByDate[dateISO] ?? 0),
       ]);
     });
 
@@ -1149,6 +1258,55 @@ export default function Home() {
             </p>
           </div>
 
+          {slates && slates.length > 0 && (
+            <div className="mt-4 rounded-lg border border-sand-200 bg-white/70 px-4 py-3 text-sm text-sand-800">
+              <p className="font-semibold text-sand-900">Booking order</p>
+              <p className="mt-1 text-xs text-sand-700">
+                Each case is marked by whether it was booked in priority order — the order of the
+                Priority Waitlist for this surgeon — and, if not, why. A mark is about that case
+                only: holding a patient back never changes the marks on the cases behind them. A
+                patient held back with no reason recorded is noted on the slate instead. The marks
+                and the note are written to the slate CSV.
+              </p>
+              <div className="mt-3">
+                {/* Nothing is ever placed by hand here, so the two marks that
+                    describe a hand placement cannot occur. */}
+                <BookingOrderLegend omit={["clinical", "unexplained"]} />
+              </div>
+              {patientsNeedingReason.length > 0 && (
+                <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-3 text-xs text-rose-900">
+                  <p className="font-semibold">
+                    {patientsNeedingReason.length === 1
+                      ? "1 patient was held back with no reason recorded"
+                      : `${patientsNeedingReason.length} patients were held back with no reason recorded`}
+                  </p>
+                  <p className="mt-1 text-rose-800">Choose a reason for each to clear it.</p>
+                  <div className="mt-2 flex flex-col gap-2">
+                    {patientsNeedingReason.map((item) => (
+                      <div
+                        key={`needs-reason-${item.caseId}`}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-200 bg-white px-3 py-2 text-sand-800"
+                      >
+                        <span>
+                          <span className="font-semibold text-slateBlue-900">{item.displayLabel}</span>
+                          <span className="ml-1.5 text-[10px] uppercase tracking-wider text-sand-400">
+                            {item.caseId}
+                          </span>
+                          <span className="ml-2 text-sand-600">held back from the suggested slates</span>
+                        </span>
+                        <OrderReasonEditor
+                          label="Reason"
+                          reason={orderReasons[item.caseId]}
+                          onChange={(reason) => updateOrderReason(item.caseId, reason)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {!slates && (
             <div className="mt-6 rounded-xl border border-dashed border-sand-300 bg-white/70 p-6 text-sm text-sand-700">
               Upload a CSV to generate the slate.
@@ -1204,6 +1362,17 @@ export default function Home() {
                         <p className="mt-1 text-xs text-sand-700">
                           Date {slateDate || "Not set"}
                         </p>
+                        <BookingOrderTally
+                          counts={countBookingOrder(
+                            orderedSlate.map((item) => item.caseId),
+                            bookingOrder
+                          )}
+                        />
+                        {(putOffCountByDate[slateDate] ?? 0) > 0 && (
+                          <p className="mt-1 text-xs font-semibold text-rose-700">
+                            {unexplainedPutOffNote(putOffCountByDate[slateDate])}
+                          </p>
+                        )}
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <button
@@ -1306,6 +1475,7 @@ export default function Home() {
                                     {flag.label}
                                   </span>
                                 ))}
+                              <BookingOrderBadge order={bookingOrder[item.caseId]} />
                               <span className="rounded-full bg-slateBlue-50 px-2 py-1 text-slateBlue-700">
                                 Priority {item.priorityScore.toFixed(2)}
                               </span>
@@ -1519,6 +1689,14 @@ export default function Home() {
                     >
                       TTT {item.timeToTargetDays}d
                     </span>
+                    {patientsNeedingReason.some((entry) => entry.caseId === item.caseId) && (
+                      <span
+                        title="Held back with no reason recorded. Open this row to choose one."
+                        className="shrink-0 rounded-full bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-700"
+                      >
+                        Reason needed
+                      </span>
+                    )}
                     {selectedCaseIds.has(item.caseId) ? (
                       <span className="shrink-0 rounded-full bg-slateBlue-100 px-2 py-0.5 text-[11px] text-slateBlue-700">
                         Slated
@@ -1590,6 +1768,15 @@ export default function Home() {
                           />
                         </label>
                       </div>
+                      {(removedFromSlateSuggestions[item.caseId] || orderReasons[item.caseId]) && (
+                        <div className="mt-2 flex justify-start">
+                          <OrderReasonEditor
+                            label="Reason for holding back"
+                            reason={orderReasons[item.caseId]}
+                            onChange={(reason) => updateOrderReason(item.caseId, reason)}
+                          />
+                        </div>
+                      )}
                       <div className="mt-2 flex flex-wrap gap-2">
                         {removedFromSlateSuggestions[item.caseId] ? (
                           <button
@@ -1828,6 +2015,21 @@ export default function Home() {
           </div>
         </div>
       )}
+      {reasonPromptCaseId &&
+        (() => {
+          const item = filteredCasesWithOverrides.find((c) => c.caseId === reasonPromptCaseId);
+          if (!item) return null;
+          return (
+            <OrderReasonPrompt
+              patientLabel={item.displayLabel}
+              caseId={item.caseId}
+              what="held back from the suggested slates"
+              reason={orderReasons[item.caseId]}
+              onChange={(reason) => updateOrderReason(item.caseId, reason)}
+              onClose={() => setReasonPromptCaseId(null)}
+            />
+          );
+        })()}
     </main>
   );
 }

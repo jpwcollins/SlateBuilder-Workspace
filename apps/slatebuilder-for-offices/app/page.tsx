@@ -15,6 +15,13 @@ import {
   writeNotesHandle,
 } from "./notesStorage";
 import {
+  BookingOrderBadge,
+  BookingOrderLegend,
+  BookingOrderTally,
+  OrderReasonEditor,
+  OrderReasonPrompt,
+} from "./bookingOrderUi";
+import {
   downloadSlatePdf,
   downloadAllSlatesPdf,
   downloadWaitlistPdf,
@@ -73,6 +80,12 @@ import {
   urgencyChipClasses,
   TURNAROUND_MINUTES,
   MAX_CASES_PER_SLATE,
+  BOOKING_ORDER_TEXT,
+  classifyBookingOrder,
+  countBookingOrder,
+  findUnexplainedPutOffs,
+  unexplainedPutOffNote,
+  OrderReason,
 } from "@slatebuilder/core";
 
 type SpreadsheetRow = Record<string, string | number | boolean | null | undefined>;
@@ -582,6 +595,21 @@ export default function Home() {
   // Case IDs the user has manually repositioned via drag (cross-slate move or
   // intra-slate reorder), so their card can show a "moved from suggestion" hint.
   const [movedCaseIds, setMovedCaseIds] = useState<Record<string, true>>({});
+  // caseId -> the slate date a person dragged that patient onto. Distinct from
+  // movedCaseIds, which also covers reordering within a day: only a change of
+  // date can put someone ahead of the queue, so only that is tracked here. An
+  // entry counts only while the patient is still on that date.
+  const [manualPlacements, setManualPlacements] = useState<Record<string, string>>({});
+  // Why a patient was booked out of priority order, where someone has said.
+  // Kept with the office's other notes, so it follows the patient by PHN.
+  const [orderReasons, setOrderReasons] = useState<Record<string, OrderReason>>({});
+  // Asking for a reason at the moment someone moves a patient. A handler sets
+  // reasonCheckCaseId; once the slates have settled, an effect opens the prompt
+  // if (and only if) that move turned out to need a reason. The handler cannot
+  // decide this itself: whether a move puts anyone out of order depends on the
+  // slates as they stand after it, which do not exist until the next render.
+  const [reasonCheckCaseId, setReasonCheckCaseId] = useState<string | null>(null);
+  const [reasonPrompt, setReasonPrompt] = useState<{ caseId: string; what: string } | null>(null);
   const [orderedSlateCaseIds, setOrderedSlateCaseIds] = useState<string[][]>([]);
   // Keyed by dateISO (not array position) so lock/collapse state stays attached
   // to "the slate for that date" even if the results array shifts.
@@ -678,8 +706,10 @@ export default function Home() {
         setFlagOverrides(applied.flagOverrides);
         setRemovedFromSlateSuggestions(applied.removedFromSlateSuggestions);
         setRemovedFromWaitlist(applied.removedFromWaitlist);
+        setOrderReasons(applied.orderReasons);
         setAnnotationTimes(applied.times);
         setMovedCaseIds({});
+        setManualPlacements({});
         setOrderedSlates([]);
         setOrderedSlateCaseIds([]);
         setOptimizeReport(null);
@@ -869,6 +899,8 @@ export default function Home() {
     compositionSeedRef.current = seedKey;
     setLockedSlates({});
     setCollapsedSlates({});
+    // A regenerated composition is the optimizer's, not anyone's drag.
+    setManualPlacements({});
     if (!slates) {
       setOrderedSlates([]);
       setOrderedSlateCaseIds([]);
@@ -891,6 +923,82 @@ export default function Home() {
   const orderedByUrgency = useMemo(() => {
     return sortWaitlistByPriority(officeCasesWithOverrides);
   }, [officeCasesWithOverrides, priorityMode]);
+
+  // Whether each slated case was booked in priority order and, if not, why.
+  // One reading of the slates feeds the cards, the PDF and the CSV, so the
+  // three can never disagree about a case.
+  const bookingOrderInput = useMemo(
+    () => ({
+      slates: slateSlots.map((slot, i) => ({
+        dateISO: slot.dateISO,
+        cases: orderedSlates[i] ?? slot.selected,
+      })),
+      candidates: activeOfficeCases,
+      priorityMode,
+      manualPlacements,
+      heldBack: removedFromSlateSuggestions,
+      reasons: orderReasons,
+    }),
+    [
+      slateSlots,
+      orderedSlates,
+      activeOfficeCases,
+      priorityMode,
+      manualPlacements,
+      removedFromSlateSuggestions,
+      orderReasons,
+    ]
+  );
+  const bookingOrder = useMemo(() => classifyBookingOrder(bookingOrderInput), [bookingOrderInput]);
+
+  // Patients held back, or dragged to a later slate, with nothing to account
+  // for it. They do not change the marks on the cases behind them; they are
+  // listed here and noted on each slate they were passed over for instead.
+  const unexplainedPutOffs = useMemo(
+    () => findUnexplainedPutOffs(bookingOrderInput),
+    [bookingOrderInput]
+  );
+  const putOffCountByDate = useMemo(() => {
+    const counts: Record<string, number> = {};
+    unexplainedPutOffs.forEach((entry) =>
+      entry.slateDates.forEach((dateISO) => {
+        counts[dateISO] = (counts[dateISO] ?? 0) + 1;
+      })
+    );
+    return counts;
+  }, [unexplainedPutOffs]);
+
+  // Everyone a person moved with nothing to account for it, each listed once
+  // with what was done: a case dragged onto a slate ahead of others, or a
+  // patient put off.
+  const patientsNeedingReason = useMemo(() => {
+    const what = new Map<string, string>();
+    Object.values(bookingOrder).forEach((entry) =>
+      entry.needsReasonCaseIds.forEach((caseId) =>
+        what.set(caseId, `moved onto the ${manualPlacements[caseId] ?? ""} slate ahead of others`)
+      )
+    );
+    unexplainedPutOffs.forEach((entry) =>
+      what.set(
+        entry.caseId,
+        entry.kind === "held_back"
+          ? "held back from the suggested slates"
+          : `moved to the later ${manualPlacements[entry.caseId] ?? ""} slate`
+      )
+    );
+    return officeCasesWithOverrides
+      .filter((item) => what.has(item.caseId))
+      .map((item) => ({ item, what: what.get(item.caseId) ?? "" }));
+  }, [bookingOrder, unexplainedPutOffs, manualPlacements, officeCasesWithOverrides]);
+
+  // Open the prompt for a patient who was just moved, if the move needs a
+  // reason. Runs after the render in which the move's effects have landed.
+  useEffect(() => {
+    if (!reasonCheckCaseId) return;
+    const entry = patientsNeedingReason.find((e) => e.item.caseId === reasonCheckCaseId);
+    if (entry) setReasonPrompt({ caseId: reasonCheckCaseId, what: entry.what });
+    setReasonCheckCaseId(null);
+  }, [reasonCheckCaseId, patientsNeedingReason]);
 
   const remainingByUrgency = useMemo(() => {
     return orderedByUrgency.filter(
@@ -1001,6 +1109,7 @@ export default function Home() {
           flagOverrides,
           removedFromSlateSuggestions,
           removedFromWaitlist,
+          orderReasons,
         },
         annotationTimes
       ),
@@ -1011,6 +1120,7 @@ export default function Home() {
       flagOverrides,
       removedFromSlateSuggestions,
       removedFromWaitlist,
+      orderReasons,
       annotationTimes,
     ]
   );
@@ -1165,6 +1275,7 @@ export default function Home() {
         flagOverrides,
         removedFromSlateSuggestions,
         removedFromWaitlist,
+        orderReasons,
       },
       annotationTimes
     ),
@@ -1430,6 +1541,7 @@ export default function Home() {
         setFlagOverrides(applied.flagOverrides);
         setRemovedFromSlateSuggestions(applied.removedFromSlateSuggestions);
         setRemovedFromWaitlist(applied.removedFromWaitlist);
+        setOrderReasons(applied.orderReasons);
         setAnnotationTimes(applied.times);
         // What the screen will hold once those settle. If the merge kept
         // anything of ours the file is now behind it and wants writing back;
@@ -1446,12 +1558,14 @@ export default function Home() {
                     flagOverrides: applied.flagOverrides,
                     removedFromSlateSuggestions: applied.removedFromSlateSuggestions,
                     removedFromWaitlist: applied.removedFromWaitlist,
+                    orderReasons: applied.orderReasons,
                   },
                   applied.times
                 )
               )
         );
         setMovedCaseIds({});
+        setManualPlacements({});
         setOrderedSlates([]);
         setOrderedSlateCaseIds([]);
         setOptimizeReport(null);
@@ -1492,7 +1606,11 @@ export default function Home() {
     setFlagOverrides({});
     setRemovedFromSlateSuggestions({});
     setRemovedFromWaitlist({});
+    setOrderReasons({});
+    setReasonPrompt(null);
+    setReasonCheckCaseId(null);
     setMovedCaseIds({});
+    setManualPlacements({});
     setOrderedSlates([]);
     setOrderedSlateCaseIds([]);
     setOptimizeReport(null);
@@ -1591,6 +1709,7 @@ export default function Home() {
         flagOverrides,
         removedFromSlateSuggestions,
         removedFromWaitlist,
+        orderReasons,
       });
 
     const lowerName = file.name.toLowerCase();
@@ -1712,6 +1831,21 @@ export default function Home() {
     }
     const scored = scoreCases([source])[0];
 
+    // Record that a person chose this date for this patient -- but only if the
+    // drop is actually going to land (the updater below rejects one that does
+    // not fit, and a rejected drop must not overwrite an earlier real one).
+    const targetNow = (orderedSlates[targetSlateIndex] ?? []).filter(
+      (c) => c.caseId !== current.caseId
+    );
+    const surgicalNow = targetNow.reduce((sum, c) => sum + c.estimatedDurationMin, 0);
+    if (
+      targetDateISO &&
+      caseFitsInSlate(surgicalNow, targetNow.length, scored.estimatedDurationMin, blockMinutes)
+    ) {
+      setManualPlacements((prev) => ({ ...prev, [current.caseId]: targetDateISO }));
+      setReasonCheckCaseId(current.caseId);
+    }
+
     setOrderedSlates((prev) => {
       const withoutCase = prev.map((slate) => slate.filter((c) => c.caseId !== current.caseId));
       const target = withoutCase[targetSlateIndex] ?? [];
@@ -1752,6 +1886,7 @@ export default function Home() {
     setRemovedFromSlateSuggestions((prev) => ({ ...prev, [current.caseId]: true }));
     touchAnnotations(current.caseId);
     backfillSlate(current.slateIndex, current.caseId);
+    setReasonCheckCaseId(current.caseId);
   };
 
   // Case lengths are a note like any other, so this takes only a caseId: it
@@ -1909,6 +2044,25 @@ export default function Home() {
       setOrderedSlateCaseIds(next.map((slate) => slate.map((item) => item.caseId)));
       return next;
     });
+    // Off the slate, so no longer "placed by hand" anywhere. If the app later
+    // puts them back on a slate itself, that placement is the app's.
+    setManualPlacements((prev) => {
+      if (prev[caseId] === undefined) return prev;
+      const next = { ...prev };
+      delete next[caseId];
+      return next;
+    });
+  };
+
+  // Records, changes or clears the reason a patient was booked out of order.
+  const updateOrderReason = (caseId: string, reason: OrderReason | undefined) => {
+    setOrderReasons((prev) => {
+      const next = { ...prev };
+      if (reason) next[caseId] = reason;
+      else delete next[caseId];
+      return next;
+    });
+    touchAnnotations(caseId);
   };
 
   // Whenever a case leaves a slate without a specific replacement in mind
@@ -1988,6 +2142,7 @@ export default function Home() {
     touchAnnotations(caseId);
     spliceCaseOutOfSlates(caseId);
     if (slateIndex !== -1) backfillSlate(slateIndex, caseId);
+    setReasonCheckCaseId(caseId);
   };
 
   // Restoring a removed case re-slates it where its priority naturally places
@@ -2231,6 +2386,15 @@ export default function Home() {
     });
     setOptimizeReport({ perSlate, unplacedOverdue });
     setMovedCaseIds({});
+    // Every unlocked slate was just repacked by the app, so nobody's drag
+    // explains where those patients are now. Locked slates were not touched.
+    setManualPlacements((prev) => {
+      const next: Record<string, string> = {};
+      Object.entries(prev).forEach(([caseId, dateISO]) => {
+        if (lockedSlates[dateISO]) next[caseId] = dateISO;
+      });
+      return next;
+    });
   };
 
   const downloadSlateCsv = (slateIndex: number) => {
@@ -2256,6 +2420,9 @@ export default function Home() {
         "surgeon_id",
         ...clinicalFlagDefinitions.map((flag) => flag.csvColumn),
         "priority_score",
+        "booking_order",
+        "booking_order_reason",
+        "slate_held_back_no_reason",
       ],
     ];
 
@@ -2265,6 +2432,7 @@ export default function Home() {
       const end = cursor + Math.round(item.estimatedDurationMin);
       const tatAfter = index < orderedSlate.length - 1;
       cursor = end + (tatAfter ? TURNAROUND_MINUTES : 0);
+      const order = bookingOrder[item.caseId];
       rows.push([
         String(index + 1),
         item.caseId,
@@ -2281,6 +2449,12 @@ export default function Home() {
         item.surgeonId,
         ...clinicalFlagDefinitions.map((flag) => (item.flags?.[flag.key] ? "yes" : "no")),
         item.priorityScore.toFixed(2),
+        order ? BOOKING_ORDER_TEXT[order.status].label : "",
+        order ? order.reasons.join("; ") : "",
+        // About the slate, not the row: how many higher-ranked patients were
+        // held back from it with no reason recorded. Repeated on every row so
+        // the figure survives sorting and filtering in a spreadsheet.
+        String(putOffCountByDate[dateISO] ?? 0),
       ]);
     });
 
@@ -2327,6 +2501,12 @@ export default function Home() {
           .filter((flag) => item.flags?.[flag.key])
           .map((flag) => flag.label),
         inpatient: Boolean(item.inpatient),
+        bookingOrder: bookingOrder[item.caseId]
+          ? {
+              status: bookingOrder[item.caseId].status,
+              reasons: bookingOrder[item.caseId].reasons,
+            }
+          : undefined,
       };
     });
 
@@ -2356,6 +2536,7 @@ export default function Home() {
       summaryLabel: `${orderedSlate.length} ${
         orderedSlate.length === 1 ? "case" : "cases"
       } · ${utilization.toFixed(0)}% utilization`,
+      slateNote: unexplainedPutOffNote(putOffCountByDate[dateISO] ?? 0) || undefined,
       cases: pdfCases,
       fileName: `slate_${fileSlug(surgeonName)}_${dateISO || "undated"}.pdf`,
     };
@@ -2615,6 +2796,14 @@ export default function Home() {
           <span className="hidden shrink-0 text-xs text-sand-600 sm:inline">
             {item.estimatedDurationMin}m
           </span>
+          {!removed && patientsNeedingReason.some((entry) => entry.item.caseId === item.caseId) && (
+            <span
+              title="Moved by hand with no reason recorded. Open this row to choose one."
+              className="shrink-0 rounded-full bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-700"
+            >
+              Reason needed
+            </span>
+          )}
           {removed ? (
             <span className="shrink-0 rounded-full bg-sand-200 px-2 py-0.5 text-[11px] text-sand-600">
               Removed
@@ -2711,6 +2900,19 @@ export default function Home() {
                     )}
                   </label>
                 </div>
+                {(removedFromSlateSuggestions[item.caseId] || orderReasons[item.caseId]) && (
+                  <div className="mt-2 flex justify-start">
+                    <OrderReasonEditor
+                      label={
+                        removedFromSlateSuggestions[item.caseId]
+                          ? "Reason for holding back"
+                          : "Reason for booking out of order"
+                      }
+                      reason={orderReasons[item.caseId]}
+                      onChange={(reason) => updateOrderReason(item.caseId, reason)}
+                    />
+                  </div>
+                )}
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   {removedFromSlateSuggestions[item.caseId] ? (
                     <button
@@ -3520,6 +3722,55 @@ export default function Home() {
             </p>
           </div>
 
+          {slates && slateSlots.length > 0 && (
+            <div className="mt-4 rounded-2xl border border-sand-200 bg-white/70 px-4 py-3 text-sm text-sand-800">
+              <p className="font-semibold text-sand-900">Booking order</p>
+              <p className="mt-1 text-xs text-sand-700">
+                Each case is marked by whether it was booked in priority order — the order on the
+                Priority waitlist tab — and, if not, why. A mark is about that case only: holding
+                a patient back never changes the marks on the cases behind them. A patient held
+                back with no reason recorded is noted on the slate instead. The marks and the note
+                are printed on exported slates.
+              </p>
+              <div className="mt-3">
+                <BookingOrderLegend />
+              </div>
+              {patientsNeedingReason.length > 0 && (
+                <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-3 text-xs text-rose-900">
+                  <p className="font-semibold">
+                    {patientsNeedingReason.length === 1
+                      ? "1 patient was moved by hand with no reason recorded"
+                      : `${patientsNeedingReason.length} patients were moved by hand with no reason recorded`}
+                  </p>
+                  <p className="mt-1 text-rose-800">
+                    Choose a reason for each to clear it.
+                  </p>
+                  <div className="mt-2 flex flex-col gap-2">
+                    {patientsNeedingReason.map(({ item, what }) => (
+                      <div
+                        key={`needs-reason-${item.caseId}`}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-200 bg-white px-3 py-2 text-sand-800"
+                      >
+                        <span>
+                          <span className="font-semibold text-slateBlue-900">{item.displayLabel}</span>
+                          <span className="ml-1.5 text-[10px] uppercase tracking-wider text-sand-400">
+                            {item.caseId}
+                          </span>
+                          <span className="ml-2 text-sand-600">{what}</span>
+                        </span>
+                        <OrderReasonEditor
+                          label="Reason"
+                          reason={orderReasons[item.caseId]}
+                          onChange={(reason) => updateOrderReason(item.caseId, reason)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {!slates && (
             <div className="mt-6 rounded-2xl border border-dashed border-sand-300 bg-white/70 p-6 text-sm text-sand-700">
               Upload an office waitlist to generate slates.
@@ -3580,6 +3831,17 @@ export default function Home() {
                           <h3 className="mt-1 text-lg font-semibold text-slateBlue-900">
                             {orderedSlate.length} cases on {slateDate || "unspecified date"}
                           </h3>
+                          <BookingOrderTally
+                            counts={countBookingOrder(
+                              orderedSlate.map((item) => item.caseId),
+                              bookingOrder
+                            )}
+                          />
+                          {(putOffCountByDate[slateDate] ?? 0) > 0 && (
+                            <p className="mt-1 text-xs font-semibold text-rose-700">
+                              {unexplainedPutOffNote(putOffCountByDate[slateDate])}
+                            </p>
+                          )}
                         </div>
                         <span
                           title={`${occupiedMinutes} / ${slot.blockMinutes} min used (incl. turnaround)`}
@@ -3735,6 +3997,7 @@ export default function Home() {
                                   Inpatient
                                 </span>
                               )}
+                              <BookingOrderBadge order={bookingOrder[item.caseId]} />
                               {movedCaseIds[item.caseId] && (
                                 <span
                                   title="Manually repositioned from the suggested order"
@@ -3797,6 +4060,15 @@ export default function Home() {
                                 </button>
                               )}
                             </label>
+                            {(orderReasons[item.caseId] ||
+                              (manualPlacements[item.caseId] === slateDate &&
+                                bookingOrder[item.caseId]?.status !== "fifo")) && (
+                              <OrderReasonEditor
+                                label="Reason for booking out of order"
+                                reason={orderReasons[item.caseId]}
+                                onChange={(reason) => updateOrderReason(item.caseId, reason)}
+                              />
+                            )}
                             {isLocked ? (
                               <span className="rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
                                 🔒 Locked — unlock slate to remove
@@ -4201,6 +4473,21 @@ export default function Home() {
         </p>
       </section>
       )}
+      {reasonPrompt &&
+        (() => {
+          const item = officeCasesWithOverrides.find((c) => c.caseId === reasonPrompt.caseId);
+          if (!item) return null;
+          return (
+            <OrderReasonPrompt
+              patientLabel={item.displayLabel}
+              caseId={item.caseId}
+              what={reasonPrompt.what}
+              reason={orderReasons[item.caseId]}
+              onChange={(reason) => updateOrderReason(item.caseId, reason)}
+              onClose={() => setReasonPrompt(null)}
+            />
+          );
+        })()}
     </main>
   );
 }

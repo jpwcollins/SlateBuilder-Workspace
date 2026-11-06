@@ -285,3 +285,52 @@ describe("merge tie-breaks", () => {
     expect(r.taken).toBe(0);
   });
 });
+
+describe("order reasons", () => {
+  const source = {
+    durationOverrides: {},
+    unavailableOverrides: {},
+    flagOverrides: {},
+    removedFromSlateSuggestions: {},
+    removedFromWaitlist: {},
+  };
+  const at = "2026-09-05T12:00:00.000Z";
+
+  it("travels with the patient, not the row", () => {
+    const thisWeek = [makeCase({ caseId: "C-001", sourceKey: "Kaur", patientRef: "9000000001" })];
+    const saved = collectAnnotations(
+      thisWeek,
+      { ...source, orderReasons: { "C-001": { code: "resources", note: "laser list" } } },
+      { "C-001": { at } }
+    );
+    expect(saved["phn:9000000001"].orderReason).toEqual({ code: "resources", note: "laser list" });
+
+    // Next week the same patient sits on a different row.
+    const nextWeek = [
+      makeCase({ caseId: "C-001", sourceKey: "Osei", patientRef: "9000000002" }),
+      makeCase({ caseId: "C-002", sourceKey: "Kaur", patientRef: "9000000001" }),
+    ];
+    const applied = applyAnnotations(nextWeek, saved);
+    expect(applied.orderReasons).toEqual({ "C-002": { code: "resources", note: "laser list" } });
+    expect(applied.matched).toBe(1);
+  });
+
+  it("counts as a note in its own right", () => {
+    expect(isClearedAnnotation({ updatedAt: at, orderReason: { code: "resources" } })).toBe(false);
+    expect(isClearedAnnotation({ updatedAt: at })).toBe(true);
+  });
+
+  it("drops a reason code this build does not know", () => {
+    const cases = [makeCase({ caseId: "C-001", sourceKey: "Kaur", patientRef: "9000000001" })];
+    const applied = applyAnnotations(cases, {
+      "phn:9000000001": {
+        updatedAt: at,
+        unavailableUntil: "2026-12-01",
+        // As if written by a later version with a longer list.
+        orderReason: { code: "not_a_real_code" } as never,
+      },
+    });
+    expect(applied.orderReasons).toEqual({});
+    expect(applied.unavailableOverrides).toEqual({ "C-001": "2026-12-01" });
+  });
+});

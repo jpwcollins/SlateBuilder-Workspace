@@ -209,6 +209,112 @@ export default function Guide() {
         </ul>
       </Section>
 
+      <Section title="Booking order: was each case booked first-in, first-out?">
+        <p>
+          Every case on a slate carries a mark showing whether it was booked in priority order —
+          the order on the Priority waitlist tab, which within one benchmark class is strictly
+          first-in, first-out — and, if not, why. The same mark is printed on the slate PDF (top of
+          the notes column, with a key at the foot of the page) and written to the slate CSV as the{" "}
+          <span className="font-semibold">booking_order</span> and{" "}
+          <span className="font-semibold">booking_order_reason</span> columns.
+        </p>
+        <p>
+          <span className="font-semibold">A mark is about that case and nothing else.</span> Something
+          done to one patient never changes the mark on another.
+        </p>
+        <Rows
+          head={["Mark", "What it means"]}
+          rows={[
+            [
+              <span key="f" className="font-semibold text-emerald-800">FIFO (green tick)</span>,
+              "Nobody who ranks ahead of this patient, and who was there to be booked for this date, is still waiting or booked later.",
+            ],
+            [
+              <span key="o" className="font-semibold text-sky-800">Optimization (blue clock)</span>,
+              "Booked ahead of someone higher-ranked, and nobody placed it there by hand: the tool chose this mix of cases to make best use of the OR time. Typically a long case that would not fit was passed by shorter ones.",
+            ],
+            [
+              <span key="c" className="font-semibold text-sky-800">Clinical (blue stethoscope)</span>,
+              "This patient was dragged onto the slate by hand, ahead of someone higher-ranked, and there is a recorded reason — or a clinical flag on them — that accounts for it.",
+            ],
+            [
+              <span key="u" className="font-semibold text-rose-700">No reason (red)</span>,
+              "This patient was dragged onto the slate by hand, ahead of someone higher-ranked, and nothing accounts for it.",
+            ],
+          ]}
+        />
+        <p className="font-semibold text-sand-900">Holding a patient back</p>
+        <p>
+          Taking a patient off the suggested slates, or dragging them to a later one, does{" "}
+          <span className="font-semibold">not</span> change the marks on the cases behind them. Those
+          patients did nothing; they were simply next. What it does instead:
+        </p>
+        <ul className="list-disc pl-5">
+          <li>
+            The moment you do it, the app asks why. Choose a reason from the list, or skip it.
+          </li>
+          <li>
+            If you skip it, the patient is listed in a red panel at the top of the Suggested slates
+            tab and tagged <span className="font-semibold">Reason needed</span> on their Priority
+            Waitlist row, until a reason is recorded.
+          </li>
+          <li>
+            Until then, each slate where someone lower-ranked is booked in their place says so in one
+            line — for example{" "}
+            <span className="font-semibold">
+              1 higher-ranked patient held back, no reason recorded
+            </span>
+            . That line is printed on the slate PDF, and the count is in the slate CSV&apos;s{" "}
+            <span className="font-semibold">slate_held_back_no_reason</span> column.
+          </li>
+          <li>
+            A patient held back without consequence — nobody lower-ranked is booked on a date they
+            could have had — needs no reason and is not listed.
+          </li>
+        </ul>
+        <p className="font-semibold text-sand-900">What counts, and what does not</p>
+        <ul className="list-disc pl-5">
+          <li>
+            Passing a patient who is <span className="font-semibold">unavailable</span> on that date
+            is not out of order — they could not have been booked. Nor is passing someone who has
+            been removed from the waitlist.
+          </li>
+          <li>
+            Only the <span className="font-semibold">date</span> a patient gets is judged, not where
+            they sit in the day&apos;s running order. Dragging a case up or down within a slate never
+            changes its mark.
+          </li>
+          <li>Patients who rank exactly level are never counted as passing one another.</li>
+          <li>
+            Changing the priority rule changes the queue the marks are judged against, so the marks
+            can change with it.
+          </li>
+        </ul>
+        <p className="font-semibold text-sand-900">Recording a reason</p>
+        <p>
+          The app asks for a reason when you drag a patient onto a slate ahead of others, hold one
+          back, or drag one to a later slate — but only if the move actually puts someone out of
+          order. You can also record or change a reason later: in the red panel, on the
+          patient&apos;s slate card, or on their row in the Priority Waitlist.
+        </p>
+        <p>
+          The reason comes from a short fixed list. You can add a typed note beside it for your own
+          use; the note stays on screen and in your notes file and is{" "}
+          <span className="font-semibold">never printed or exported</span>. A clinical flag (OSA,
+          diabetes, out-of-town and so on) on the patient who was moved is accepted as a reason by
+          itself, so a flagged patient is never asked about — though a recorded reason, where there
+          is one, is what gets shown. A flag does not turn the tool&apos;s own choice into a clinical
+          exception: where nobody placed the case by hand, the mark stays Optimization.
+        </p>
+        <p>
+          Reasons are saved with your other notes and follow the patient from week to week.
+          Which slate a patient was dragged onto is not saved — a fresh upload rebuilds the suggested
+          slates from scratch — and{" "}
+          <span className="font-semibold">Optimize Utilization</span> clears it for every unlocked
+          slate, since after that the placements are the tool&apos;s.
+        </p>
+      </Section>
+
       <Section title="4. Work from the Priority Waitlist">
         <p>
           The Priority Waitlist ranks the whole office by composite priority and marks each patient{" "}
@@ -268,8 +374,8 @@ export default function Guide() {
         <p>
           What is worth keeping from week to week is not the list (the hospital sends a fresh one
           every time) but <span className="font-semibold">your notes on it</span>: who is away until
-          when, which cases you have given a longer slot, the clinical flags you have ticked, and
-          anyone you have taken off the list. Those you can save to a file on this computer, locked
+          when, which cases you have given a longer slot, the clinical flags you have ticked, why
+          someone was booked out of order, and anyone you have taken off the list. Those you can save to a file on this computer, locked
           with a passphrase.
         </p>
 
@@ -401,8 +507,10 @@ export default function Guide() {
         <p className="font-semibold text-sand-900">What is in the notes file, and what is not</p>
         <p>
           The notes file contains each patient&apos;s PHN alongside your notes about them: an
-          unavailable date, an adjusted case length, clinical flags, and whether you removed them. The
-          PHN is there because it is what lets a note find the right patient in next week&apos;s file.
+          unavailable date, an adjusted case length, clinical flags, whether you removed them, and any
+          reason you recorded for booking them out of order — including the optional typed note, which
+          is the one place free text is stored, so keep identifying detail out of it. The PHN is
+          there because it is what lets a note find the right patient in next week&apos;s file.
           It does <span className="font-semibold">not</span> contain patient names, diagnoses, or the
           waitlist itself.
         </p>
@@ -519,6 +627,8 @@ export default function Guide() {
             ["Target and waiting time", "the hospital's file", "Memory only"],
             ["Clinical flags", "entered here", <span key="f">Memory; <span className="font-semibold">the notes file</span></span>],
             ["Unavailable dates, case lengths, removals", "entered here", <span key="n">Memory; <span className="font-semibold">the notes file</span></span>],
+            ["Reason for booking out of order", "chosen here from a fixed list", <span key="r">Memory; <span className="font-semibold">the notes file</span>; exported slates</span>],
+            ["Typed note beside that reason", "entered here", <span key="t">Memory; <span className="font-semibold">the notes file</span>. Never exported</span>],
           ]}
         />
         <p>
@@ -561,7 +671,7 @@ export default function Guide() {
             ["Passphrase handling", "Entered once per file, when it is created or opened. The derived key is held in memory, non-extractable, for as long as that file is open; the passphrase itself is discarded after use and neither is ever written to the device. Cleared by Clear screen, by unlinking, and by closing the tab."],
             ["Only notes are saved", "Names, diagnoses and the waitlist itself are left out, and notes for patients no longer waiting are discarded when you load."],
             ["Notes follow the patient, not the row", "Matching is by PHN, so one patient's notes can never attach to whoever happens to occupy their old row next week."],
-            ["Exports minimised", "Case codes by default; including names is a deliberate action each session."],
+            ["Exports minimised", "Case codes by default; including names is a deliberate action each session. The booking-order mark on a slate carries a reason from a fixed list only — the typed note beside it is never printed or exported."],
             ["Spreadsheet safety", "Cells that Excel would treat as live formulas are neutralised in exported files."],
           ]}
         />

@@ -50,6 +50,50 @@ function makeWaitlistRow(rank: number): WaitlistPdfRow {
   };
 }
 
+describe("booking-order marks", () => {
+  const statuses = ["fifo", "clinical", "optimization", "unexplained"] as const;
+
+  it("draws every status, with and without a reason, on one page", () => {
+    const cases = statuses.map((status, i) => ({
+      ...makeSlateCase(i + 1),
+      bookingOrder: {
+        status,
+        reasons: status === "clinical" ? ["Medical or anaesthetic requirement", "Clinical flag: OSA"] : [],
+      },
+    }));
+    const doc = buildSlatePdfDoc(makeSlateOptions({ cases }));
+    expect(doc.getNumberOfPages()).toBe(1);
+  });
+
+  it("prints the key only when a case carries a mark", () => {
+    const text = (doc: ReturnType<typeof buildSlatePdfDoc>) => doc.output();
+    const without = text(buildSlatePdfDoc(makeSlateOptions()));
+    const withMark = text(
+      buildSlatePdfDoc(
+        makeSlateOptions({
+          cases: [{ ...makeSlateCase(1), bookingOrder: { status: "fifo", reasons: [] } }],
+        })
+      )
+    );
+    expect(without).not.toContain("Booking order:");
+    expect(withMark).toContain("Booking order:");
+  });
+
+  it("prints the slate note when there is one", () => {
+    const note = "1 higher-ranked patient held back, no reason recorded";
+    expect(buildSlatePdfDoc(makeSlateOptions()).output()).not.toContain(note);
+    expect(buildSlatePdfDoc(makeSlateOptions({ slateNote: note })).output()).toContain(note);
+  });
+
+  it("still fits a full seven-case slate on one page", () => {
+    const cases = Array.from({ length: 7 }, (_, i) => ({
+      ...makeSlateCase(i + 1),
+      bookingOrder: { status: statuses[i % 4], reasons: ["Equipment or staffing"] },
+    }));
+    expect(buildSlatePdfDoc(makeSlateOptions({ cases })).getNumberOfPages()).toBe(1);
+  });
+});
+
 describe("buildSlatePdfDoc", () => {
   it("produces a single-page document for one slate", () => {
     const doc = buildSlatePdfDoc(makeSlateOptions());

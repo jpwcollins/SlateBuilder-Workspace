@@ -104,6 +104,42 @@ export default function Guide() {
         </ul>
       </Section>
 
+      <Section title="Booking order: was each case booked first-in, first-out?">
+        <p>
+          Every case on a slate carries a mark showing whether it was booked in priority order — the
+          order of the Priority Waitlist for the selected surgeon, which within one benchmark class is
+          strictly first-in, first-out — and, if not, why. The slate CSV carries the same in its{" "}
+          <span className="font-semibold">booking_order</span> and{" "}
+          <span className="font-semibold">booking_order_reason</span> columns.
+        </p>
+        <ul className="list-disc pl-5">
+          <li>
+            <span className="font-semibold text-emerald-800">FIFO</span> — nobody who ranks ahead,
+            and who was there to be booked for this date, is still waiting or booked later.
+          </li>
+          <li>
+            <span className="font-semibold text-sky-800">Optimization</span> — booked ahead of
+            someone higher-ranked because this mix of cases makes best use of the OR time.
+          </li>
+        </ul>
+        <p>
+          A mark is about that case only. Removing a patient from the suggested slates does not
+          change the marks on the cases behind them. Instead the app asks why at the moment you do
+          it; if you skip that, the patient is listed in a red panel at the top of the Slates tab and
+          tagged <span className="font-semibold">Reason needed</span> on their Priority Waitlist row,
+          and each slate where someone lower-ranked is booked in their place says so in one line. The
+          count is in the CSV&apos;s{" "}
+          <span className="font-semibold">slate_held_back_no_reason</span> column.
+        </p>
+        <p>
+          A clinical flag on the held-back patient counts as a reason by itself. Passing a patient
+          who is unavailable that day does not count, and dragging a case within a slate changes only
+          the running order, never its mark. Reasons come from a fixed list; the optional typed note
+          beside one is never exported. Reasons last for the session only — this app keeps nothing
+          between uploads.
+        </p>
+      </Section>
+
       <Section title="5. Priority Waitlist, groups & metrics">
         <ul className="list-disc pl-5">
           <li>
