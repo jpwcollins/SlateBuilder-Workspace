@@ -117,8 +117,9 @@ export default function Guide() {
         </h1>
         <p className="text-sm text-sand-700">
           A quick guide to turning your office waitlist into OR slates and
-          priority lists. Everything runs in your browser — no patient data ever
-          leaves this device.
+          priority lists. Everything runs in your browser — no patient data
+          leaves this computer unless you export it or send the removal email
+          yourself. Use Google Chrome or Microsoft Edge.
         </p>
         <a
           href="/"
@@ -128,11 +129,11 @@ export default function Guide() {
         </a>
       </header>
 
-      <Section title="1. Load the office waitlist">
+      <Section title="1. Load this week's waitlist">
         <p>
-          Use <span className="font-semibold">Load Office Waitlist</span> to
-          upload your office&apos;s own CSV or Excel file. Each row is one
-          patient. The importer reads these columns:
+          In step 1 on the Setup tab, choose the waitlist file the hospital sent
+          — CSV or Excel. Each row is one patient. The importer reads these
+          columns:
         </p>
         <ul className="list-disc pl-5">
           <li>
@@ -165,7 +166,25 @@ export default function Guide() {
         </p>
       </Section>
 
-      <Section title="2. Set the scheduling rules">
+      <Section title="2. Restore your notes">
+        <p>
+          Optional. If your office saved notes last week — unavailable dates,
+          case lengths, clinical flags, reasons — load that file here with its
+          passphrase, and the notes are matched to whoever is still on this
+          week&apos;s list. The first time, skip this step: you create the notes
+          file when you first save. See{" "}
+          <span className="font-semibold">Saving your work between weeks</span>{" "}
+          below.
+        </p>
+        <p className="rounded-xl border border-rose-200 bg-rose-50/70 px-4 py-3 text-xs text-rose-900">
+          <span className="font-semibold">Use Chrome or Edge.</span> Only they
+          can keep one notes file on this computer and save to it automatically.
+          In other browsers this step shows a red warning, and every save
+          becomes a separate download.
+        </p>
+      </Section>
+
+      <Section title="3. Check the scheduling rules">
         <ul className="list-disc pl-5">
           <li>
             <span className="font-semibold">Priority rule</span> — this one
@@ -179,12 +198,16 @@ export default function Guide() {
             <span className="font-semibold">Default case durations</span> — four
             buckets (hysteroscopy 30, laparoscopy 60, hysterectomy 180, other 90
             min). These are starting estimates; you can override any case&apos;s
-            duration on its slate card, and most offices will want to.
+            duration on its slate card, and most offices will want to.{" "}
+            <span className="font-semibold">Save defaults</span> remembers your
+            own figures in this browser for next time.
           </li>
           <li>
             <span className="font-semibold">OR dates</span> — choose up to
-            three. A standard day is 08:00–16:00 (480 min); the 2nd and 4th
-            Thursday of the month run 09:00–16:00 (420 min).
+            three. They default to 3, 5 and 7 weeks from today, so check them
+            against your actual OR block dates. A standard day is 08:00–16:00
+            (480 min); the 2nd and 4th Thursday of the month run 09:00–16:00
+            (420 min).
           </li>
         </ul>
         <p>
@@ -195,7 +218,7 @@ export default function Guide() {
         </p>
       </Section>
 
-      <Section title="3. Review the suggested slates">
+      <Section title="Review the suggested slates">
         <p>
           For each OR date the tool builds a slate in two steps: it first places
           every patient who is already{" "}
@@ -395,7 +418,7 @@ export default function Guide() {
         </p>
       </Section>
 
-      <Section title="4. Work from the Priority Waitlist">
+      <Section title="Work from the Priority Waitlist">
         <p>
           The Priority Waitlist ranks the whole office by composite priority and
           marks each patient <span className="font-semibold">Slated</span> or{" "}
@@ -493,11 +516,17 @@ export default function Guide() {
           — those copy files off this computer automatically.
         </p>
         <p>
-          Not every browser can do this. Chrome and Edge can; Safari and Firefox
-          cannot, and neither can any browser when the app is opened over an
-          insecure address. If yours cannot, the app says so and saves a
-          downloaded copy instead — in that case keep only the newest file and
-          delete the rest.
+          <span className="font-semibold">
+            This needs Google Chrome or Microsoft Edge
+          </span>{" "}
+          on a desktop or laptop, with the app opened at its https:// address.
+          Safari and Firefox cannot link a file, and no browser can when the app
+          is opened over plain http://. In those cases step 2 shows a red
+          warning, and every save downloads a new copy instead. The copies pile
+          up with only a date to tell them apart, and loading an older one by
+          mistake loses the newer notes. Switch browsers if you possibly can; if
+          you cannot, keep exactly one notes file and delete older copies after
+          every save.
         </p>
 
         <p className="font-semibold text-sand-900">
@@ -776,8 +805,11 @@ export default function Guide() {
             <span className="font-semibold">
               Nothing about a patient is written to the browser.
             </span>{" "}
-            After loading a waitlist, browser storage holds only a note of which
-            tab you were last on.
+            Browser storage holds only settings: which tab you were last on,
+            your saved default case durations, the &quot;Who is saving&quot;
+            label, a reference to the linked notes file, and a save counter and
+            timestamp the app uses to spot an out-of-date notes file. No names,
+            PHNs or notes.
           </li>
           <li>
             <span className="font-semibold">
@@ -887,7 +919,7 @@ export default function Guide() {
             ],
             [
               "Nothing kept in the browser",
-              "The waitlist is never written to browser storage — only a note of which tab you were on.",
+              "The waitlist and notes are never written to browser storage — only settings such as default durations, the \u201cWho is saving\u201d label and a reference to the linked notes file.",
             ],
             [
               "No outside connections",
@@ -898,8 +930,8 @@ export default function Guide() {
               "AES-256 with authentication, and a key stretched from your passphrase in a deliberately slow way so guessing is expensive. A tampered file is refused rather than silently accepted.",
             ],
             [
-              "Passphrase floor",
-              "At least 12 characters, with several words recommended. There is no recovery: nobody can open the file without it.",
+              "Passphrase strength",
+              "Checked when a notes file is created: at least 12 characters, and easily guessed passphrases (a common word with numbers added, keyboard runs, repetition) are refused. 4 or 5 random words joined by hyphens are recommended; generated passwords from Apple or Chrome are also accepted. There is no recovery: nobody can open the file without it.",
             ],
             [
               "Passphrase handling",
@@ -1082,8 +1114,29 @@ export default function Guide() {
             Anyone who obtains a copy of the notes file can try passphrases
             against it for as long as they like. The design makes each attempt
             deliberately expensive, but the real protection is the passphrase
-            itself. Several unrelated words are far stronger — and easier to
-            remember — than a short password with symbols in it.
+            itself. The app refuses easily guessed passphrases when a file is
+            created and recommends 4 or 5 random words joined by hyphens, which
+            are far stronger — and easier to remember — than a short password
+            with symbols in it. Words chosen at random, not a phrase someone
+            would think of, are what make it strong.
+          </p>
+        </Risk>
+
+        <Risk
+          id="R-11"
+          title="Where the application is served from"
+          level="Low"
+        >
+          <p>
+            The tool is a set of static pages served by a web host (Vercel),
+            through its worldwide delivery network. Because there is no database
+            and no interface, the host never receives any patient information —
+            not the waitlist, not the notes file. It sends the page and sees
+            only the ordinary details any website sees, such as the
+            office&apos;s network address and the time of the visit. Where the
+            host is located therefore has little bearing on patient data, which
+            stays on this computer; it is worth knowing who the host is, and
+            nothing more needs settling.
           </p>
         </Risk>
 
@@ -1108,22 +1161,6 @@ export default function Guide() {
             discarded as soon as it has been used. Clear screen, unlinking the
             file, and closing the tab each end it. The control is the same one
             R-01 already asks for — the workstation locking itself.
-          </p>
-        </Risk>
-
-        <Risk
-          id="R-11"
-          title="Where the application is served from"
-          level="Low"
-        >
-          <p>
-            The tool is served from a web host. Because there is no database and
-            no interface, that host never receives any patient information; it
-            sends the page and sees only the ordinary details any website sees,
-            such as the office&apos;s network address. Hosting it in Canada is
-            still worth doing: it is now the only outside party involved at all,
-            so it allows the simple statement that everything leaving the office
-            goes to one named Canadian server.
           </p>
         </Risk>
       </Section>
