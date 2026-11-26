@@ -6,5 +6,6 @@ export * from "./date";
 export * from "./format";
 export * from "./importCheck";
 export * from "./optimizer";
+export * from "./passphrase";
 export * from "./security";
 export * from "./types";
