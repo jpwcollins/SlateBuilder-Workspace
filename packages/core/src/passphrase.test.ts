@@ -27,6 +27,12 @@ describe("assessPassphrase", () => {
     "Correct Horse Battery Staple",
     "tulipMarbleKettleGranite",
     "kx9-Tq2v-Lm8w-Zp",
+    // Apple's generated format
+    "qejfep-dAnraf-0vugmu",
+    "Bymhic-5ruxko-satcog",
+    // Chrome's generated format (15 characters)
+    "Xk9mQ2pLr7vWz3T",
+    "aR4vNq8eLx2Wmt7",
   ])("rates %s strong", (p) => {
     expect(assessPassphrase(p)).toMatchObject({ ok: true, level: "strong" });
   });
@@ -35,6 +41,13 @@ describe("assessPassphrase", () => {
     "accepts %s as fair",
     (p) => {
       expect(assessPassphrase(p)).toMatchObject({ ok: true, level: "fair" });
+    },
+  );
+
+  it.each(["Harbour Velvet 99", "orange giraffe 7731"])(
+    "does not mistake %s for a random string",
+    (p) => {
+      expect(assessPassphrase(p).level).not.toBe("strong");
     },
   );
 

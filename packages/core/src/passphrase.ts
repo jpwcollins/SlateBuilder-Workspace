@@ -169,17 +169,34 @@ export function assessPassphrase(passphrase: string): PassphraseAssessment {
     );
   }
 
-  // A random string, as a password manager generates: many distinct
-  // characters across several classes. Hard to remember, but not weak.
-  const classes = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^A-Za-z0-9]/].filter((re) =>
-    re.test(passphrase),
-  ).length;
-  const longestLetterRun = Math.max(
-    0,
-    ...(passphrase.match(/[A-Za-z]+/g) ?? []).map((r) => r.length),
-  );
-  if (classes >= 3 && new Set(passphrase).size >= 12 && longestLetterRun <= 4) {
-    return passphrase.length >= 16
+  // Apple's generated format (Safari / iCloud Keychain): three groups of six,
+  // e.g. qejfep-dAnraf-0vugmu. Apple puts these at about 71 bits -- stronger
+  // than five random words -- but the groups look like three short "words" to
+  // the check below, so they are recognised by shape.
+  if (
+    /^[A-Za-z0-9]{6}-[A-Za-z0-9]{6}-[A-Za-z0-9]{6}$/.test(passphrase) &&
+    /[A-Z]/.test(passphrase) &&
+    /[0-9]/.test(passphrase)
+  ) {
+    return { ok: true, level: "strong", message: "Strong passphrase." };
+  }
+
+  // Any other random string, as Chrome or a password manager generates
+  // (e.g. Xk9mQ2pLr7vWz3T): several character classes, mixed together rather
+  // than tacked on. A phrase like "orange giraffe 7731" switches class only
+  // at its word breaks; a random string switches every couple of characters.
+  const classOf = (c: string) =>
+    /[a-z]/.test(c) ? 0 : /[A-Z]/.test(c) ? 1 : /[0-9]/.test(c) ? 2 : 3;
+  const chars = [...passphrase];
+  const classes = new Set(chars.map(classOf)).size;
+  let switches = 0;
+  for (let i = 1; i < chars.length; i += 1) {
+    if (classOf(chars[i]) !== classOf(chars[i - 1])) switches += 1;
+  }
+  const looksRandom =
+    classes >= 3 && new Set(chars).size >= 10 && switches >= chars.length / 2;
+  if (looksRandom) {
+    return passphrase.length >= 15
       ? { ok: true, level: "strong", message: "Strong passphrase." }
       : {
           ok: true,
