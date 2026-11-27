@@ -24,6 +24,7 @@
 //      the everybody-overdue check also requires implausible magnitudes: a
 //      genuinely backlogged practice can legitimately be 100% overdue.
 
+import { classifyProcedure, PROCEDURE_CATEGORY_LABELS } from "./procedureCategory";
 import { stablePatientKey } from "./annotations";
 import { SkippedRow } from "./csv";
 import { PatientCase } from "./types";
@@ -35,6 +36,9 @@ export type ImportCheckSeverity =
   | "check";
 
 export type ImportCheckId =
+  | "procedural-sedation"
+  | "procedure-not-performed"
+  | "assumed-case-length"
   | "rows-dropped"
   | "no-patient-identity"
   | "no-procedure-names"
@@ -171,15 +175,85 @@ function describeRows(rows: number[]): string {
  */
 export function checkImportedWaitlist(input: ImportCheckInput): ImportCheck[] {
   const { cases } = input;
-  const skipped = input.skipped ?? [];
+  const allSkipped = input.skipped ?? [];
+  // Procedural sedation rows are left out on purpose and reported on their own;
+  // every other skipped row is a patient who should have loaded and didn't.
+  const sedation = allSkipped.filter((row) => row.reason === "procedural-sedation");
+  const notPerformed = allSkipped.filter((row) => row.reason === "procedure-not-performed");
+  const leftOutOnPurpose = sedation.length + notPerformed.length;
+  const skipped = allSkipped.filter(
+    (row) => row.reason !== "procedural-sedation" && row.reason !== "procedure-not-performed",
+  );
   const checks: ImportCheck[] = [];
   const total = cases.length;
 
+  if (sedation.length > 0) {
+    checks.push({
+      id: "procedural-sedation",
+      severity: "check",
+      headline: `${plural(sedation.length, "procedural sedation (PS) case")} in the file ${
+        sedation.length === 1 ? "was" : "were"
+      } left out.`,
+      detail:
+        `${sedation.length === 1 ? "Row" : "Rows"} ${describeRows(sedation.map((row) => row.row))} ` +
+        `${sedation.length === 1 ? "is" : "are"} on the procedural sedation ` +
+        "waitlist (REQUEST_QUEUE ending in PS), which is separate from the OR waitlist. " +
+        "They are ignored: not on any slate and not on the Priority Waitlist.",
+    });
+  }
+
+  if (notPerformed.length > 0) {
+    const n = notPerformed.length;
+    checks.push({
+      id: "procedure-not-performed",
+      severity: "check",
+      headline: `${plural(n, "row")} marked Procedure Not Performed ${n === 1 ? "was" : "were"} left out.`,
+      detail:
+        `${n === 1 ? "Row" : "Rows"} ${describeRows(notPerformed.map((row) => row.row))}. ` +
+        "These are not cases to plan, so they are not on any slate or on the Priority Waitlist.",
+    });
+  }
+
   if (total === 0) return checks;
+
+  // --- Case lengths resting on an assumption --------------------------------
+  // Each procedure name is classified to a default case length. Where that
+  // classification is an assumption (no surgical approach in the name, an
+  // ambiguous name, a name the app doesn't know), say so once per procedure,
+  // so the office can check those cases' lengths on their slate cards.
+  const assumed = new Map<string, { count: number; assumption: string }>();
+  cases.forEach((item) => {
+    const { category, assumption } = classifyProcedure(item.procedureName);
+    if (!assumption) return;
+    const name = item.procedureName?.trim() || "(no procedure)";
+    const entry = assumed.get(name) ?? {
+      count: 0,
+      // Name the length the case was given, unless the note already does.
+      assumption: assumption.includes("length")
+        ? assumption
+        : `${assumption} Default length: ${PROCEDURE_CATEGORY_LABELS[category]}.`,
+    };
+    entry.count += 1;
+    assumed.set(name, entry);
+  });
+  if (assumed.size > 0) {
+    const n = Array.from(assumed.values()).reduce((sum, e) => sum + e.count, 0);
+    const lines = Array.from(assumed.entries())
+      .sort((a, b) => b[1].count - a[1].count)
+      .map(([name, e]) => `${name} (${e.count}): ${e.assumption}`);
+    checks.push({
+      id: "assumed-case-length",
+      severity: "check",
+      headline: `The case length for ${plural(n, "patient")} rests on an assumption.`,
+      detail:
+        lines.join(" ") +
+        " Check these on their slate cards and change the duration where it is wrong.",
+    });
+  }
 
   // --- Did everyone in the file arrive? ------------------------------------
   if (skipped.length > 0) {
-    const rowsRead = input.rowsRead ?? total + skipped.length;
+    const rowsRead = (input.rowsRead ?? total + allSkipped.length) - leftOutOnPurpose;
     checks.push({
       id: "rows-dropped",
       severity: "serious",

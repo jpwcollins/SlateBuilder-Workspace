@@ -97,7 +97,7 @@ describe("parseCsv", () => {
     ].join("\n");
     const { cases } = parseCsv(csv);
     expect(cases).toHaveLength(1);
-    expect(cases[0].displayLabel).toBe("Patient Kaur, Harpreet");
+    expect(cases[0].displayLabel).toBe("Kaur, Harpreet");
     expect(cases[0].patientRef).toBe("9043334445");
     expect(cases[0].timeToTargetDays).toBe(-49);
     expect(cases[0].estimatedDurationMin).toBe(180); // hysterectomy, not the 90m default
@@ -108,7 +108,7 @@ describe("parseCsv", () => {
     const csv = ["source_key,benchmark,time_to_target_days", "Jane Doe,2w,5"].join("\n");
     const { cases } = parseCsv(csv);
     expect(cases[0].sourceKey).toBe("Jane Doe");
-    expect(cases[0].displayLabel).toBe("Patient Jane Doe");
+    expect(cases[0].displayLabel).toBe("Jane Doe");
   });
 
   it("warns and skips a row whose benchmark value is not a real benchmark", () => {

@@ -1,3 +1,4 @@
+import { classifyProcedure, minutesForCategory } from "./procedureCategory";
 import { MAX_CASES_PER_SLATE, priorityScoreOf, TURNAROUND_MINUTES } from "./optimizer";
 import { getBlockStartMinutes, normalizeDateOnly } from "./date";
 import {
@@ -38,16 +39,8 @@ export function applyDefaultDuration(
   item: PatientCase,
   defaultDurations: DefaultDurations
 ): PatientCase {
-  const name = (item.procedureName ?? "").toLowerCase();
-  let duration = defaultDurations.other;
-  if (name.includes("hysterectomy")) {
-    duration = defaultDurations.hysterectomy;
-  } else if (name.includes("hysteroscop")) {
-    duration = defaultDurations.hysteroscopy;
-  } else if (name.includes("laparoscop")) {
-    duration = defaultDurations.laparoscopy;
-  }
-  return { ...item, estimatedDurationMin: duration };
+  const { category } = classifyProcedure(item.procedureName);
+  return { ...item, estimatedDurationMin: minutesForCategory(category, defaultDurations) };
 }
 
 export function applyFlagOverrides(

@@ -1,3 +1,4 @@
+import { classifyProcedure, isProcedureNotPerformed, minutesForCategory, STANDARD_DURATIONS } from "./procedureCategory";
 import {
   BenchmarkWeeks,
   ClinicalFlags,
@@ -42,10 +43,12 @@ const headerAliases: Record<string, string> = {
   surgeon_id: "surgeon_id",
   surgeon: "surgeon_id",
   surgeon_desc: "procedure_name",
-  // Raw hospital exports carry the procedure inside the DIAGNOSIS column
-  // (e.g. "Fibroids - Total Hysterectomy"); without this alias every raw CSV
-  // case silently fell back to the 90-minute "other" default duration.
-  diagnosis: "procedure_name",
+  // Older hospital exports carried the procedure inside the DIAGNOSIS column
+  // (e.g. "Fibroids - Total Hysterectomy"). Current ones put a BC diagnosis
+  // code there (e.g. "50RMMB") and the procedure in SURG_DESC. DIAGNOSIS is
+  // therefore read separately and used for the procedure only when there is
+  // no procedure column, so a code never overwrites the real procedure.
+  diagnosis: "diagnosis_desc",
   surg_desc: "procedure_name",
   proc_code: "procedure_code",
   proc_desc: "procedure_name",
@@ -63,10 +66,25 @@ const headerAliases: Record<string, string> = {
   chronicpain: "chronicPain",
   special_assist: "specialAssist",
   specialassist: "specialAssist",
+  request_queue: "request_queue",
 };
+
+/**
+ * Whether a REQUEST_QUEUE value is the procedural sedation (PS) waitlist,
+ * e.g. "SN - BCW Surgery Waitlist - PS". That is a separate list from the OR
+ * waitlist ("... - GA"), so its patients do not belong on these slates.
+ */
+export function isProceduralSedationQueue(queue: string | undefined): boolean {
+  if (!queue) return false;
+  return /(^|[\s-])PS\s*$/i.test(queue.trim()) || /procedural\s+sedation/i.test(queue);
+}
 
 /** Why a row in the uploaded file did not become a patient on screen. */
 export type SkipReason =
+  /** On the procedural sedation waitlist, not the OR waitlist: left out on purpose. */
+  | "procedural-sedation"
+  /** Marked "Procedure Not Performed": not a case to plan, left out on purpose. */
+  | "procedure-not-performed"
   | "no-wait-information"
   | "unrecognized-benchmark"
   | "missing-time-or-duration";
@@ -130,15 +148,23 @@ export function parseCsv(text: string): ParseResult {
     }
     rowsRead += 1;
 
-    const rawId = record["source_key"] || record["case_num"] || `row-${i}`;
+    const rawId = record["source_key"] || record["case_num"] || `Row ${i + 1}`;
     // displayLabel may contain PHI (a name/PHN); it is shown on screen but kept
     // out of React keys, the optimizer, and default exports. caseId (assigned
     // below) is the opaque, non-identifying handle used everywhere internally.
-    const displayLabel = `Patient ${rawId}`;
+    // It is the name as the file gives it (e.g. "SMITH, ALEX").
+    const displayLabel = rawId;
     // sourceKey is the raw value exactly as it appeared in the uploaded file
-    // (see the PatientCase.sourceKey docstring) -- not the "Patient <id>"
-    // display label, which is a separate presentational string.
+    // (see the PatientCase.sourceKey docstring).
     const sourceKey = rawId;
+    if (isProceduralSedationQueue(record["request_queue"])) {
+      skipped.push({ row: i + 1, reason: "procedural-sedation", sourceKey });
+      continue;
+    }
+    if (isProcedureNotPerformed(record["procedure_name"] || record["diagnosis_desc"])) {
+      skipped.push({ row: i + 1, reason: "procedure-not-performed", sourceKey });
+      continue;
+    }
     const benchmarkRaw =
       record["benchmark"] || record["target_time_weeks"] || record["target_time"];
     if (!benchmarkRaw && !record["time_to_target_days"] && !record["time_waiting_days"] && !record["time_waiting_weeks"]) {
@@ -188,7 +214,7 @@ export function parseCsv(text: string): ParseResult {
       ? Math.round(timeToTargetDays)
       : timeToTargetDays;
 
-    const procedureName = record["procedure_name"] || "";
+    const procedureName = record["procedure_name"] || record["diagnosis_desc"] || "";
     let estimatedDurationMin = toNumber(record["estimated_duration_min"]);
     if (!Number.isFinite(estimatedDurationMin)) {
       estimatedDurationMin = inferDurationFromProcedure(procedureName);
@@ -246,6 +272,10 @@ const MAX_ROW_WARNINGS = 8;
 
 function skipReasonText(skip: SkippedRow): string {
   switch (skip.reason) {
+    case "procedural-sedation":
+      return "procedural sedation (PS) case, left out: not on the OR waitlist.";
+    case "procedure-not-performed":
+      return "marked Procedure Not Performed, left out.";
     case "no-wait-information":
       return "no target time or waiting time.";
     case "unrecognized-benchmark":
@@ -356,15 +386,5 @@ function parseBoolean(value: string | undefined): boolean {
 }
 
 function inferDurationFromProcedure(name: string): number {
-  const normalized = name.toLowerCase();
-  if (normalized.includes("hysterectomy")) {
-    return 180;
-  }
-  if (normalized.includes("hysteroscop")) {
-    return 30;
-  }
-  if (normalized.includes("laparoscop")) {
-    return 60;
-  }
-  return Number.NaN;
+  return minutesForCategory(classifyProcedure(name).category, STANDARD_DURATIONS);
 }

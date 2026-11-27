@@ -47,14 +47,14 @@ try {
     await take.sleep(700);
     const last = slate(page, 1).locator('[draggable="true"]').filter({ hasText: "Duration (min)" }).last();
     await take.scrollTo(last);
-    await take.pointAt(last.getByText(/^Patient (?!unavailable)/));
+    await take.pointAt(last.locator("p.font-semibold.text-slateBlue-900").first());
   });
 
   await take.beat("S05e", async () => {
     await take.scrollTo(slate(page, 1), { block: "start" });
     const cards = slate(page, 1).locator('[draggable="true"]').filter({ hasText: "Duration (min)" });
     const n = await cards.count();
-    await take.drag(cards.nth(n - 1).getByText(/^Patient (?!unavailable)/), cards.nth(n - 2), {
+    await take.drag(cards.nth(n - 1).locator("p.font-semibold.text-slateBlue-900").first(), cards.nth(n - 2), {
       label: "reorder Slate 1",
       offsetY: -40,
     });

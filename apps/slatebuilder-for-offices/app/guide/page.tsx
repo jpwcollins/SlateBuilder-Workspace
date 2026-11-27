@@ -86,17 +86,21 @@ export default function Guide() {
         </p>
         <ul className="list-disc pl-5">
           <li>
-            <span className="font-semibold">PAT_NAME1</span> or{" "}
-            <span className="font-semibold">PHN</span> — the patient identifier
-            (shown on screen; see privacy below)
+            <span className="font-semibold">PAT_NAME1</span> (as SURNAME,
+            FIRSTNAME) or <span className="font-semibold">PHN</span> — the
+            patient identifier (shown on screen; see privacy below)
           </li>
           <li>
             <span className="font-semibold">SURGEON</span> — used as the surgeon
             shown on printed slates (one surgeon per file)
           </li>
           <li>
-            <span className="font-semibold">DIAGNOSIS</span> — the procedure
-            (drives the default case duration)
+            <span className="font-semibold">SURG_DESC</span> — the primary
+            procedure (drives the default case duration). Older files without it
+            carry the procedure in{" "}
+            <span className="font-semibold">DIAGNOSIS</span>, which is used
+            instead; in current files DIAGNOSIS is a diagnosis code and is not
+            needed.
           </li>
           <li>
             <span className="font-semibold">TARGET_TIME</span> and{" "}
@@ -104,6 +108,15 @@ export default function Guide() {
             <span className="font-semibold">weeks</span>
           </li>
         </ul>
+        <p>
+          Rows whose <span className="font-semibold">REQUEST_QUEUE</span> ends
+          in <span className="font-semibold">PS</span> are on the procedural
+          sedation waitlist, which is separate from the OR waitlist. They are
+          left out, and a note after loading says how many and which rows, as
+          are rows whose procedure is &quot;Procedure Not Performed&quot;. Other
+          columns in the hospital&apos;s file (BOOK_FORM_RECEIVED_DTM,
+          TARGET_PERCENT) are ignored.
+        </p>
         <p className="rounded-xl border border-sand-200 bg-white/70 px-4 py-3 text-xs text-sand-700">
           <span className="font-semibold text-sand-900">Privacy:</span> each
           patient is given an opaque code (e.g. C-001). Names stay on your
@@ -176,9 +189,18 @@ export default function Guide() {
             purely by time-to-target.
           </li>
           <li>
-            <span className="font-semibold">Default case lengths</span> — four
-            buckets (hysteroscopy 30, laparoscopy 60, hysterectomy 180, other 90
-            min), shown on one line under the dates;{" "}
+            <span className="font-semibold">Default case lengths</span> — six
+            buckets: hysteroscopy 30, laparoscopy 60, hysterectomy 180, and
+            other procedures split into minor 30 (e.g. D&amp;C, IUD, lesion
+            excision), intermediate 60 (e.g. a single repair, sling,
+            labiaplasty) and major 90 (e.g. anterior and posterior repair,
+            colpocleisis). Each procedure on the hospital&apos;s list is
+            assigned to one; a procedure with no approach in its name (e.g.
+            &quot;Salpingectomy&quot;) is taken as laparoscopic, and one the app
+            doesn&apos;t recognise gets the major length. Where a length rests
+            on an assumption like that, the case card says so and the note
+            after loading lists those procedures, so you can check them. The
+            lengths are shown on one line under the dates;{" "}
             <span className="font-semibold">Edit</span> opens them. These are
             starting estimates; you can override any case&apos;s duration on its
             slate card, and most offices will want to.{" "}

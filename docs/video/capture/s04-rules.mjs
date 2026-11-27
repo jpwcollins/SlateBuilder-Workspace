@@ -23,7 +23,7 @@ await runTake("s04-rules", async (take) => {
       label: "Default case lengths",
     });
     await take.sleep(300);
-    for (const label of ["Hysteroscopy", "Laparoscopy", "Hysterectomy", "Other"]) {
+    for (const label of ["Hysteroscopy", "Laparoscopy", "Hysterectomy", "Other – minor", "Other – intermediate", "Other – major"]) {
       await take.pointAt(page.getByLabel(label, { exact: true }), { ms: 420 });
       await take.sleep(300);
     }

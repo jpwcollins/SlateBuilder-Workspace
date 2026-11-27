@@ -11,6 +11,11 @@ export type DefaultDurations = {
   hysteroscopy: number;
   laparoscopy: number;
   hysterectomy: number;
+  /** Other – minor (e.g. D&C, IUD, lesion excision). Optional for older saved settings. */
+  otherMinor?: number;
+  /** Other – intermediate (e.g. single repair, sling, labiaplasty). */
+  otherIntermediate?: number;
+  /** Other – major (e.g. A&P repair, colpocleisis), and anything unrecognised. */
   other: number;
 };
 

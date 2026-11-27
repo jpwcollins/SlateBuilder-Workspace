@@ -60,6 +60,8 @@ import {
   sessionKeyCanRead,
   SessionKey,
   DefaultDurations,
+  STANDARD_DURATIONS,
+  classifyProcedure,
   fingerprintWaitlist,
   isAnnotationsFile,
   isEncryptedEnvelope,
@@ -80,6 +82,8 @@ import {
   clinicalFlagDefinitions,
   serializeCsv,
   csvEscape,
+  normalizeOfficeWorkbookToCsv,
+  SpreadsheetRow,
   sortForSlate,
   sortForWaitlist,
   toLocalDateOnly,
@@ -101,10 +105,6 @@ import {
   OrderReason,
 } from "@slatebuilder/core";
 
-type SpreadsheetRow = Record<
-  string,
-  string | number | boolean | null | undefined
->;
 
 // A drag is either a case picked up from the waitlist, or a case picked up
 // from a specific slate (used to support cross-container drag-and-drop).
@@ -159,50 +159,6 @@ function downloadTextFile(filename: string, contents: string, mime: string) {
 
 function downloadFile(filename: string, contents: string) {
   downloadTextFile(filename, contents, "text/csv");
-}
-
-function normalizeOfficeWorkbookToCsv(rows: SpreadsheetRow[]): string {
-  // Office exports always express TARGET_TIME and TIME_WAITING in weeks.
-  const headers = [
-    "source_key",
-    "patient_ref",
-    "benchmark",
-    "time_waiting_weeks",
-    "estimated_duration_min",
-    "unavailable_until",
-    "surgeon_id",
-    "procedure_name",
-    ...clinicalFlagDefinitions.map((flag) => flag.csvColumn),
-  ];
-
-  const lines = [headers.join(",")];
-
-  rows.forEach((row, index) => {
-    const patientName = String(row["PAT_NAME1"] ?? "").trim();
-    const phn = String(row["PHN"] ?? "").trim();
-    const surgeon = String(row["SURGEON"] ?? "").trim();
-    const diagnosis = String(row["DIAGNOSIS"] ?? "").trim();
-    const targetTime = String(row["TARGET_TIME"] ?? "").trim();
-    const timeWaiting = String(row["TIME_WAITING"] ?? "").trim();
-
-    const sourceKey = patientName || phn || `Office row ${index + 2}`;
-    // patient_ref (PHN) is the stable key for cloud-sync tokens; it stays in the
-    // browser and is never written to slate/mapping/priority exports.
-    const values = [
-      sourceKey,
-      phn,
-      targetTime,
-      timeWaiting,
-      "",
-      "",
-      surgeon,
-      diagnosis,
-      ...clinicalFlagDefinitions.map(() => ""),
-    ];
-    lines.push(values.map((value) => csvEscape(value)).join(","));
-  });
-
-  return lines.join("\n");
 }
 
 // Aggregate sanity checks on a freshly uploaded waitlist.
@@ -402,13 +358,6 @@ function StatCard({
   );
 }
 
-/** The built-in starting estimates, before any office changes them. */
-const STANDARD_DURATIONS: DefaultDurations = {
-  hysteroscopy: 30,
-  laparoscopy: 60,
-  hysterectomy: 180,
-  other: 90,
-};
 
 /**
  * A fold the person opened or closed, remembered in this browser. Null until
@@ -658,6 +607,26 @@ function FarUnavailablePanel({
         Got it
       </button>
     </section>
+  );
+}
+
+// Shown under a case's duration when its default length rests on an
+// assumption about the procedure (see classifyProcedure). Hidden once someone
+// has set the case's length themselves.
+function AssumedLengthNote({
+  procedureName,
+  overridden,
+}: {
+  procedureName: string | undefined;
+  overridden: boolean;
+}) {
+  const { assumption } = classifyProcedure(procedureName);
+  if (!assumption || overridden) return null;
+  return (
+    <p className="mt-1 text-[11px] text-amber-800">
+      <span aria-hidden="true">ⓘ </span>
+      {assumption} Check the length.
+    </p>
   );
 }
 
@@ -1079,10 +1048,7 @@ export default function Home() {
     if (!stored) return;
     try {
       const parsed = JSON.parse(stored) as Partial<typeof defaultDurations>;
-      setDefaultDurations((prev) => ({
-        ...prev,
-        ...parsed,
-      }));
+      setDefaultDurations({ ...STANDARD_DURATIONS, ...parsed });
     } catch {
       // ignore malformed storage
     }
@@ -1935,7 +1901,11 @@ export default function Home() {
       }
 
       if (decoded.settings) {
-        setDefaultDurations(decoded.settings.defaultDurations);
+        // Older notes files carry four lengths; the rest take the standard.
+        setDefaultDurations({
+          ...STANDARD_DURATIONS,
+          ...decoded.settings.defaultDurations,
+        });
         setPriorityMode(decoded.settings.priorityMode);
         setSlateCount(decoded.settings.slateCount || 2);
       }
@@ -2791,17 +2761,11 @@ export default function Home() {
     setDurationOverrides({});
     setOrderedSlates((prev) =>
       prev.map((slate) =>
-        slate.map((item) => {
-          const name = (item.procedureName ?? "").toLowerCase();
-          let duration = defaultDurations.other;
-          if (name.includes("hysterectomy"))
-            duration = defaultDurations.hysterectomy;
-          else if (name.includes("hysteroscop"))
-            duration = defaultDurations.hysteroscopy;
-          else if (name.includes("laparoscop"))
-            duration = defaultDurations.laparoscopy;
-          return { ...item, estimatedDurationMin: duration };
-        }),
+        slate.map((item) => ({
+          ...item,
+          estimatedDurationMin: applyDefaultDuration(item, defaultDurations)
+            .estimatedDurationMin,
+        })),
       ),
     );
   };
@@ -3458,6 +3422,10 @@ export default function Home() {
                       className="w-20 rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
                     />
                   </label>
+                  <AssumedLengthNote
+                    procedureName={item.procedureName}
+                    overridden={durationOverrides[item.caseId] !== undefined}
+                  />
                   <label className="flex items-center gap-2">
                     Patient unavailable until
                     <DraftDateInput
@@ -3592,7 +3560,9 @@ export default function Home() {
   const breakdownOpen = breakdownToggle ?? false;
   const durationsCustomised = (
     Object.keys(STANDARD_DURATIONS) as (keyof DefaultDurations)[]
-  ).some((key) => defaultDurations[key] !== STANDARD_DURATIONS[key]);
+  ).some(
+    (key) => (defaultDurations[key] ?? STANDARD_DURATIONS[key]) !== STANDARD_DURATIONS[key],
+  );
   const [durationsToggle, setDurationsOpen] = useRememberedToggle(
     "slatebuilder-office-setup-durations",
   );
@@ -4406,8 +4376,12 @@ export default function Home() {
                   </span>{" "}
                   Hysteroscopy {defaultDurations.hysteroscopy} · Laparoscopy{" "}
                   {defaultDurations.laparoscopy} · Hysterectomy{" "}
-                  {defaultDurations.hysterectomy} · Other{" "}
-                  {defaultDurations.other} min
+                  {defaultDurations.hysterectomy} · Other: minor{" "}
+                  {defaultDurations.otherMinor ?? STANDARD_DURATIONS.otherMinor},
+                  intermediate{" "}
+                  {defaultDurations.otherIntermediate ??
+                    STANDARD_DURATIONS.otherIntermediate}
+                  , major {defaultDurations.other} min
                   {durationsCustomised && (
                     <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
                       Changed from the standard
@@ -4421,8 +4395,12 @@ export default function Home() {
               {durationsOpen && (
                 <>
                   <p className="mt-2 text-xs text-sand-600">
-                    Starting estimates by procedure type. Any single case can be
-                    changed on its slate card.
+                    Starting estimates by procedure type. Other procedures are
+                    split into minor (e.g. D&amp;C, IUD, lesion excision),
+                    intermediate (e.g. a single repair, sling, labiaplasty) and
+                    major (e.g. anterior and posterior repair, colpocleisis);
+                    a procedure the app doesn&apos;t recognise gets the major
+                    length. Any single case can be changed on its slate card.
                   </p>
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
                     {(
@@ -4430,7 +4408,9 @@ export default function Home() {
                         ["hysteroscopy", "Hysteroscopy"],
                         ["laparoscopy", "Laparoscopy"],
                         ["hysterectomy", "Hysterectomy"],
-                        ["other", "Other"],
+                        ["otherMinor", "Other – minor"],
+                        ["otherIntermediate", "Other – intermediate"],
+                        ["other", "Other – major"],
                       ] as const
                     ).map(([key, label]) => (
                       <label
@@ -4442,7 +4422,7 @@ export default function Home() {
                           type="number"
                           min={10}
                           step={5}
-                          value={defaultDurations[key]}
+                          value={defaultDurations[key] ?? STANDARD_DURATIONS[key]}
                           onChange={(event) =>
                             setDefaultDurations((prev) => ({
                               ...prev,
@@ -4950,6 +4930,13 @@ export default function Home() {
                                         className="w-20 rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
                                       />
                                     </label>
+                                    <AssumedLengthNote
+                                      procedureName={item.procedureName}
+                                      overridden={
+                                        durationOverrides[item.caseId] !==
+                                        undefined
+                                      }
+                                    />
                                     {(orderReasons[item.caseId] ||
                                       (manualPlacements[item.caseId] ===
                                         slateDate &&
