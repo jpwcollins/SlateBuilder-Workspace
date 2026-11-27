@@ -186,12 +186,31 @@ Timings are targets. The final cut follows the voiceover.
 >
 > **VO S10b:** That's SlateBuilder, at slatebuilder.ca. The full user guide is one click away in the app.
 
+## Music, mix and export
+
+The edit is a Matte project (`~/Movies/SlateBuilder Demo v2.matte`) laid out from
+`edit/edl.json`, with the voiceover as one track (`edit/vo-track.wav`).
+
+- **Music.** "Clear Path", generated in ElevenLabs to the video's length (4:53.8). The source
+  file lives in `out/music/clear-path.mp3`, which isn't committed.
+- **Ducking.** `edit/mix_audio.sh <music.mp3>` makes `out/music/music-bed.wav`: the
+  music sits at −23 dB under the voice (about 15 dB below speech), comes up to −13 dB on the
+  opening and end cards, fades in over 1 s and out over the last 2.5 s. The music bed goes on
+  its own audio track in Matte, starting at 0:00.
+- **Loudness.** The same script mixes voice and music into `out/music/mix.wav`, mastered to
+  −16 LUFS integrated with peaks at or below −1.5 dBTP, a normal level for web video.
+- **Export.** A full-length Matte export times out through the agent connection, so export
+  1080p / 30 fps H.264 in one-minute ranges, join them with ffmpeg's concat demuxer, and
+  mux the result with `mix.wav` (pass the joined file and an output path as the script's
+  second and third arguments). The final encode is x264 CRF 18, about 75 MB.
+- **Watermark.** Matte isn't licensed on this Mac, so every render carries its watermark.
+
 ---
 
 ## Open points
 
 1. ~~Site address~~ — slatebuilder.ca.
-2. **Music:** a quiet bed under the voiceover, as in the Prehab video?
+2. ~~Music~~ — "Clear Path", made in ElevenLabs to the video's length; see *Music, mix and export*.
 3. **Drag-and-drop and the reason prompt** (S05e, S06b, S06c): exact wording and timing get
    confirmed on the first Playwright run, and the VO adjusted if the screen says something
    different.
