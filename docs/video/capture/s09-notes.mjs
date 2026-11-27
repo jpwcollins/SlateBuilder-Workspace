@@ -68,12 +68,16 @@ await runTake("s09-notes", async (take) => {
   await page.evaluate(() => window.scrollTo(0, 0));
   await take.record();
 
+  // The click lands as the line ends ("...create a notes file on this
+  // computer"), so the Save dialog cut in after it follows the words.
   await take.beat("S09a", async () => {
     await take.scrollTo(page.getByText("Restore your notes"), { block: "start" });
-    await take.click(page.getByRole("button", { name: "Create a new notes file" }), {
-      label: "Create a new notes file",
-    });
-  });
+    const create = page.getByRole("button", { name: "Create a new notes file" });
+    await take.pointAt(create);
+    const wait = take.lineSeconds("S09a") - take.sinceBeat() - 0.6;
+    if (wait > 0) await take.sleep(wait * 1000);
+    await take.click(create, { label: "Create a new notes file" });
+  }, { tail: 0 });
 
   // The macOS Save dialog is cut in here in the edit (recorded separately).
   await take.beat("S09b", async () => {

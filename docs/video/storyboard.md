@@ -53,7 +53,7 @@ Timings are targets. The final cut follows the voiceover.
 
 | Shot | On screen | Capture | Zoom / motion |
 |---|---|---|---|
-| S03a | Pointer clicks "Choose File" in step 1. Cut to the macOS Open dialog, select `week-1-waitlist.csv`. | CU (dialog, ~3 s), then PW (file loads) | Zoom on step 1 |
+| S03a | Pointer clicks "Choose File" in step 1. Cut to the macOS Open dialog (still: `s03a-open-dialog.png`) with `week-1-waitlist.csv` selected in "Office – confidential". | Still, then PW (file loads) | Zoom on step 1 |
 | S03b | The top bar fills: Cases 40 · Overdue 8. The Office Snapshot appears below: cases, overdue, urgent, workload. | PW | Pull back to show the snapshot |
 | S03c | The Waitlist overview histogram. | PW | Zoom on the histogram |
 
@@ -125,7 +125,7 @@ Timings are targets. The final cut follows the voiceover.
 |---|---|---|---|
 | S07a | Click the "Priority waitlist" tab. The ranked list with Slated and Waiting status. | PW | Slow scroll |
 | S07b | Toggle the priority rule to "Wait time only" and back. The order changes. | PW | Zoom on the toggle, then the top rows |
-| S07c | Remove Rachel Goldberg with the trash icon. Cut to the pre-filled email to the booking office. Back in the app, her row is greyed and struck through; click "Restore to waitlist". | PW-stub (email intercepted) + Still (the email draft) | Zoom on the row; push-in on the email |
+| S07c | Remove Rachel Goldberg with the trash icon. Cut to the pre-filled email to the booking office. Back in the app, her row is greyed and struck through; click "Restore to waitlist". | PW + Still (`s07c-removal-email.png`; blur the From line) | Zoom on the row; push-in on the email |
 | S07d | Click the "Long-waiters" tab: over-target patients grouped by urgency class, most overdue first. | PW | Slow push-in on the list |
 
 > **VO S07a:** The Priority waitlist ranks every patient, with who's already slated and who's still waiting.
@@ -152,14 +152,14 @@ Timings are targets. The final cut follows the voiceover.
 | Shot | On screen | Capture | Zoom / motion |
 |---|---|---|---|
 | S09a | Setup tab, step 2 "Restore your notes": click "Create a new notes file". | PW-stub | Zoom on step 2 |
-| S09b | The macOS Save dialog: choose a folder named "Office – confidential". Back in the app, step 2 reads "Linked to slatebuilder-notes-….sbnotes". | CU (~3 s), then PW-stub | — |
+| S09b | The macOS Save dialog (still: `s09b-save-dialog.png`), in a folder named "Office – confidential", with Chrome's line "Warning: this site can see edits you make" at the top. Back in the app, step 2 reads "Linked to slatebuilder-notes-….sbnotes". | Still, then PW-stub | — |
 | S09c | "Before you finish: save your notes". Type "MOA" in "Who is saving". Type `Summer2026!!` as the passphrase: the strength bar goes red ("Too easy to guess"). Replace it with `harbour-velvet-spoon-orbit`: the bar goes green. Confirm, then "Save notes file". The top bar reads "Notes saved". | PW-stub | Zoom on the passphrase field and strength bar, then the top bar |
 | S09d | Card: "One week later". | Card | — |
 | S09e | Click "Clear screen". Load `week-2-waitlist.csv`. In step 2, enter the passphrase and click "Load notes". The status message reports how many patients on this week's list now carry notes. | PW-stub | Zoom on the status message |
 
 > **VO S09a:** Your notes are worth keeping from week to week: unavailable dates, case lengths, flags, reasons. In step two, create a notes file on this computer.
 >
-> **VO S09b:** Pick a folder that doesn't sync to a personal cloud.
+> **VO S09b:** Pick a folder that doesn't sync to a personal cloud. Chrome will mention that SlateBuilder can edit this file — that's how it saves your notes for you.
 >
 > **VO S09c:** Lock it with a passphrase — four or five random words joined by hyphens works best. From then on, your notes save themselves.
 >

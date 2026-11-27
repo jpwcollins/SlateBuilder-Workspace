@@ -10,7 +10,10 @@ await runTake("s03-load", async (take) => {
   await page.getByText("Load this week's waitlist").waitFor();
   await take.record();
 
+  // "...choose the file the hospital sent" comes about 2.6 s into the line.
   await take.beat("S03a", async () => {
+    await take.pointAt(page.locator('input[type="file"]').first());
+    await take.sleep(1600);
     await take.chooseFile(page.locator('input[type="file"]').first(), "week-1-waitlist.csv", {
       label: "Choose File",
     });

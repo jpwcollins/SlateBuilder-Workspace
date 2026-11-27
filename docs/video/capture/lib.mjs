@@ -37,7 +37,27 @@ const SCALE = 1;
 const FPS = 30;
 const WORDS_PER_SECOND = 145 / 60;
 
-// ---- Voiceover lengths, read from the storyboard -------------------------
+// ---- Voiceover lengths --------------------------------------------------
+//
+// Each beat holds for as long as its line takes to say. Once the recorded
+// voiceover exists (out/vo/<shot>.mp3) its real length is used; until then,
+// an estimate from the storyboard's word count.
+
+function voiceoverSeconds() {
+  const seconds = {};
+  for (const [id, words] of Object.entries(voiceoverWords())) {
+    const file = path.join(VIDEO_DIR, "out", "vo", `${id}.mp3`);
+    if (fs.existsSync(file)) {
+      const out = execFileSync("ffprobe", [
+        "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file,
+      ]).toString();
+      seconds[id] = { seconds: Number(out), source: "recorded" };
+    } else {
+      seconds[id] = { seconds: words / WORDS_PER_SECOND, source: "estimate" };
+    }
+  }
+  return seconds;
+}
 
 function voiceoverWords() {
   const text = fs.readFileSync(path.join(VIDEO_DIR, "storyboard.md"), "utf8");
@@ -147,7 +167,7 @@ export async function openTake(name, { slow = 1 } = {}) {
   const page = await context.newPage();
   page.setDefaultTimeout(15_000 * slow);
 
-  const words = voiceoverWords();
+  const lines = voiceoverSeconds();
   const log = { take: name, slow, beats: [], events: [] };
   const frames = [];
   let cdp = null;
@@ -209,14 +229,25 @@ export async function openTake(name, { slow = 1 } = {}) {
      * (from the storyboard) has had time to be spoken, plus `tail` seconds.
      */
     async beat(id, actions = async () => {}, { tail = 0.6 } = {}) {
-      if (!(id in words)) throw new Error(`No voiceover line ${id} in storyboard.md`);
+      if (!(id in lines)) throw new Error(`No voiceover line ${id} in storyboard.md`);
       const start = now();
-      log.beats.push({ id, start: +start.toFixed(2), words: words[id] });
+      log.beats.push({ id, start: +start.toFixed(2), voiceover: +lines[id].seconds.toFixed(2), source: lines[id].source });
       console.log(`  ${id}  ${start.toFixed(1)}s`);
       await actions();
-      const spoken = words[id] / WORDS_PER_SECOND + tail;
+      const spoken = lines[id].seconds + tail;
       const left = spoken - (now() - start);
       if (left > 0) await sleep(left * 1000);
+    },
+
+    /** How long a voiceover line runs, in seconds of footage. */
+    lineSeconds(id) {
+      return lines[id].seconds;
+    },
+
+    /** Seconds of footage since the current beat started. */
+    sinceBeat() {
+      const last = log.beats[log.beats.length - 1];
+      return last ? now() - last.start : 0;
     },
 
     async pointAt(target, { ms } = {}) {
