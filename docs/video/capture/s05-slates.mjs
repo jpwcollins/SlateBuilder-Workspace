@@ -68,7 +68,12 @@ try {
     await take.click(page.getByRole("button", { name: "Optimize Utilization" }), {
       label: "Optimize Utilization",
     });
-    await take.pointAt(page.getByText("Optimize Utilization — Summary"));
+    // Slates 2 and 3 are already full, so nothing moves; the alert saying so
+    // becomes a caption in the edit.
+    await take.sleep(600);
+    await take.pointAt(slate(page, 2).getByText(/min free|^Full$/).first());
+    await take.sleep(1200);
+    await take.pointAt(slate(page, 3).getByText(/min free|^Full$/).first());
   }, { tail: 2 });
 
   await take.finish();

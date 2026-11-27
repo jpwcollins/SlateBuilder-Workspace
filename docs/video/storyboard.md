@@ -91,10 +91,10 @@ Timings are targets. The final cut follows the voiceover.
 | S05a | Click the "Suggested slates" tab. Slate 1: four over-target cases, each marked FIFO. | PW | Zoom on the Slate 1 header and first two cards |
 | S05b | The capacity bar and "Utilization" figure. | PW | Zoom on the bar |
 | S05c | On Priya Natarajan's card, change Duration (min) from 180 to 210. The schedule times and capacity bar update. | PW | Zoom on the card, then the bar |
-| S05d | On Grace Whitfield's card, set "Patient unavailable until" to a date after Slate 1. She leaves Slate 1 (the later slates are full, so she returns to the waitlist) and Beatriz Alvarez, next in line, takes the freed time. | PW | Zoom on the date field, then on Beatriz's new card |
+| S05d | On Grace Whitfield's card, set "Patient unavailable until" to a date after Slate 1. She leaves Slate 1 (the later slates are full, so she returns to the waitlist) and the next patient in line takes the freed time. | PW | Zoom on the date field, then on Beatriz's new card |
 | S05e | Drag the last case on Slate 1 up one place. | PW | Zoom on the slate |
 | S05f | Click "Lock slate" on Slate 1. | PW | Zoom on the button and the locked state |
-| S05g | Click "Optimize Utilization". The summary of who was added or removed per slate appears. | PW | Pull back to show the slates, then zoom on the summary |
+| S05g | Click "Optimize Utilization". Both unlocked slates are already full, so nothing is reshuffled; the message (shown as a caption) says so and names the overdue patient still waiting. | PW | Pull back to show the slates, then zoom on the summary |
 
 > **VO S05a:** The Suggested slates tab is where the work happens. Patients who are past their target go on first, most overdue first, so the longest waits are never bumped.
 >
@@ -108,7 +108,7 @@ Timings are targets. The final cut follows the voiceover.
 >
 > **VO S05f:** When a slate is final, lock it. Nothing is added to it or taken off.
 >
-> **VO S05g:** Optimize Utilization repacks the unlocked slates to use as much OR time as possible, and tells you exactly who moved.
+> **VO S05g:** Optimize Utilization fills any free time on the unlocked slates from the waitlist, highest priority first. Slates that are already full are left as they are, and it tells you who is still waiting.
 
 ## 6 · Booking order and accountability · 2:15–2:52
 
@@ -191,8 +191,16 @@ Timings are targets. The final cut follows the voiceover.
 The edit is a Matte project (`~/Movies/SlateBuilder Demo v2.matte`) laid out from
 `edit/edl.json`, with the voiceover as one track (`edit/vo-track.wav`).
 
-- **Music.** "Clear Path", generated in ElevenLabs to the video's length (4:53.8). The source
-  file lives in `out/music/clear-path.mp3`, which isn't committed.
+- **After a re-record.** Run `capture/record-all.mjs`, then `edit/build_edl.py`, then
+  `edit/rebuild_matte.py <project.matte> <old edl.json>` with the project closed in Matte.
+  It keeps the clip, text and canvas styling and redoes the timing: each zoom moves with
+  its voiceover line, and close zooms are re-aimed where the pointer rests in the new take
+  (the takes log those positions). Captions for browser alerts are set in the script.
+  Then check the edit with Matte's review and contact sheets before exporting.
+
+- **Music.** "Clear Path", generated in ElevenLabs for the earlier 4:53.8 cut. The source
+  file lives in `out/music/clear-path.mp3`, which isn't committed. When the video runs longer
+  than the music, the script slows it very slightly to fit (1.1% for the 4:57.4 cut).
 - **Ducking.** `edit/mix_audio.sh <music.mp3>` makes `out/music/music-bed.wav`: the
   music sits at −23 dB under the voice (about 15 dB below speech), comes up to −13 dB on the
   opening and end cards, fades in over 1 s and out over the last 2.5 s. The music bed goes on
@@ -219,6 +227,6 @@ The edit is a Matte project (`~/Movies/SlateBuilder Demo v2.matte`) laid out fro
    shows it as an on-screen caption, using the exact text from the take's log:
    - S05d: "…was taken off the slate… No later slate had room, so they're back on the
      waitlist as not-yet-slated."
-   - S05g: the Optimize Utilization confirmation (probably not worth showing).
+   - S05g: "Both unlocked slates are already full, so nothing is reshuffled."
 5. **The removal email** (S07c) opens your mail app. The still comes from clicking it once in
    your real Chrome with the dummy patient; nothing is sent.

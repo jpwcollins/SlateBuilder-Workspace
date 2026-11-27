@@ -9,9 +9,10 @@
 #   edit/mix_audio.sh <music.mp3>                  # makes out/music/music-bed.wav and mix.wav
 #   edit/mix_audio.sh <music.mp3> <picture.mp4> <final.mp4>
 #
-# Run from docs/video. The times below come from edit/edl.json: the voice starts
-# at S01a (5.8 s) and ends with S10b (285.51 s + 6.48 s = 292.0 s). If the edit
-# changes, update them along with TOTAL.
+# Run from docs/video. The timings come from edit/edl.json: the music ducks as the
+# first voiceover line starts and comes back up when the last one ends. If the
+# music is shorter than the video it is slowed very slightly to fit (a few
+# percent at most is inaudible).
 
 set -euo pipefail
 
@@ -19,14 +20,27 @@ MUSIC=${1:?music file}
 PICTURE=${2:-}
 FINAL=${3:-}
 
-TOTAL=293.78        # video length (edl.json "total")
+read -r TOTAL VOICE_IN_END VOICE_OUT < <(python3 - <<'PY'
+import json, subprocess
+e = json.load(open("edit/edl.json"))
+def length(shot):
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                        "-of", "csv=p=0", f"out/vo/{shot}.mp3"], capture_output=True, text=True, check=True)
+    return float(r.stdout)
+vo = e["vo"]
+first = min(vo, key=vo.get); last = max(vo, key=vo.get)
+print(e["total"], vo[first], round(vo[last] + length(last), 3))
+PY
+)
 UNDER=-23           # music gain under the voice, dB (about 15 dB below speech)
 OPEN=-13            # music gain on the title and end cards, dB
-VOICE_IN=5.0        # start ducking here...
-VOICE_IN_END=5.8    # ...fully ducked by the first line
-VOICE_OUT=292.0     # last line ends; bring the music back up...
-VOICE_OUT_END=292.8
+VOICE_IN=$(python3 -c "print(round($VOICE_IN_END - 0.8, 3))")   # start ducking here
+VOICE_OUT_END=$(python3 -c "print(round($VOICE_OUT + 0.8, 3))")
 FADE_OUT=2.48       # final fade, ending at TOTAL
+
+MUSIC_LEN=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$MUSIC")
+TEMPO=$(python3 -c "print(min(1.0, round($MUSIC_LEN / $TOTAL, 5)))")
+echo "video ${TOTAL}s, music ${MUSIC_LEN}s, tempo $TEMPO, voice ${VOICE_IN_END}-${VOICE_OUT}s"
 
 mkdir -p out/music
 FADE_START=$(python3 -c "print(round($TOTAL - $FADE_OUT, 3))")
@@ -37,7 +51,7 @@ if(lt(t,$VOICE_OUT),$UNDER,\
 if(lt(t,$VOICE_OUT_END),$UNDER+($OPEN-($UNDER))*(t-$VOICE_OUT)/($VOICE_OUT_END-$VOICE_OUT),$OPEN))))"
 
 ffmpeg -y -hide_banner -loglevel error -i "$MUSIC" \
-  -af "volume='pow(10,($gain)/20)':eval=frame,afade=t=in:d=1.0,afade=t=out:st=$FADE_START:d=$FADE_OUT,atrim=0:$TOTAL" \
+  -af "atempo=$TEMPO,volume='pow(10,($gain)/20)':eval=frame,afade=t=in:d=1.0,afade=t=out:st=$FADE_START:d=$FADE_OUT,atrim=0:$TOTAL" \
   out/music/music-bed.wav
 
 ffmpeg -y -hide_banner -loglevel error -i edit/vo-track.wav -i out/music/music-bed.wav \

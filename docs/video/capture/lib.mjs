@@ -255,6 +255,8 @@ export async function openTake(name, { slow = 1 } = {}) {
       const x = box.x + box.width / 2;
       const y = box.y + box.height / 2;
       await this._glide(x, y, ms);
+      // Where the pointer settled, for aiming zooms in the edit.
+      if (recording) log.events.push({ type: "point", t: +now().toFixed(2), x: Math.round(x), y: Math.round(y) });
       return { x, y };
     },
 
