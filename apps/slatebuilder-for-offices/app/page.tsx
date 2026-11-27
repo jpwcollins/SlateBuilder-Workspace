@@ -41,6 +41,8 @@ import {
   buildCaseSchedule,
   caseFitsInSlate,
   planDropWithCascade,
+  planOptimizeUtilization,
+  occupiedMinutes,
   checkImportedWaitlist,
   ImportCheck,
   summarizeImport,
@@ -111,11 +113,9 @@ type OptimizeReport = {
     added: string[];
     removed: string[];
   }[];
-  // Over-target cases that could not be fit into any unlocked slate during
-  // this pass (e.g. every slate is already full). Optimize Utilization never
-  // bumps an over-target case in favor of a not-yet-overdue one, but a case
-  // this large/constrained genuinely not fitting anywhere is still possible
-  // and must be surfaced, not left for staff to notice later on their own.
+  // Over-target patients still on the waitlist after optimizing: there was no
+  // room for them on an unlocked slate that didn't mean swapping out someone
+  // ranked above them. Surfaced here rather than left for staff to notice.
   unplacedOverdue: string[];
 };
 
@@ -217,7 +217,7 @@ function ImportCheckPanel({
   return (
     <section
       aria-labelledby="import-check-heading"
-      className={`rounded-2xl border-2 px-5 py-4 ${
+      className={`rounded-xl border-2 px-5 py-4 ${
         serious ? "border-rose-300 bg-rose-50" : "border-amber-300 bg-amber-50"
       }`}
     >
@@ -249,7 +249,7 @@ function ImportCheckPanel({
         <button
           type="button"
           onClick={onAcknowledge}
-          className={`rounded-full px-4 py-1.5 text-xs font-semibold text-white ${
+          className={`rounded-lg px-4 py-1.5 text-xs font-semibold text-white ${
             serious
               ? "bg-rose-700 hover:bg-rose-800"
               : "bg-amber-700 hover:bg-amber-800"
@@ -311,7 +311,7 @@ function NotesSaveState({
         <button
           type="button"
           onClick={onSave}
-          className="rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-100"
+          className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-100"
         >
           {label}
         </button>
@@ -384,8 +384,8 @@ function StatCard({
   detail: string;
 }) {
   return (
-    <div className="rounded-2xl border border-sand-200 bg-white/80 p-4">
-      <p className="text-xs uppercase tracking-[0.2em] text-sand-600">
+    <div className="rounded-xl border border-sand-200 bg-white/80 p-4">
+      <p className="text-xs font-semibold tracking-wide text-sand-600">
         {label}
       </p>
       <p className="mt-2 text-2xl font-semibold text-slateBlue-900">{value}</p>
@@ -475,6 +475,50 @@ function TrashIcon() {
 }
 
 // Capacity meter: green under target, amber as it fills, red when over the block.
+// Each slate's own colour, so its column and every patient card on it read as
+// one day at a glance while dragging between days.
+const SLATE_ACCENTS = [
+  {
+    frame: "border-sand-200 border-t-slateBlue-500",
+    header: "bg-slateBlue-50/70",
+    label: "text-slateBlue-700",
+    card: "border-l-slateBlue-400",
+    drop: "border-slateBlue-400 bg-slateBlue-50/60",
+  },
+  {
+    frame: "border-sand-200 border-t-teal-500",
+    header: "bg-teal-50/70",
+    label: "text-teal-700",
+    card: "border-l-teal-400",
+    drop: "border-teal-400 bg-teal-50/60",
+  },
+  {
+    frame: "border-sand-200 border-t-fuchsia-500",
+    header: "bg-fuchsia-50/70",
+    label: "text-fuchsia-700",
+    card: "border-l-fuchsia-400",
+    drop: "border-fuchsia-400 bg-fuchsia-50/60",
+  },
+];
+
+// Three stacked bars: the day's slates.
+function SlateMark() {
+  return (
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 22 22"
+      aria-hidden="true"
+      className="shrink-0"
+    >
+      <rect width="22" height="22" rx="6" className="fill-slateBlue-700" />
+      <rect x="5" y="5.5" width="12" height="2.5" rx="1.25" fill="white" />
+      <rect x="5" y="9.75" width="9" height="2.5" rx="1.25" fill="white" opacity="0.85" />
+      <rect x="5" y="14" width="10.5" height="2.5" rx="1.25" fill="white" opacity="0.7" />
+    </svg>
+  );
+}
+
 function CapacityBar({
   totalMinutes,
   blockMinutes,
@@ -485,11 +529,13 @@ function CapacityBar({
   const pct = blockMinutes > 0 ? (totalMinutes / blockMinutes) * 100 : 0;
   const over = totalMinutes > blockMinutes;
   const remaining = blockMinutes - totalMinutes;
+  // In an OR a full block is the goal: green when well used, amber when
+  // noticeably underused, red only when the cases run past the block.
   const barColor = over
     ? "bg-rose-500"
     : pct >= 85
-      ? "bg-amber-500"
-      : "bg-emerald-500";
+      ? "bg-emerald-500"
+      : "bg-amber-500";
   return (
     <div>
       <div className="flex items-center justify-between text-xs text-sand-700">
@@ -2592,193 +2638,95 @@ export default function Home() {
     setDefaultsSavedAt(new Date().toLocaleTimeString());
   };
 
-  // Rearranges every unlocked slate to pack in as much OR time as possible.
-  // Over-target ("anchored") cases are placed first, most urgent first, into
-  // whichever unlocked slate fits them tightest -- mirroring the anchored-
-  // hybrid guarantee the rest of the app makes (Long-waiters: "guaranteed
-  // onto slates before any not-yet-overdue case"). Only once every anchored
-  // case that can fit somewhere has been placed does the remaining room get
-  // filled with not-yet-overdue cases via first-fit-decreasing bin packing.
-  // This still reorders which slate an anchored case lands on and can bump
-  // not-yet-overdue cases entirely, but it will never bump an overdue case
-  // in favor of one that isn't. Locked slates are left untouched and
-  // excluded from the pool of movable cases. Confirms first, then reports
-  // what changed (including any overdue case that still couldn't be fit
-  // anywhere, which is called out separately rather than left for staff to
-  // notice on their own).
+  // Fits more OR time into the unlocked slates, starting from the slates as
+  // they are. Free room is filled from the waitlist in priority order, and a
+  // waiting patient replaces slated ones only when that adds OR time and
+  // everyone going out ranks below them. A full slate is left alone. Locked
+  // slates, hand-placed cases, and overdue patients (in favour of anyone not
+  // yet overdue) are never moved. See planOptimizeUtilization. Confirms
+  // first, then reports what changed, including any overdue patient still
+  // waiting for a place.
   const runOptimizeUtilization = () => {
     if (slateSlots.length === 0) return;
-    const confirmed = window.confirm(
-      "Optimize Utilization will rearrange patients across unlocked slates to pack in as much OR " +
-        "time as possible. Overdue patients are placed first and are never bumped in favor of a " +
-        "not-yet-overdue one, though which slate they land on may change. Locked slates are left " +
-        "untouched. Continue?",
-    );
-    if (!confirmed) return;
-
-    const unlockedIndices = slateSlots
-      .map((_, i) => i)
-      .filter((i) => !lockedSlates[slateSlots[i].dateISO]);
-    if (unlockedIndices.length === 0) {
+    if (slateSlots.every((slot) => lockedSlates[slot.dateISO])) {
       window.alert("All slates are locked; there is nothing to optimize.");
       return;
     }
+    const confirmed = window.confirm(
+      "Optimize Utilization fills free time on unlocked slates from the waitlist, in priority " +
+        "order. It swaps a patient off a slate only when that adds OR time and the patient " +
+        "coming in ranks higher. Full slates, locked slates and patients you placed by hand " +
+        "are left as they are. Continue?",
+    );
+    if (!confirmed) return;
 
-    const lockedCaseIds = new Set<string>();
+    const pinned: Record<string, boolean> = {};
+    const onSlate = new Set<string>();
     slateSlots.forEach((slot, i) => {
-      if (lockedSlates[slot.dateISO]) {
-        (orderedSlates[i] ?? []).forEach((c) => lockedCaseIds.add(c.caseId));
-      }
+      (orderedSlates[i] ?? []).forEach((c) => {
+        onSlate.add(c.caseId);
+        if (manualPlacements[c.caseId] === slot.dateISO) pinned[c.caseId] = true;
+      });
+    });
+    const waiting = scoreCases(
+      slateEligibleCases.filter((c) => !onSlate.has(c.caseId)),
+    );
+    const result = planOptimizeUtilization({
+      slates: slateSlots.map((slot, i) => ({
+        dateISO: slot.dateISO,
+        blockMinutes: slot.blockMinutes,
+        locked: Boolean(lockedSlates[slot.dateISO]),
+        cases: orderedSlates[i] ?? [],
+      })),
+      waiting,
+      pinned,
+      priorityMode,
     });
 
-    const poolIds = new Set<string>();
-    unlockedIndices.forEach((i) =>
-      (orderedSlates[i] ?? []).forEach((c) => poolIds.add(c.caseId)),
-    );
-    slateEligibleCases.forEach((c) => {
-      if (!lockedCaseIds.has(c.caseId)) poolIds.add(c.caseId);
-    });
-    const pool = scoreCases(
-      officeCasesWithOverrides.filter(
-        (c) => poolIds.has(c.caseId) && !lockedCaseIds.has(c.caseId),
-      ),
-    );
+    const placed = new Set(result.slates.flat().map((c) => c.caseId));
+    const unplacedOverdue = waiting
+      .filter((c) => c.timeToTargetDays < 0 && !placed.has(c.caseId))
+      .map((c) => c.displayLabel);
 
-    const beforeBySlate = new Map<
-      number,
-      { pct: number; caseIds: Set<string> }
-    >();
-    unlockedIndices.forEach((i) => {
-      const blockMinutes = slateSlots[i].blockMinutes;
-      const current = orderedSlates[i] ?? [];
-      const surgical = current.reduce(
-        (sum, c) => sum + c.estimatedDurationMin,
-        0,
+    if (!result.changed) {
+      window.alert(
+        unplacedOverdue.length > 0
+          ? `All unlocked slates are already as full as they can be. ${unplacedOverdue.length} overdue ${unplacedOverdue.length === 1 ? "patient is" : "patients are"} still waiting: ${unplacedOverdue.join(", ")}.`
+          : "All unlocked slates are already as full as they can be. Nothing was changed.",
       );
-      const occupied =
-        surgical + TURNAROUND_MINUTES * Math.max(0, current.length - 1);
-      beforeBySlate.set(i, {
-        pct: blockMinutes > 0 ? (occupied / blockMinutes) * 100 : 0,
-        caseIds: new Set(current.map((c) => c.caseId)),
+      return;
+    }
+
+    const pctOf = (cases: ScoredCase[], blockMinutes: number) =>
+      blockMinutes > 0 ? (occupiedMinutes(cases) / blockMinutes) * 100 : 0;
+    const perSlate = slateSlots
+      .map((slot, i) => ({ slot, i }))
+      .filter(({ slot }) => !lockedSlates[slot.dateISO])
+      .map(({ slot, i }) => {
+        const before = orderedSlates[i] ?? [];
+        const after = result.slates[i];
+        const beforeIds = new Set(before.map((c) => c.caseId));
+        const afterIds = new Set(after.map((c) => c.caseId));
+        return {
+          slateIndex: i,
+          dateISO: slot.dateISO,
+          beforePct: pctOf(before, slot.blockMinutes),
+          afterPct: pctOf(after, slot.blockMinutes),
+          added: after
+            .filter((c) => !beforeIds.has(c.caseId))
+            .map((c) => c.displayLabel),
+          removed: before
+            .filter((c) => !afterIds.has(c.caseId))
+            .map((c) => c.displayLabel),
+        };
       });
-    });
 
-    type Bin = {
-      index: number;
-      dateISO: string;
-      date: Date;
-      blockMinutes: number;
-      cases: ScoredCase[];
-      surgicalMinutes: number;
-    };
-    const bins: Bin[] = unlockedIndices.map((i) => ({
-      index: i,
-      dateISO: slateSlots[i].dateISO,
-      date: new Date(`${slateSlots[i].dateISO}T00:00:00`),
-      blockMinutes: slateSlots[i].blockMinutes,
-      cases: [],
-      surgicalMinutes: 0,
-    }));
-
-    // Places one case into whichever eligible bin leaves the least room
-    // (tightest fit), maximizing total time packed. Returns whether it found
-    // a home.
-    const placeInTightestBin = (item: ScoredCase): boolean => {
-      let best: Bin | null = null;
-      let bestRemaining = Infinity;
-      for (const bin of bins) {
-        if (bin.dateISO && !isAvailableOnDate(item.unavailableUntil, bin.date))
-          continue;
-        if (
-          !caseFitsInSlate(
-            bin.surgicalMinutes,
-            bin.cases.length,
-            item.estimatedDurationMin,
-            bin.blockMinutes,
-          )
-        ) {
-          continue;
-        }
-        const occupied =
-          bin.surgicalMinutes +
-          item.estimatedDurationMin +
-          TURNAROUND_MINUTES * bin.cases.length;
-        const remaining = bin.blockMinutes - occupied;
-        if (remaining < bestRemaining) {
-          bestRemaining = remaining;
-          best = bin;
-        }
-      }
-      if (!best) return false;
-      best.cases.push(item);
-      best.surgicalMinutes += item.estimatedDurationMin;
-      return true;
-    };
-
-    // Phase 1 — anchor every over-target case first, most urgent (highest
-    // priority score) first, so a shorter/better-fitting not-yet-overdue
-    // case can never take a slot from a longer-waiting one.
-    const anchored = pool
-      .filter((c) => c.timeToTargetDays < 0)
-      .sort((a, b) => b.priorityScore - a.priorityScore);
-    const unplacedOverdue: string[] = [];
-    anchored.forEach((item) => {
-      if (!placeInTightestBin(item)) unplacedOverdue.push(item.displayLabel);
-    });
-
-    // Phase 2 — fill remaining room with not-yet-overdue cases via
-    // first-fit-decreasing (largest first), same packing heuristic as before.
-    const notYetOverdue = pool.filter((c) => c.timeToTargetDays >= 0);
-    const sortedRemainder = [...notYetOverdue].sort(
-      (a, b) => b.estimatedDurationMin - a.estimatedDurationMin,
-    );
-    sortedRemainder.forEach((item) => placeInTightestBin(item));
-
-    setOrderedSlates((prev) => {
-      const next = [...prev];
-      bins.forEach((bin) => {
-        next[bin.index] = sortSlateByPriority(bin.cases);
-      });
-      setOrderedSlateCaseIds(next.map((slate) => slate.map((c) => c.caseId)));
-      return next;
-    });
-
-    const perSlate = bins.map((bin) => {
-      const before = beforeBySlate.get(bin.index) ?? {
-        pct: 0,
-        caseIds: new Set<string>(),
-      };
-      const afterIds = new Set(bin.cases.map((c) => c.caseId));
-      const added = bin.cases
-        .filter((c) => !before.caseIds.has(c.caseId))
-        .map((c) => c.displayLabel);
-      const removed = (orderedSlates[bin.index] ?? [])
-        .filter((c) => before.caseIds.has(c.caseId) && !afterIds.has(c.caseId))
-        .map((c) => c.displayLabel);
-      const afterOccupied =
-        bin.surgicalMinutes +
-        TURNAROUND_MINUTES * Math.max(0, bin.cases.length - 1);
-      return {
-        slateIndex: bin.index,
-        dateISO: bin.dateISO,
-        beforePct: before.pct,
-        afterPct:
-          bin.blockMinutes > 0 ? (afterOccupied / bin.blockMinutes) * 100 : 0,
-        added,
-        removed,
-      };
-    });
+    const next = result.slates.map((cases) => sortSlateByPriority(cases));
+    setOrderedSlates(next);
+    setOrderedSlateCaseIds(next.map((slate) => slate.map((c) => c.caseId)));
     setOptimizeReport({ perSlate, unplacedOverdue });
     setMovedCaseIds({});
-    // Every unlocked slate was just repacked by the app, so nobody's drag
-    // explains where those patients are now. Locked slates were not touched.
-    setManualPlacements((prev) => {
-      const next: Record<string, string> = {};
-      Object.entries(prev).forEach(([caseId, dateISO]) => {
-        if (lockedSlates[dateISO]) next[caseId] = dateISO;
-      });
-      return next;
-    });
+    // Hand-placed cases were not moved, so their placements still stand.
   };
 
   const downloadSlateCsv = (slateIndex: number) => {
@@ -3289,7 +3237,7 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => restoreToWaitlist(item.caseId)}
-                  className="rounded-full border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
+                  className="rounded-lg border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
                 >
                   Restore to waitlist
                 </button>
@@ -3343,7 +3291,7 @@ export default function Home() {
                       <button
                         type="button"
                         onClick={() => clearUnavailableUntil(item.caseId)}
-                        className="rounded-full border border-sand-300 bg-white px-2 py-1 text-[11px] font-semibold text-sand-700"
+                        className="rounded-lg border border-sand-300 bg-white px-2 py-1 text-[11px] font-semibold text-sand-700"
                       >
                         Clear
                       </button>
@@ -3371,7 +3319,7 @@ export default function Home() {
                     <button
                       type="button"
                       onClick={() => restoreToSuggestedSlates(item.caseId)}
-                      className="rounded-full border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
+                      className="rounded-lg border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
                     >
                       Restore to suggested slates
                     </button>
@@ -3379,7 +3327,7 @@ export default function Home() {
                     <button
                       type="button"
                       onClick={() => removeFromSuggestedSlates(item.caseId)}
-                      className="rounded-full border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
+                      className="rounded-lg border border-slateBlue-200 px-3 py-1 font-semibold text-slateBlue-700"
                     >
                       Remove from suggested slates
                     </button>
@@ -3387,7 +3335,7 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={() => removeFromWaitlist(item.caseId)}
-                    className="flex items-center gap-1.5 rounded-full border border-rose-300 px-3 py-1 font-semibold text-rose-700"
+                    className="flex items-center gap-1.5 rounded-lg border border-rose-300 px-3 py-1 font-semibold text-rose-700"
                   >
                     <TrashIcon />
                     Remove from waitlist
@@ -3444,7 +3392,7 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => clearUnavailableUntil(item.caseId)}
-                  className="ml-auto rounded-full border border-sand-300 bg-white px-2 py-1 font-semibold text-sand-700"
+                  className="ml-auto rounded-lg border border-sand-300 bg-white px-2 py-1 font-semibold text-sand-700"
                 >
                   Clear
                 </button>
@@ -3508,7 +3456,7 @@ export default function Home() {
       type="button"
       disabled={notesBusy || (!notesFile && !notesHandle)}
       onClick={() => void handleLoadNotes()}
-      className="rounded-full bg-slateBlue-700 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+      className="rounded-lg bg-slateBlue-700 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
     >
       {notesBusy ? "Unlocking…" : "Unlock and load notes"}
     </button>
@@ -3533,12 +3481,19 @@ export default function Home() {
     </label>
   );
   return (
-    <main className="relative mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-6 py-12">
-      <div className="sticky top-0 z-30 -mx-6 mb-2 bg-sand-50/95 px-6 pt-3 backdrop-blur">
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-sand-700">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-sand-500">
-            SlateBuilder for Offices
-          </p>
+    <main className="relative mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-6 pb-12">
+      {/* The top bar runs the full width of the window; its contents line up
+          with the page column below. */}
+      <div className="sticky top-0 z-30 mx-[calc(50%-50vw)] border-b border-sand-200 bg-white/95 backdrop-blur">
+        <div className="mx-auto max-w-7xl px-6">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pt-3 text-xs text-sand-700">
+          <a href="/" className="flex items-center gap-2" aria-label="SlateBuilder for Offices">
+            <SlateMark />
+            <span className="text-base font-semibold tracking-tight text-slateBlue-900">
+              SlateBuilder
+            </span>
+            <span className="text-sm text-sand-500">for Offices</span>
+          </a>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5">
             <button
               type="button"
@@ -3630,7 +3585,7 @@ export default function Home() {
               type="button"
               onClick={handleFullReset}
               title="Clear the uploaded waitlist and all notes from this screen"
-              className="rounded-full border border-rose-300 px-3 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-50"
+              className="rounded-lg border border-rose-300 px-3 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-50"
             >
               Clear screen
             </button>
@@ -3638,7 +3593,7 @@ export default function Home() {
         </div>
         <div className="relative">
           <nav
-            className="mt-2 flex gap-1 overflow-x-auto border-b border-sand-300"
+            className="mt-2 flex gap-1 overflow-x-auto"
             aria-label="Sections"
           >
             {tabs.map((tab) => {
@@ -3649,10 +3604,10 @@ export default function Home() {
                   type="button"
                   onClick={() => setActiveTab(tab.id)}
                   aria-current={active ? "page" : undefined}
-                  className={`flex shrink-0 items-center gap-2 rounded-t-lg px-4 py-2.5 text-sm transition-colors ${
+                  className={`flex shrink-0 items-center gap-2 border-b-2 px-3 py-2.5 text-sm transition-colors ${
                     active
-                      ? "-mb-px border border-b-white border-sand-300 border-t-2 border-t-slateBlue-600 bg-white font-semibold text-slateBlue-900"
-                      : "border border-transparent font-medium text-sand-500 hover:bg-white/60 hover:text-slateBlue-700"
+                      ? "border-slateBlue-600 font-semibold text-slateBlue-900"
+                      : "border-transparent font-medium text-sand-500 hover:border-sand-300 hover:text-slateBlue-700"
                   }`}
                 >
                   {tab.label}
@@ -3675,8 +3630,9 @@ export default function Home() {
           </nav>
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-sand-50 to-transparent sm:hidden"
+            className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-white to-transparent sm:hidden"
           />
+        </div>
         </div>
       </div>
 
@@ -3700,7 +3656,7 @@ export default function Home() {
               your browser and is not uploaded anywhere.
             </p>
             <div className="mt-4 flex flex-col gap-4">
-              <div className="rounded-2xl border border-dashed border-sand-300 bg-white/70 p-4">
+              <div className="rounded-xl border border-dashed border-sand-300 bg-white/70 p-4">
                 <div className="flex flex-wrap items-center gap-3">
                   <input
                     type="file"
@@ -3712,7 +3668,7 @@ export default function Home() {
                     type="button"
                     onClick={resetWorkspace}
                     title="Clears the uploaded waitlist and all edits on this device"
-                    className="rounded-full border border-sand-300 bg-white px-4 py-2 text-xs font-semibold text-sand-800"
+                    className="rounded-lg border border-sand-300 bg-white px-4 py-2 text-xs font-semibold text-sand-800"
                   >
                     Clear waitlist
                   </button>
@@ -3743,7 +3699,7 @@ export default function Home() {
                   so it sits right under the upload. The four headline numbers
                   are the confirmation and stay visible; the breakdown folds. */}
               {hasWaitlist && (
-                <div className="rounded-2xl border border-emerald-300 bg-emerald-50/70 p-4">
+                <div className="rounded-xl border border-emerald-300 bg-emerald-50/70 p-4">
                   <p className="text-sm font-semibold text-emerald-900">
                     {uploadSummary ??
                       `✓ ${officeStats.totalCases} patients loaded`}
@@ -3790,7 +3746,7 @@ export default function Home() {
                   </button>
                   {breakdownOpen && (
                     <div className="mt-3 grid items-start gap-4 lg:grid-cols-[2fr_1fr]">
-                      <div className="rounded-2xl border border-sand-200 bg-white/80 p-4 text-sm text-sand-800">
+                      <div className="rounded-xl border border-sand-200 bg-white/80 p-4 text-sm text-sand-800">
                         <div className="flex items-center justify-between">
                           <p className="font-semibold text-sand-900">
                             Waitlist overview
@@ -3817,7 +3773,7 @@ export default function Home() {
                           ))}
                         </div>
                       </div>
-                      <div className="rounded-2xl border border-sand-200 bg-white/80 p-4 text-sm text-sand-800">
+                      <div className="rounded-xl border border-sand-200 bg-white/80 p-4 text-sm text-sand-800">
                         <p className="font-semibold text-sand-900">
                           Detected surgeon IDs
                         </p>
@@ -3833,7 +3789,7 @@ export default function Home() {
               )}
 
               {warnings.length > 0 && (
-                <div className="rounded-2xl border border-sand-200 bg-sand-50 px-4 py-3 text-xs text-sand-800">
+                <div className="rounded-xl border border-sand-200 bg-sand-50 px-4 py-3 text-xs text-sand-800">
                   <p className="font-semibold text-sand-900">
                     Parsing warnings
                   </p>
@@ -3906,7 +3862,7 @@ export default function Home() {
                         .then(() => setPageLinkCopied(true))
                         .catch(() => undefined);
                     }}
-                    className="mt-2 rounded-full border border-rose-300 bg-white px-3 py-1 font-semibold text-rose-800"
+                    className="mt-2 rounded-lg border border-rose-300 bg-white px-3 py-1 font-semibold text-rose-800"
                   >
                     {pageLinkCopied
                       ? "Link copied — paste it into Chrome or Edge"
@@ -3932,7 +3888,7 @@ export default function Home() {
                     <button
                       type="button"
                       onClick={() => void handleChooseNotesFile("open")}
-                      className="rounded-full bg-slateBlue-700 px-5 py-2.5 text-sm font-semibold text-white"
+                      className="rounded-lg bg-slateBlue-700 px-5 py-2.5 text-sm font-semibold text-white"
                     >
                       Open my notes file
                     </button>
@@ -3952,7 +3908,7 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={() => void startNewNotesFile()}
-                    className="rounded-full border border-slateBlue-200 bg-white px-5 py-2.5 text-sm font-semibold text-slateBlue-700"
+                    className="rounded-lg border border-slateBlue-200 bg-white px-5 py-2.5 text-sm font-semibold text-slateBlue-700"
                   >
                     Start a new notes file
                   </button>
@@ -4086,7 +4042,7 @@ export default function Home() {
                       notesPassphrase !== notesPassphraseConfirm
                     }
                     onClick={() => void handleSaveNotes()}
-                    className="rounded-full bg-slateBlue-700 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+                    className="rounded-lg bg-slateBlue-700 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
                   >
                     {notesBusy ? "Working…" : "Create notes file"}
                   </button>
@@ -4121,7 +4077,7 @@ export default function Home() {
                       type="button"
                       disabled={notesBusy}
                       onClick={() => void handleSaveNotes()}
-                      className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                      className="rounded-lg bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
                     >
                       {notesBusy ? "Working…" : "Save now"}
                     </button>
@@ -4227,7 +4183,7 @@ export default function Home() {
                 type="button"
                 disabled={!hasWaitlist}
                 onClick={() => setActiveTab("slates")}
-                className="rounded-full bg-slateBlue-700 px-6 py-3 text-sm font-semibold text-white shadow-sm disabled:opacity-40"
+                className="rounded-lg bg-slateBlue-700 px-6 py-3 text-sm font-semibold text-white shadow-sm disabled:opacity-40"
               >
                 View suggested slates →
               </button>
@@ -4240,7 +4196,7 @@ export default function Home() {
             {/* Folded by default, but never hiding a change: if the defaults
                 differ from the built-in ones it opens, so a non-standard
                 setting is always in view. */}
-            <div className="mt-5 rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
+            <div className="mt-5 rounded-xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
               <button
                 type="button"
                 aria-expanded={durationsOpen}
@@ -4305,7 +4261,7 @@ export default function Home() {
                     <button
                       type="button"
                       onClick={saveDefaultDurations}
-                      className="rounded-full border border-sand-300 bg-white px-3 py-1 text-xs font-semibold text-slateBlue-700"
+                      className="rounded-lg border border-sand-300 bg-white px-3 py-1 text-xs font-semibold text-slateBlue-700"
                     >
                       Save as my defaults
                     </button>
@@ -4320,60 +4276,6 @@ export default function Home() {
             </div>
           </section>
 
-          <header>
-            <div className="card p-8">
-              <p className="text-sm uppercase tracking-[0.26em] text-sand-600">
-                Office Scheduling Toolkit
-              </p>
-              <h1 className="mt-2 text-2xl font-semibold text-slateBlue-900">
-                How SlateBuilder for Offices works
-              </h1>
-              <p className="mt-4 max-w-3xl text-base leading-7 text-sand-800">
-                Upload one surgeon office&apos;s waitlist, generate streamlined
-                OR slates, and maintain a Priority Waitlist that clearly shows
-                which patients are already slated and which are still waiting.
-              </p>
-              <p className="mt-3 max-w-3xl text-xs leading-6 text-sand-700">
-                Higher priority scores mean more urgent — patients past their
-                target date are always slated first. See the{" "}
-                <a
-                  href="/guide"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="font-semibold text-slateBlue-700 underline"
-                >
-                  user guide
-                </a>{" "}
-                for exactly how the score is calculated.
-              </p>
-              <p className="mt-3 max-w-3xl text-xs leading-6 text-sand-600">
-                Nothing you upload leaves this computer. There is no account and
-                no server to sync to: the waitlist is read in your browser, held
-                only while this tab is open, and never sent anywhere. Each case
-                gets an opaque code (e.g. C-001) and exports use that code
-                unless you opt to include names.
-              </p>
-              <div className="mt-6 flex flex-wrap items-center gap-3 text-xs text-sand-700">
-                <a
-                  href="/guide"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="rounded-full bg-slateBlue-700 px-4 py-1.5 font-semibold text-white"
-                >
-                  User guide ↗
-                </a>
-                <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
-                  Nothing leaves this computer
-                </span>
-                <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
-                  Encrypted notes file
-                </span>
-                <span className="rounded-full border border-sand-300 bg-white/80 px-3 py-1.5">
-                  Up to 3 selectable OR dates
-                </span>
-              </div>
-            </div>
-          </header>
         </>
       )}
 
@@ -4396,14 +4298,14 @@ export default function Home() {
                     <button
                       type="button"
                       onClick={runOptimizeUtilization}
-                      className="rounded-full bg-emerald-700 px-4 py-2 text-xs font-semibold text-white"
+                      className="rounded-lg bg-emerald-700 px-4 py-2 text-xs font-semibold text-white"
                     >
                       Optimize Utilization
                     </button>
                     <button
                       type="button"
                       onClick={downloadAllSlatesPdfFile}
-                      className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
+                      className="rounded-lg bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
                     >
                       Export all slates (PDF)
                     </button>
@@ -4412,7 +4314,7 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={resetDurationOverrides}
-                  className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
+                  className="rounded-lg border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
                 >
                   Reset manual durations
                 </button>
@@ -4420,7 +4322,7 @@ export default function Home() {
             </div>
 
             {planningWarnings.length > 0 && (
-              <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+              <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-800">
                 <p className="font-semibold text-amber-900">
                   Check before you rely on these slates
                 </p>
@@ -4432,7 +4334,7 @@ export default function Home() {
               </div>
             )}
 
-            <div className="mt-4 rounded-2xl border border-sand-200 bg-white/70 px-4 py-3 text-sm text-sand-800">
+            <div className="mt-4 rounded-xl border border-sand-200 bg-white/70 px-4 py-3 text-sm text-sand-800">
               <p className="font-semibold text-sand-900">Block length</p>
               <p className="mt-1">{blockMinutes} minutes</p>
               <p className="mt-2 text-xs text-sand-700">
@@ -4442,7 +4344,7 @@ export default function Home() {
             </div>
 
             {slates && slateSlots.length > 0 && (
-              <div className="mt-4 rounded-2xl border border-sand-200 bg-white/70 px-4 py-3 text-sm text-sand-800">
+              <div className="mt-4 rounded-xl border border-sand-200 bg-white/70 px-4 py-3 text-sm text-sand-800">
                 <p className="font-semibold text-sand-900">Booking order</p>
                 <p className="mt-1 text-xs text-sand-700">
                   Each case is marked by whether it was booked in priority order
@@ -4496,7 +4398,7 @@ export default function Home() {
             )}
 
             {!slates && (
-              <div className="mt-6 rounded-2xl border border-dashed border-sand-300 bg-white/70 p-6 text-sm text-sand-700">
+              <div className="mt-6 rounded-xl border border-dashed border-sand-300 bg-white/70 p-6 text-sm text-sand-700">
                 Upload an office waitlist to generate slates.
               </div>
             )}
@@ -4506,7 +4408,7 @@ export default function Home() {
               slateSlots.every(
                 (slot, i) => (orderedSlates[i] ?? slot.selected).length === 0,
               ) && (
-                <div className="mt-6 rounded-2xl border border-dashed border-sand-300 bg-white/70 p-6 text-sm text-sand-700">
+                <div className="mt-6 rounded-xl border border-dashed border-sand-300 bg-white/70 p-6 text-sm text-sand-700">
                   No cases fit into the selected block lengths.
                 </div>
               )}
@@ -4516,11 +4418,20 @@ export default function Home() {
               slateSlots.some(
                 (slot, i) => (orderedSlates[i] ?? slot.selected).length > 0,
               ) && (
-                <div className="mt-6 flex flex-col gap-6">
+                <div
+                  className={`mt-6 grid items-start gap-4 ${
+                    slateSlots.length === 3
+                      ? "lg:grid-cols-3"
+                      : slateSlots.length === 2
+                        ? "lg:grid-cols-2"
+                        : ""
+                  }`}
+                >
                   {slateSlots.map((slot, slateIndex) => {
                     const orderedSlate =
                       orderedSlates[slateIndex] ?? slot.selected;
                     const slateDate = slot.dateISO;
+                    const accent = SLATE_ACCENTS[slateIndex % SLATE_ACCENTS.length];
                     const schedule = buildCaseSchedule(orderedSlate, slateDate);
                     const surgicalMinutes = orderedSlate.reduce(
                       (sum, item) => sum + item.estimatedDurationMin,
@@ -4538,70 +4449,106 @@ export default function Home() {
                     const isDragOverThisSlate =
                       dragOverTarget?.kind === "slate" &&
                       dragOverTarget.slateIndex === slateIndex;
+                    const weekday = slateDate
+                      ? new Date(`${slateDate}T00:00:00`).toLocaleDateString(
+                          "en-CA",
+                          { weekday: "long" },
+                        )
+                      : "";
 
                     return (
                       <div
                         key={`slate-${slateIndex}`}
-                        className="rounded-2xl border border-sand-200 bg-white/70 p-5"
+                        aria-label={`Slate ${slateIndex + 1}${slateDate ? `, ${weekday} ${slateDate}` : ""}`}
+                        className={`flex min-w-0 flex-col overflow-hidden rounded-xl border border-t-8 bg-white/80 shadow-sm ${accent.frame} ${
+                          isLocked ? "ring-2 ring-amber-300" : ""
+                        }`}
                       >
-                        <div className="flex flex-wrap items-center justify-between gap-4">
-                          <div className="flex items-start gap-2">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setCollapsedSlates((prev) => ({
-                                  ...prev,
-                                  [slateDate]: !prev[slateDate],
-                                }))
-                              }
-                              aria-label={
-                                isCollapsed ? "Expand slate" : "Collapse slate"
-                              }
-                              className="mt-0.5 rounded-full border border-sand-300 bg-white px-2 py-1 text-xs text-sand-600"
-                            >
-                              {isCollapsed ? "▸" : "▾"}
-                            </button>
-                            <div>
-                              <p className="text-xs uppercase tracking-[0.2em] text-sand-600">
-                                Slate {slateIndex + 1}
-                              </p>
-                              <h3 className="mt-1 text-lg font-semibold text-slateBlue-900">
-                                {orderedSlate.length} cases on{" "}
-                                {slateDate || "unspecified date"}
-                              </h3>
-                              <BookingOrderTally
-                                counts={countBookingOrder(
-                                  orderedSlate.map((item) => item.caseId),
-                                  bookingOrder,
-                                )}
-                              />
-                              {(putOffCountByDate[slateDate] ?? 0) > 0 && (
-                                <p className="mt-1 text-xs font-semibold text-rose-700">
-                                  {unexplainedPutOffNote(
-                                    putOffCountByDate[slateDate],
-                                  )}
+                        <div className={`px-4 pb-3 pt-3 ${accent.header}`}>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-start gap-2">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setCollapsedSlates((prev) => ({
+                                    ...prev,
+                                    [slateDate]: !prev[slateDate],
+                                  }))
+                                }
+                                aria-label={
+                                  isCollapsed ? "Expand slate" : "Collapse slate"
+                                }
+                                className="mt-0.5 rounded-lg border border-sand-300 bg-white px-2 py-0.5 text-xs text-sand-600"
+                              >
+                                {isCollapsed ? "▸" : "▾"}
+                              </button>
+                              <div>
+                                <p
+                                  className={`text-xs font-semibold tracking-wide ${accent.label}`}
+                                >
+                                  Slate {slateIndex + 1}
                                 </p>
+                                <h3 className="mt-0.5 text-lg font-semibold leading-tight text-slateBlue-900">
+                                  {weekday || "Unspecified date"}
+                                </h3>
+                                <p className="text-sm text-sand-700">
+                                  {slateDate || "No date set"} ·{" "}
+                                  {orderedSlate.length}{" "}
+                                  {orderedSlate.length === 1 ? "case" : "cases"}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex flex-col items-end gap-1">
+                              <span
+                                title={`${occupiedMinutes} / ${slot.blockMinutes} min used (incl. turnaround)`}
+                                className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
+                                  occupiedMinutes > slot.blockMinutes
+                                    ? "bg-rose-100 text-rose-700"
+                                    : utilizationPct >= 85
+                                      ? "bg-emerald-100 text-emerald-700"
+                                      : "bg-amber-100 text-amber-800"
+                                }`}
+                              >
+                                {utilizationPct.toFixed(0)}% full
+                              </span>
+                              {isLocked && (
+                                <span className="rounded-full bg-amber-100 px-2 py-1 text-[11px] font-semibold text-amber-800">
+                                  🔒 Locked
+                                </span>
                               )}
                             </div>
-                            <span
-                              title={`${occupiedMinutes} / ${slot.blockMinutes} min used (incl. turnaround)`}
-                              className={`mt-0.5 rounded-full px-2 py-1 text-[11px] font-semibold ${
-                                occupiedMinutes > slot.blockMinutes
-                                  ? "bg-rose-100 text-rose-700"
-                                  : utilizationPct >= 85
-                                    ? "bg-amber-100 text-amber-800"
-                                    : "bg-emerald-100 text-emerald-700"
-                              }`}
-                            >
-                              {utilizationPct.toFixed(0)}% full
-                            </span>
-                            {isLocked && (
-                              <span className="mt-0.5 rounded-full bg-amber-100 px-2 py-1 text-[11px] font-semibold text-amber-800">
-                                🔒 Locked
-                              </span>
-                            )}
                           </div>
-                          <div className="flex flex-wrap gap-2">
+                          <BookingOrderTally
+                            counts={countBookingOrder(
+                              orderedSlate.map((item) => item.caseId),
+                              bookingOrder,
+                            )}
+                          />
+                          {(putOffCountByDate[slateDate] ?? 0) > 0 && (
+                            <p className="mt-1 text-xs font-semibold text-rose-700">
+                              {unexplainedPutOffNote(
+                                putOffCountByDate[slateDate],
+                              )}
+                            </p>
+                          )}
+                          <div className="mt-3">
+                            <CapacityBar
+                              totalMinutes={occupiedMinutes}
+                              blockMinutes={slot.blockMinutes}
+                            />
+                            <p className="mt-1 text-xs text-sand-600">
+                              Starts{" "}
+                              {formatMinutesToTime(
+                                getBlockStartMinutes(
+                                  new Date(`${slateDate}T00:00:00`),
+                                ),
+                              )}{" "}
+                              · {occupiedMinutes} / {slot.blockMinutes} min (
+                              {surgicalMinutes} surgical + {turnaroundMinutes}{" "}
+                              turnaround)
+                            </p>
+                          </div>
+                          <div className="mt-3 flex flex-wrap items-center gap-1.5">
                             <button
                               type="button"
                               onClick={() =>
@@ -4610,281 +4557,237 @@ export default function Home() {
                                   [slateDate]: !prev[slateDate],
                                 }))
                               }
-                              className={`rounded-full border px-4 py-2 text-xs font-semibold ${
+                              className={`rounded-lg border px-3 py-1 text-xs font-semibold ${
                                 isLocked
                                   ? "border-amber-300 bg-amber-50 text-amber-800"
-                                  : "border-slateBlue-200 text-slateBlue-700"
+                                  : "border-slateBlue-200 bg-white text-slateBlue-700"
                               }`}
                             >
                               {isLocked ? "Unlock slate" : "Lock slate"}
                             </button>
+                            <span className="ml-1 text-[11px] text-sand-600">
+                              Export:
+                            </span>
                             <button
                               type="button"
                               onClick={() => downloadSlatePdfFile(slateIndex)}
-                              className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
+                              aria-label="Export slate PDF"
+                              className="rounded-lg bg-slateBlue-700 px-3 py-1 text-xs font-semibold text-white"
                             >
-                              Export slate PDF
+                              PDF
                             </button>
                             <button
                               type="button"
                               onClick={() => downloadSlateCsv(slateIndex)}
-                              className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
+                              aria-label="Export slate CSV"
+                              className="rounded-lg border border-slateBlue-200 bg-white px-3 py-1 text-xs font-semibold text-slateBlue-700"
                             >
-                              Export slate CSV
+                              CSV
                             </button>
                             <button
                               type="button"
                               onClick={() => downloadMappingCsv(slateIndex)}
+                              aria-label="Export name key (confidential)"
                               title="Confidential: opaque case code → patient name, for re-identifying the deidentified slate/CSV exports"
-                              className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
+                              className="rounded-lg border border-slateBlue-200 bg-white px-3 py-1 text-xs font-semibold text-slateBlue-700"
                             >
-                              Export name key (confidential)
+                              Name key
                             </button>
                           </div>
                         </div>
 
-                        {!isCollapsed && (
-                          <>
-                            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                              <StatCard
-                                label="Utilization"
-                                value={`${utilizationPct.toFixed(1)}%`}
-                                detail={`${occupiedMinutes} / ${slot.blockMinutes} min (incl. ${turnaroundMinutes} min TAT)`}
-                              />
-                              <StatCard
-                                label="Start Time"
-                                value={formatMinutesToTime(
-                                  getBlockStartMinutes(
-                                    new Date(`${slateDate}T00:00:00`),
-                                  ),
-                                )}
-                                detail="Calculated from block rule"
-                              />
-                            </div>
-
-                            <div className="mt-4 rounded-2xl border border-sand-200 bg-white/70 p-4">
-                              <CapacityBar
-                                totalMinutes={occupiedMinutes}
-                                blockMinutes={slot.blockMinutes}
-                              />
-                              <p className="mt-2 text-xs text-sand-600">
-                                {surgicalMinutes} min surgical +{" "}
-                                {turnaroundMinutes} min turnaround (30 min after
-                                each case but the last).
-                              </p>
-                            </div>
-
-                            <div
-                              className={`mt-4 flex min-h-[3rem] flex-col gap-3 rounded-2xl border-2 border-dashed p-1 transition-colors ${
-                                isDragOverThisSlate
-                                  ? "border-slateBlue-400 bg-slateBlue-50/60"
-                                  : "border-transparent"
-                              }`}
-                              onDragEnter={(event) => {
-                                event.preventDefault();
-                                setDragOverTarget({
-                                  kind: "slate",
-                                  slateIndex,
-                                });
-                              }}
-                              onDragOver={(event) => {
-                                event.preventDefault();
-                                setDragOverTarget({
-                                  kind: "slate",
-                                  slateIndex,
-                                });
-                              }}
-                              onDrop={(event) =>
-                                handleDropOnSlate(event, slateIndex)
-                              }
-                            >
-                              {schedule.map(
-                                (
-                                  { item, start, end, tatAfter, tatEnd },
-                                  index,
-                                ) => (
-                                  <Fragment key={item.caseId}>
-                                    <div
-                                      draggable
-                                      onDragStart={() =>
-                                        handleDragStart(slateIndex, item.caseId)
-                                      }
-                                      onDragOver={(event) =>
-                                        handleDragOver(
-                                          event,
-                                          slateIndex,
-                                          item.caseId,
-                                        )
-                                      }
-                                      onDragEnd={handleDragEnd}
-                                      className={`flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-sand-200 bg-white px-4 py-3 text-sm shadow-sm cursor-grab active:cursor-grabbing ${
-                                        draggingCaseId === item.caseId
-                                          ? "opacity-40"
-                                          : ""
-                                      }`}
-                                    >
-                                      <div>
-                                        <p className="text-xs uppercase tracking-[0.2em] text-sand-500">
-                                          #{index + 1} ·{" "}
-                                          {formatMinutesToTime(start)}-
-                                          {formatMinutesToTime(end)}
-                                        </p>
-                                        <p className="font-semibold text-slateBlue-900">
-                                          {item.displayLabel}
-                                        </p>
-                                        <p className="text-[10px] uppercase tracking-wider text-sand-400">
-                                          {item.caseId}
-                                        </p>
-                                        <div className="mt-1">
-                                          <UrgencyBadge
-                                            benchmarkWeeks={item.benchmarkWeeks}
-                                            timeToTargetDays={
-                                              item.timeToTargetDays
-                                            }
-                                          />
-                                        </div>
-                                        <p className="mt-1 text-xs text-sand-700">
-                                          Time to target {item.timeToTargetDays}
-                                          d · {item.estimatedDurationMin}m
-                                        </p>
-                                        <p className="text-xs text-sand-600">
-                                          Surgeon ID: {item.surgeonId}
-                                        </p>
-                                        {item.unavailableUntil && (
-                                          <p className="text-xs text-sand-600">
-                                            Patient unavailable until{" "}
-                                            {item.unavailableUntil}
-                                          </p>
-                                        )}
-                                        {item.procedureName && (
-                                          <p className="text-xs text-sand-600">
-                                            {item.procedureName}
-                                          </p>
-                                        )}
-                                      </div>
-
-                                      <div className="flex flex-col items-end gap-2 text-xs text-sand-700">
-                                        <div className="flex flex-wrap justify-end gap-2">
-                                          {clinicalFlagDefinitions
-                                            .filter(
-                                              (flag) => item.flags?.[flag.key],
-                                            )
-                                            .map((flag) => (
-                                              <span
-                                                key={`${item.caseId}-${flag.key}`}
-                                                className="rounded-full bg-sand-100 px-2 py-1"
-                                              >
-                                                {flag.label}
-                                              </span>
-                                            ))}
-                                          {item.inpatient && (
-                                            <span className="rounded-full bg-sand-200 px-2 py-1 text-sand-800">
-                                              Inpatient
-                                            </span>
-                                          )}
-                                          <BookingOrderBadge
-                                            order={bookingOrder[item.caseId]}
-                                          />
-                                          {movedCaseIds[item.caseId] && (
-                                            <span
-                                              title="Manually repositioned from the suggested order"
-                                              className="rounded-full bg-amber-100 px-2 py-1 text-amber-800"
-                                            >
-                                              ↕ Moved
-                                            </span>
-                                          )}
+                        <div
+                          className={`flex min-h-[8rem] flex-1 flex-col gap-2 border-2 border-dashed p-2 transition-colors ${
+                            isDragOverThisSlate
+                              ? accent.drop
+                              : "border-transparent"
+                          }`}
+                          onDragEnter={(event) => {
+                            event.preventDefault();
+                            setDragOverTarget({ kind: "slate", slateIndex });
+                          }}
+                          onDragOver={(event) => {
+                            event.preventDefault();
+                            setDragOverTarget({ kind: "slate", slateIndex });
+                          }}
+                          onDrop={(event) => handleDropOnSlate(event, slateIndex)}
+                        >
+                          {orderedSlate.length === 0 && (
+                            <p className="m-auto text-xs text-sand-500">
+                              Drop patients here
+                            </p>
+                          )}
+                          {isCollapsed && orderedSlate.length > 0 && (
+                            <p className="m-auto text-xs text-sand-500">
+                              {orderedSlate.length}{" "}
+                              {orderedSlate.length === 1 ? "case" : "cases"}{" "}
+                              hidden · drop patients here
+                            </p>
+                          )}
+                          {!isCollapsed &&
+                            schedule.map(
+                              ({ item, start, end, tatAfter, tatEnd }, index) => (
+                                <Fragment key={item.caseId}>
+                                  <div
+                                    draggable
+                                    onDragStart={() =>
+                                      handleDragStart(slateIndex, item.caseId)
+                                    }
+                                    onDragOver={(event) =>
+                                      handleDragOver(event, slateIndex, item.caseId)
+                                    }
+                                    onDragEnd={handleDragEnd}
+                                    className={`rounded-xl border border-l-4 border-sand-200 bg-white px-3 py-2 text-sm shadow-sm cursor-grab active:cursor-grabbing ${accent.card} ${
+                                      draggingCaseId === item.caseId
+                                        ? "opacity-40"
+                                        : ""
+                                    }`}
+                                  >
+                                    <div className="flex items-start justify-between gap-2">
+                                      <p className="text-xs font-semibold tracking-wide text-sand-500">
+                                        #{index + 1} · {formatMinutesToTime(start)}-
+                                        {formatMinutesToTime(end)}
+                                      </p>
+                                      <span
+                                        title="Priority score: higher means more urgent. Used to rank and auto-fill the waitlist — not shown to patients."
+                                        className="shrink-0 rounded-full bg-slateBlue-50 px-2 py-0.5 text-[11px] text-slateBlue-700"
+                                      >
+                                        Priority {item.priorityScore.toFixed(2)}
+                                      </span>
+                                    </div>
+                                    <p className="font-semibold text-slateBlue-900">
+                                      {item.displayLabel}
+                                    </p>
+                                    <p className="text-[10px] uppercase tracking-wider text-sand-400">
+                                      {item.caseId} · Surgeon {item.surgeonId}
+                                    </p>
+                                    <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-sand-700">
+                                      <UrgencyBadge
+                                        benchmarkWeeks={item.benchmarkWeeks}
+                                        timeToTargetDays={item.timeToTargetDays}
+                                      />
+                                      <BookingOrderBadge
+                                        order={bookingOrder[item.caseId]}
+                                      />
+                                      {movedCaseIds[item.caseId] && (
+                                        <span
+                                          title="Manually repositioned from the suggested order"
+                                          className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800"
+                                        >
+                                          ↕ Moved
+                                        </span>
+                                      )}
+                                      {clinicalFlagDefinitions
+                                        .filter((flag) => item.flags?.[flag.key])
+                                        .map((flag) => (
                                           <span
-                                            title="Priority score: higher means more urgent. Used to rank and auto-fill the waitlist — not shown to patients."
-                                            className="rounded-full bg-slateBlue-50 px-2 py-1 text-slateBlue-700"
+                                            key={`${item.caseId}-${flag.key}`}
+                                            className="rounded-full bg-sand-100 px-2 py-0.5"
                                           >
-                                            Priority{" "}
-                                            {item.priorityScore.toFixed(2)}
+                                            {flag.label}
                                           </span>
-                                        </div>
-                                        <div className="flex flex-wrap justify-end gap-3">
-                                          {clinicalFlagDefinitions.map(
-                                            (flag) => (
-                                              <label
-                                                key={`${item.caseId}-${flag.key}`}
-                                                className="flex items-center gap-2"
-                                              >
-                                                <input
-                                                  type="checkbox"
-                                                  checked={Boolean(
-                                                    item.flags?.[flag.key],
-                                                  )}
-                                                  onChange={(event) =>
-                                                    updateFlag(
-                                                      item.caseId,
-                                                      flag.key,
-                                                      event.target.checked,
-                                                    )
-                                                  }
-                                                />
-                                                {flag.label}
-                                              </label>
-                                            ),
-                                          )}
-                                        </div>
-                                        <label className="flex items-center gap-2">
-                                          Duration (min)
-                                          <input
-                                            type="number"
-                                            min={10}
-                                            step={5}
-                                            value={item.estimatedDurationMin}
-                                            onChange={(event) =>
-                                              updateDuration(
-                                                item.caseId,
-                                                event.target.value,
-                                              )
-                                            }
-                                            className="w-20 rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
-                                          />
-                                        </label>
-                                        <label className="flex items-center gap-2">
-                                          Patient unavailable until
-                                          <input
-                                            type="date"
-                                            value={item.unavailableUntil ?? ""}
-                                            onChange={(event) =>
-                                              updateUnavailableUntil(
-                                                item.caseId,
-                                                event.target.value,
-                                              )
-                                            }
-                                            className="rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
-                                          />
-                                          {item.unavailableUntil && (
-                                            <button
-                                              type="button"
-                                              onClick={() =>
-                                                clearUnavailableUntil(
+                                        ))}
+                                      {item.inpatient && (
+                                        <span className="rounded-full bg-sand-200 px-2 py-0.5 text-sand-800">
+                                          Inpatient
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="mt-1 text-xs text-sand-700">
+                                      Time to target {item.timeToTargetDays}d
+                                    </p>
+                                    {item.procedureName && (
+                                      <p className="text-xs text-sand-600">
+                                        {item.procedureName}
+                                      </p>
+                                    )}
+                                    {item.unavailableUntil && (
+                                      <p className="text-xs text-sand-600">
+                                        Unavailable until {item.unavailableUntil}
+                                      </p>
+                                    )}
+                                    <label className="mt-1 flex items-center gap-2 text-xs text-sand-700">
+                                      Duration (min)
+                                      <input
+                                        type="number"
+                                        min={10}
+                                        step={5}
+                                        value={item.estimatedDurationMin}
+                                        onChange={(event) =>
+                                          updateDuration(
+                                            item.caseId,
+                                            event.target.value,
+                                          )
+                                        }
+                                        className="w-20 rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
+                                      />
+                                    </label>
+                                    {(orderReasons[item.caseId] ||
+                                      (manualPlacements[item.caseId] ===
+                                        slateDate &&
+                                        bookingOrder[item.caseId]?.status !==
+                                          "fifo")) && (
+                                      <div className="mt-2 text-xs">
+                                        <OrderReasonEditor
+                                          label="Reason for booking out of order"
+                                          reason={orderReasons[item.caseId]}
+                                          onChange={(reason) =>
+                                            updateOrderReason(item.caseId, reason)
+                                          }
+                                        />
+                                      </div>
+                                    )}
+                                    <details className="mt-1 text-xs text-sand-700">
+                                      <summary className="cursor-pointer select-none font-semibold text-slateBlue-700">
+                                        Flags, availability, remove
+                                      </summary>
+                                      <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
+                                        {clinicalFlagDefinitions.map((flag) => (
+                                          <label
+                                            key={`${item.caseId}-${flag.key}`}
+                                            className="flex items-center gap-2"
+                                          >
+                                            <input
+                                              type="checkbox"
+                                              checked={Boolean(item.flags?.[flag.key])}
+                                              onChange={(event) =>
+                                                updateFlag(
                                                   item.caseId,
+                                                  flag.key,
+                                                  event.target.checked,
                                                 )
                                               }
-                                              className="rounded-full border border-sand-300 bg-white px-2 py-1 text-[11px] font-semibold text-sand-700"
-                                            >
-                                              Clear
-                                            </button>
-                                          )}
-                                        </label>
-                                        {(orderReasons[item.caseId] ||
-                                          (manualPlacements[item.caseId] ===
-                                            slateDate &&
-                                            bookingOrder[item.caseId]
-                                              ?.status !== "fifo")) && (
-                                          <OrderReasonEditor
-                                            label="Reason for booking out of order"
-                                            reason={orderReasons[item.caseId]}
-                                            onChange={(reason) =>
-                                              updateOrderReason(
-                                                item.caseId,
-                                                reason,
-                                              )
+                                            />
+                                            {flag.label}
+                                          </label>
+                                        ))}
+                                      </div>
+                                      <label className="mt-2 flex flex-wrap items-center gap-2">
+                                        Patient unavailable until
+                                        <input
+                                          type="date"
+                                          value={item.unavailableUntil ?? ""}
+                                          onChange={(event) =>
+                                            updateUnavailableUntil(
+                                              item.caseId,
+                                              event.target.value,
+                                            )
+                                          }
+                                          className="rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
+                                        />
+                                        {item.unavailableUntil && (
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              clearUnavailableUntil(item.caseId)
                                             }
-                                          />
+                                            className="rounded-lg border border-sand-300 bg-white px-2 py-1 text-[11px] font-semibold text-sand-700"
+                                          >
+                                            Clear
+                                          </button>
                                         )}
+                                      </label>
+                                      <div className="mt-2">
                                         {isLocked ? (
                                           <span className="rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
                                             🔒 Locked — unlock slate to remove
@@ -4893,33 +4796,30 @@ export default function Home() {
                                           <button
                                             type="button"
                                             onClick={() =>
-                                              removeFromSuggestedSlates(
-                                                item.caseId,
-                                              )
+                                              removeFromSuggestedSlates(item.caseId)
                                             }
-                                            className="rounded-full border border-sand-300 bg-white px-3 py-1 text-xs font-semibold text-sand-800"
+                                            className="rounded-lg border border-sand-300 bg-white px-3 py-1 text-xs font-semibold text-sand-800"
                                           >
                                             Remove from suggested slates
                                           </button>
                                         )}
                                       </div>
+                                    </details>
+                                  </div>
+                                  {tatAfter && (
+                                    <div className="flex items-center gap-2 px-2 text-[11px] text-sand-500">
+                                      <span className="h-px flex-1 bg-sand-200" />
+                                      <span className="rounded-full bg-sand-100 px-2 py-0.5 font-medium">
+                                        ↻ 30-min turnaround · ready{" "}
+                                        {formatMinutesToTime(tatEnd)}
+                                      </span>
+                                      <span className="h-px flex-1 bg-sand-200" />
                                     </div>
-                                    {tatAfter && (
-                                      <div className="flex items-center gap-2 px-4 text-xs text-sand-500">
-                                        <span className="h-px flex-1 bg-sand-200" />
-                                        <span className="rounded-full bg-sand-100 px-2 py-0.5 font-medium">
-                                          ↻ 30-min turnaround · OR ready{" "}
-                                          {formatMinutesToTime(tatEnd)}
-                                        </span>
-                                        <span className="h-px flex-1 bg-sand-200" />
-                                      </div>
-                                    )}
-                                  </Fragment>
-                                ),
-                              )}
-                            </div>
-                          </>
-                        )}
+                                  )}
+                                </Fragment>
+                              ),
+                            )}
+                        </div>
                       </div>
                     );
                   })}
@@ -4928,7 +4828,7 @@ export default function Home() {
 
             {optimizeReport && (
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-                <div className="w-full max-w-2xl max-h-[80vh] overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
+                <div className="w-full max-w-2xl max-h-[80vh] overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
                   <div className="flex items-center justify-between">
                     <h2 className="text-lg font-semibold text-slateBlue-900">
                       Optimize Utilization — Summary
@@ -4936,7 +4836,7 @@ export default function Home() {
                     <button
                       type="button"
                       onClick={() => setOptimizeReport(null)}
-                      className="rounded-full border border-sand-300 px-3 py-1 text-xs font-semibold text-slateBlue-700"
+                      className="rounded-lg border border-sand-300 px-3 py-1 text-xs font-semibold text-slateBlue-700"
                     >
                       Close
                     </button>
@@ -4945,16 +4845,18 @@ export default function Home() {
                     <div className="mt-4 rounded-xl border border-rose-300 bg-rose-50 p-3 text-sm text-rose-800">
                       <p className="font-semibold">
                         {optimizeReport.unplacedOverdue.length === 1
-                          ? "1 overdue patient could not be fit into any unlocked slate:"
-                          : `${optimizeReport.unplacedOverdue.length} overdue patients could not be fit into any unlocked slate:`}
+                          ? "1 overdue patient is still waiting for a slate:"
+                          : `${optimizeReport.unplacedOverdue.length} overdue patients are still waiting for a slate:`}
                       </p>
                       <p className="mt-1">
                         {optimizeReport.unplacedOverdue.join(", ")}
                       </p>
                       <p className="mt-1 text-xs">
-                        They were not bumped by a not-yet-overdue case — there
-                        simply wasn&apos;t room anywhere unlocked. They&apos;re
-                        back on the Priority Waitlist as not-yet-slated.
+                        No unlocked slate had room for them without swapping
+                        out a patient ranked higher. They&apos;re on the Priority
+                        Waitlist as not yet slated. Drag one onto a slate to
+                        place them by hand; lower-ranked patients move to make
+                        room.
                       </p>
                     </div>
                   )}
@@ -5050,7 +4952,7 @@ export default function Home() {
                   Showing {filteredWaitlist.length} of {orderedByUrgency.length}
                 </p>
                 <div
-                  className={`mt-2 flex min-h-[3rem] flex-col gap-1.5 rounded-2xl border-2 border-dashed p-1 text-sm transition-colors ${
+                  className={`mt-2 flex min-h-[3rem] flex-col gap-1.5 rounded-xl border-2 border-dashed p-1 text-sm transition-colors ${
                     dragOverTarget?.kind === "waitlist"
                       ? "border-slateBlue-400 bg-slateBlue-50/60"
                       : "border-transparent"
@@ -5069,7 +4971,7 @@ export default function Home() {
                     renderWaitlistRow(item, rank),
                   )}
                   {filteredWaitlist.length === 0 && (
-                    <div className="rounded-2xl border border-dashed border-sand-300 bg-white/70 px-3 py-6 text-center text-xs text-sand-700">
+                    <div className="rounded-xl border border-dashed border-sand-300 bg-white/70 px-3 py-6 text-center text-xs text-sand-700">
                       {orderedByUrgency.length === 0
                         ? "No office waitlist loaded yet."
                         : "No patients match the filter."}
@@ -5100,14 +5002,14 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={downloadWaitlistPdfFile}
-                  className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
+                  className="rounded-lg bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
                 >
                   Export priority PDF
                 </button>
                 <button
                   type="button"
                   onClick={downloadPriorityCsv}
-                  className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
+                  className="rounded-lg border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
                 >
                   Export priority CSV
                 </button>
@@ -5127,7 +5029,7 @@ export default function Home() {
               />
             </div>
 
-            <div className="mt-4 rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
+            <div className="mt-4 rounded-xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
               <p className="font-semibold text-sand-900">Priority rule</p>
               <p className="mt-0.5 text-xs text-sand-600">
                 Controls how this list (and slate auto-fill) ranks patients.
@@ -5207,7 +5109,7 @@ export default function Home() {
             </p>
 
             <div
-              className={`mt-2 flex min-h-[3rem] flex-col gap-1.5 rounded-2xl border-2 border-dashed p-1 text-sm transition-colors ${
+              className={`mt-2 flex min-h-[3rem] flex-col gap-1.5 rounded-xl border-2 border-dashed p-1 text-sm transition-colors ${
                 dragOverTarget?.kind === "waitlist"
                   ? "border-slateBlue-400 bg-slateBlue-50/60"
                   : "border-transparent"
@@ -5227,7 +5129,7 @@ export default function Home() {
               )}
 
               {filteredWaitlist.length === 0 && (
-                <div className="rounded-2xl border border-dashed border-sand-300 bg-white/70 px-3 py-6 text-center text-xs text-sand-700">
+                <div className="rounded-xl border border-dashed border-sand-300 bg-white/70 px-3 py-6 text-center text-xs text-sand-700">
                   {orderedByUrgency.length === 0
                     ? "No office waitlist loaded yet."
                     : "No patients match the filter."}
@@ -5256,14 +5158,14 @@ export default function Home() {
               <button
                 type="button"
                 onClick={downloadLongWaitersPdf}
-                className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
+                className="rounded-lg bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
               >
                 Export long-waiters PDF
               </button>
               <button
                 type="button"
                 onClick={downloadLongWaitersCsv}
-                className="rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
+                className="rounded-lg border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
               >
                 Export long-waiters CSV
               </button>
@@ -5271,7 +5173,7 @@ export default function Home() {
           </div>
 
           {longWaiters.total === 0 ? (
-            <div className="mt-4 rounded-2xl border border-dashed border-sand-300 bg-white/70 px-3 py-6 text-center text-xs text-sand-700">
+            <div className="mt-4 rounded-xl border border-dashed border-sand-300 bg-white/70 px-3 py-6 text-center text-xs text-sand-700">
               No patients are over target.
             </div>
           ) : (
@@ -5279,7 +5181,7 @@ export default function Home() {
               {longWaiters.groups.map((group) => (
                 <div
                   key={group.label}
-                  className="rounded-2xl border border-sand-200 bg-white/70 p-4"
+                  className="rounded-xl border border-sand-200 bg-white/70 p-4"
                 >
                   <div className="flex items-center justify-between">
                     <span
@@ -5323,19 +5225,32 @@ export default function Home() {
         </section>
       )}
 
-      {activeTab === "setup" && (
-        <section className="card p-6">
-          <h2 className="text-lg font-semibold text-slateBlue-900">About</h2>
-          <p className="mt-2 text-sm text-sand-800">
-            &copy; 2026 Dr. Jonathan Collins. All rights reserved. SlateBuilder
-            for Offices was developed by Dr. Jonathan Collins for BC
-            Women&apos;s Hospital Surgical Services pilot use, with AI-assisted
-            development tools. It is provided as a scheduling aid for pilot
-            evaluation only — always verify case details, priority scores, and
-            slate assignments before relying on them clinically.
+      <footer className="mt-4 border-t border-sand-200 pt-6 text-xs leading-6 text-sand-600">
+        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+          <p className="max-w-3xl">
+            Nothing you upload leaves this computer. There is no account and no
+            server: the waitlist is read in your browser, held only while this
+            tab is open, and exports use an opaque case code (e.g. C-001)
+            unless you opt to include names.
           </p>
-        </section>
-      )}
+          <a
+            href="/guide"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="shrink-0 font-semibold text-slateBlue-700 hover:underline"
+          >
+            User guide ↗
+          </a>
+        </div>
+        <p className="mt-3 max-w-4xl text-sand-500">
+          &copy; 2026 Dr. Jonathan Collins. All rights reserved. SlateBuilder
+          for Offices was developed by Dr. Jonathan Collins for BC Women&apos;s
+          Hospital Surgical Services pilot use, with AI-assisted development
+          tools. It is provided as a scheduling aid for pilot evaluation only —
+          always verify case details, priority scores, and slate assignments
+          before relying on them clinically.
+        </p>
+      </footer>
       {reasonPrompt &&
         (() => {
           const item = officeCasesWithOverrides.find(

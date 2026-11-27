@@ -58,7 +58,7 @@ export default function Guide() {
   return (
     <main className="relative mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-6 px-6 py-12">
       <header className="flex flex-col gap-2">
-        <p className="text-sm uppercase tracking-[0.26em] text-sand-600">
+        <p className="text-sm font-semibold tracking-wide text-sand-600">
           User guide
         </p>
         <h1 className="text-3xl font-semibold text-slateBlue-900">
@@ -72,7 +72,7 @@ export default function Guide() {
         </p>
         <a
           href="/"
-          className="mt-1 w-fit rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
+          className="mt-1 w-fit rounded-lg border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
         >
           ← Back to the app
         </a>
@@ -205,12 +205,21 @@ export default function Guide() {
         </p>
         <ul className="list-disc pl-5">
           <li>
+            On a wide screen the slates sit side by side, one column per day,
+            each in its own colour; every patient card carries its slate&apos;s
+            colour down its left edge. Drag a card across to another column to
+            move that patient to that day.
+          </li>
+          <li>
             The capacity bar shows time used vs. the block, including
-            turnaround.
+            turnaround: green when the day is at least 85% used, amber when it
+            is noticeably underused, red if the cases run past the block.
           </li>
           <li>
             Drag cases to reorder them; the order is the running order for the
-            day.
+            day. Duration is on each card; flags, the unavailable-until date and
+            Remove from suggested slates are under{" "}
+            <span className="font-semibold">Flags, availability, remove</span>.
           </li>
           <li>
             Drag a patient onto a slate that is already full and the slate makes
@@ -246,18 +255,19 @@ export default function Guide() {
             entirely by Optimize Utilization below.
           </li>
           <li>
-            <span className="font-semibold">Optimize Utilization</span> repacks
-            every <span className="font-semibold">unlocked</span> slate to fit
-            in as much OR time as possible. Over-target patients are placed
-            first, most overdue first, and are never bumped in favor of a
-            not-yet-overdue one — though which slate an over-target patient
-            lands on can change. A not-yet-overdue patient can still be bumped
-            back to the waitlist if a better-fitting mix of cases packs the
-            block tighter. The summary that follows lists exactly who was added
-            or removed per slate, and separately flags any over-target patient
-            who couldn&apos;t be fit into any unlocked slate at all (they return
-            to the waitlist as not-yet-slated rather than being silently
-            dropped).
+            <span className="font-semibold">Optimize Utilization</span> fits
+            more OR time into the{" "}
+            <span className="font-semibold">unlocked</span> slates, starting
+            from the slates as they are. Free time is filled from the waitlist,
+            highest priority first, on the earliest slate with room. A waiting
+            patient takes a slated patient&apos;s place only when that adds OR
+            time and everyone coming off ranks below them; whoever comes off can
+            take free room on another slate or goes back to the waitlist. A full
+            slate is left alone, and so are patients you placed by hand. An
+            over-target patient is never swapped out for one who isn&apos;t
+            overdue. If nothing can be improved it says so and changes nothing;
+            otherwise the summary lists who was added or removed per slate, and
+            separately flags any over-target patient still waiting for a place.
           </li>
           <li>
             Export each slate as a one-page{" "}
@@ -396,11 +406,10 @@ export default function Guide() {
         </p>
         <p>
           Reasons are saved with your other notes and follow the patient from
-          week to week. Which slate a patient was dragged onto is not saved — a
-          fresh upload rebuilds the suggested slates from scratch — and{" "}
-          <span className="font-semibold">Optimize Utilization</span> clears it
-          for every unlocked slate, since after that the placements are the
-          tool&apos;s.
+          week to week. Which slate a patient was dragged onto is not saved: a
+          fresh upload rebuilds the suggested slates from scratch.{" "}
+          <span className="font-semibold">Optimize Utilization</span> leaves
+          hand-placed patients where they are.
         </p>
       </Section>
 

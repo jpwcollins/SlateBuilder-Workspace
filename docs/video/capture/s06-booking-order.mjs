@@ -51,6 +51,7 @@ await runTake("s06-booking-order", async (take) => {
   });
 
   await take.beat("S06c", async () => {
+    await take.click(card(page, "Leila Haddad").locator("summary"), { label: "Leila Haddad controls" });
     await take.click(card(page, "Leila Haddad").getByRole("button", { name: "Remove from suggested slates" }), {
       label: "hold back Leila Haddad",
     });

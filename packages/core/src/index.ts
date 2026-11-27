@@ -10,3 +10,4 @@ export * from "./passphrase";
 export * from "./security";
 export * from "./types";
 export * from "./slateCascade";
+export * from "./optimizeUtilization";

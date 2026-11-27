@@ -232,7 +232,7 @@ export function OrderReasonPrompt({
       aria-modal="true"
       aria-labelledby="order-reason-prompt-title"
     >
-      <div className="w-full max-w-xl rounded-2xl bg-white p-6 shadow-xl">
+      <div className="w-full max-w-xl rounded-xl bg-white p-6 shadow-xl">
         <h2 id="order-reason-prompt-title" className="text-lg font-semibold text-slateBlue-900">
           Why was this patient moved?
         </h2>

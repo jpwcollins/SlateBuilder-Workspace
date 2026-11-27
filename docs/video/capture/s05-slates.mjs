@@ -35,10 +35,11 @@ try {
   await take.beat("S05d", async () => {
     // Unavailable until three days after Slate 1, so she moves to a later slate.
     const header = await slate(page, 1).innerText();
-    const date = header.match(/on (\d{4}-\d{2}-\d{2})/)[1];
+    const date = header.match(/(\d{4}-\d{2}-\d{2})/)[1];
     const until = new Date(`${date}T12:00:00`);
     until.setDate(until.getDate() + 3);
     const value = until.toISOString().slice(0, 10);
+    await take.click(card(page, "Grace Whitfield").locator("summary"), { label: "Grace Whitfield controls" });
     const field = card(page, "Grace Whitfield").getByLabel("Patient unavailable until");
     await take.setValue(field, value, { label: "Grace Whitfield unavailable" });
     // The later slates are full, so she returns to the waitlist and the next

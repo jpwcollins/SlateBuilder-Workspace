@@ -425,6 +425,12 @@ export function card(page, patient) {
   return page.locator('[draggable="true"]').filter({ hasText: patient }).filter({ hasText: "Duration (min)" });
 }
 
+/** A slate card's flags, availability and remove controls sit behind a toggle. */
+export async function openCardControls(cardLocator) {
+  const details = cardLocator.locator("details");
+  if (!(await details.evaluate((d) => d.open))) await details.locator("summary").click();
+}
+
 /**
  * Open a take, run it, encode it. On failure, saves a screenshot of the
  * moment it failed next to the partial footage and sets a failing exit code.

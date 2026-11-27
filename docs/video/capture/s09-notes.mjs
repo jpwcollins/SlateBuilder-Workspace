@@ -9,7 +9,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { runTake, loadWaitlist, card, slate, addDays, VIDEO_DIR } from "./lib.mjs";
+import { runTake, loadWaitlist, card, slate, addDays, openCardControls, VIDEO_DIR } from "./lib.mjs";
 
 const PASSPHRASE = "harbour-velvet-spoon-orbit";
 
@@ -58,8 +58,10 @@ await runTake("s09-notes", async (take) => {
   const priya = card(page, "Priya Natarajan").getByLabel("Duration (min)");
   await priya.fill("210");
   await priya.press("Tab");
+  await openCardControls(card(page, "Amara Okafor"));
   await card(page, "Amara Okafor").getByLabel("OSA").check();
-  const date = (await slate(page, 1).innerText()).match(/on (\d{4}-\d{2}-\d{2})/)[1];
+  const date = (await slate(page, 1).innerText()).match(/(\d{4}-\d{2}-\d{2})/)[1];
+  await openCardControls(card(page, "Grace Whitfield"));
   const grace = card(page, "Grace Whitfield").getByLabel("Patient unavailable until");
   await grace.fill(addDays(date, 3));
   // She leaves the slate as soon as the date lands, taking the field with her.
