@@ -113,15 +113,32 @@ export default function Guide() {
           </span>{" "}
           only when you need a named list to work from.
         </p>
+        <p>
+          As soon as the file loads, a summary appears right under it: the
+          number of cases, how many are overdue or urgent, and the total
+          operative time — a quick check that this is the list you expected.{" "}
+          <span className="font-semibold">Show breakdown</span> opens the{" "}
+          <span className="font-semibold">Waitlist overview</span>, which splits
+          each benchmark class (2w–26w) into well under target, approaching
+          target, recently overdue and well overdue, and lists the surgeon IDs
+          found in the file.
+        </p>
       </Section>
 
-      <Section title="2. Restore your notes">
+      <Section title="2. Notes file">
         <p>
-          Optional. If your office saved notes last week — unavailable dates,
-          case lengths, clinical flags, reasons — load that file here with its
-          passphrase, and the notes are matched to whoever is still on this
-          week&apos;s list. The first time, skip this step: you create the notes
-          file when you first save. See{" "}
+          Optional. The card shows one step at a time. The first time on a
+          computer, choose{" "}
+          <span className="font-semibold">Open my notes file</span> if your
+          office has kept notes before, or{" "}
+          <span className="font-semibold">Start a new notes file</span>: pick
+          where it goes, choose a passphrase and{" "}
+          <span className="font-semibold">Save and lock</span>. After that the
+          card remembers the file, so each week it only asks for the passphrase:{" "}
+          <span className="font-semibold">Unlock and load notes</span> brings
+          last week&apos;s notes onto this week&apos;s list, matched to whoever
+          is still on it. While you work, the card is a single line saying your
+          notes are saving themselves. See{" "}
           <span className="font-semibold">Saving your work between weeks</span>{" "}
           below.
         </p>
@@ -133,8 +150,15 @@ export default function Guide() {
         </p>
       </Section>
 
-      <Section title="3. Check the scheduling rules">
+      <Section title="3. OR dates">
         <ul className="list-disc pl-5">
+          <li>
+            <span className="font-semibold">OR dates</span> — choose up to
+            three. They default to 3, 5 and 7 weeks from today, so check them
+            against your actual OR dates. A standard day is 08:00–16:00 (480
+            min); the 2nd and 4th Thursday of the month run 09:00–16:00 (420
+            min).
+          </li>
           <li>
             <span className="font-semibold">Priority rule</span> — this one
             lives on the{" "}
@@ -144,19 +168,20 @@ export default function Guide() {
             purely by time-to-target.
           </li>
           <li>
-            <span className="font-semibold">Default case durations</span> — four
+            <span className="font-semibold">Default case lengths</span> — four
             buckets (hysteroscopy 30, laparoscopy 60, hysterectomy 180, other 90
-            min). These are starting estimates; you can override any case&apos;s
-            duration on its slate card, and most offices will want to.{" "}
-            <span className="font-semibold">Save defaults</span> remembers your
-            own figures in this browser for next time.
+            min), shown on one line under the dates;{" "}
+            <span className="font-semibold">Edit</span> opens them. These are
+            starting estimates; you can override any case&apos;s duration on its
+            slate card, and most offices will want to.{" "}
+            <span className="font-semibold">Save as my defaults</span> remembers
+            your own figures in this browser, and the line is marked when they
+            differ from the standard ones.
           </li>
           <li>
-            <span className="font-semibold">OR dates</span> — choose up to
-            three. They default to 3, 5 and 7 weeks from today, so check them
-            against your actual OR block dates. A standard day is 08:00–16:00
-            (480 min); the 2nd and 4th Thursday of the month run 09:00–16:00
-            (420 min).
+            When the dates are right,{" "}
+            <span className="font-semibold">View suggested slates →</span>,
+            right beside the dates, takes you to the slates.
           </li>
         </ul>
         <p>
@@ -399,16 +424,6 @@ export default function Guide() {
         </ul>
       </Section>
 
-      <Section title="Office snapshot & waitlist overview">
-        <p>
-          The snapshot shows totals (cases, overdue, urgent, workload). The{" "}
-          <span className="font-semibold">Waitlist overview</span> histogram
-          breaks each benchmark class (2w–26w) into bands: well under target,
-          approaching target, recently overdue, and well overdue — a quick read
-          of where pressure is building.
-        </p>
-      </Section>
-
       <Section title="Long-waiters (over target)">
         <p>
           This section lists every patient already past their target, grouped by
@@ -449,13 +464,13 @@ export default function Guide() {
         <p className="font-semibold text-sand-900">Link one file, once</p>
         <p>
           In step 2, choose{" "}
-          <span className="font-semibold">Create a new notes file</span> the
+          <span className="font-semibold">Start a new notes file</span> the
           first time, or{" "}
-          <span className="font-semibold">use one you already have</span> if
-          this office has saved notes before. From then on every save replaces
-          that one file instead of leaving a new copy in Downloads each week,
-          which is what stops an office ending up with several notes files and
-          loading the wrong one. Step 2 shows which file you are linked to.
+          <span className="font-semibold">Open my notes file</span> if this
+          office has saved notes before. From then on every save replaces that
+          one file instead of leaving a new copy in Downloads each week, which
+          is what stops an office ending up with several notes files and loading
+          the wrong one. Step 2 shows which file you are linked to.
         </p>
         <p>
           Pick a folder your office already uses for confidential documents, and{" "}

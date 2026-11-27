@@ -393,6 +393,41 @@ function StatCard({
   );
 }
 
+/** The built-in starting estimates, before any office changes them. */
+const STANDARD_DURATIONS: DefaultDurations = {
+  hysteroscopy: 30,
+  laparoscopy: 60,
+  hysterectomy: 180,
+  other: 90,
+};
+
+/**
+ * A fold the person opened or closed, remembered in this browser. Null until
+ * they have touched it, so the caller can choose a sensible default.
+ */
+function useRememberedToggle(
+  key: string,
+): [boolean | null, (open: boolean) => void] {
+  const [value, setValue] = useState<boolean | null>(null);
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(key);
+      if (stored === "1" || stored === "0") setValue(stored === "1");
+    } catch {
+      // not remembering a fold is harmless
+    }
+  }, [key]);
+  const set = (open: boolean) => {
+    setValue(open);
+    try {
+      window.localStorage.setItem(key, open ? "1" : "0");
+    } catch {
+      // not remembering a fold is harmless
+    }
+  };
+  return [value, set];
+}
+
 function UrgencyBadge({
   benchmarkWeeks,
   timeToTargetDays,
@@ -614,12 +649,8 @@ export default function Home() {
   const [removedFromWaitlist, setRemovedFromWaitlist] = useState<
     Record<string, boolean>
   >({});
-  const [defaultDurations, setDefaultDurations] = useState<DefaultDurations>({
-    hysteroscopy: 30,
-    laparoscopy: 60,
-    hysterectomy: 180,
-    other: 90,
-  });
+  const [defaultDurations, setDefaultDurations] =
+    useState<DefaultDurations>(STANDARD_DURATIONS);
   const [defaultsSavedAt, setDefaultsSavedAt] = useState<string | null>(null);
   const [priorityMode, setPriorityMode] =
     useState<PriorityMode>("urgency_then_ttt");
@@ -693,6 +724,12 @@ export default function Home() {
   // notes exist only in this tab's memory.
   const [notesPassphrase, setNotesPassphrase] = useState("");
   const [notesPassphraseConfirm, setNotesPassphraseConfirm] = useState("");
+  // The passphrase typed to open an existing file, kept apart from the one
+  // being chosen for a new file: the two boxes sit side by side.
+  const [openPassphrase, setOpenPassphrase] = useState("");
+  // Setting up a new notes file (passphrase not chosen yet), as opposed to
+  // unlocking one that already exists.
+  const [notesCreating, setNotesCreating] = useState(false);
   const [notesFile, setNotesFile] = useState<File | null>(null);
   const [notesStatus, setNotesStatus] = useState<string | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
@@ -1388,20 +1425,31 @@ export default function Home() {
         : await pickNotesFileForSaving(
             `slatebuilder-notes-${toLocalDateOnly(new Date())}.sbnotes`,
           );
-    if (!handle) return; // cancelled
+    if (!handle) return false; // cancelled
     setNotesHandle(handle);
     setNotesFile(null);
+    setNotesCreating(mode === "create");
     await rememberNotesHandle(handle);
-    setNotesStatus(
-      mode === "open"
-        ? `Using ${handle.name}. Enter its passphrase and load it to bring in the notes.`
-        : `Notes will be saved to ${handle.name} from now on, replacing it each time rather than adding another copy.`,
-    );
+    return true;
+  };
+
+  // A new file: with a linked file, pick where it goes first; without, the
+  // passphrase is set up here and saving downloads the file.
+  const startNewNotesFile = async () => {
+    if (canBindFile) {
+      await handleChooseNotesFile("create");
+      return;
+    }
+    setNotesError(null);
+    setNotesStatus(null);
+    setNotesScope("save");
+    setNotesCreating(true);
   };
 
   const handleUnbindNotesFile = async () => {
     await forgetNotesHandle();
     setNotesHandle(null);
+    setNotesCreating(false);
     setNotesScope("save");
     // The key belonged to that file. Whatever is saved next is a new file and
     // needs its own passphrase, so autosave stops here too.
@@ -1630,7 +1678,7 @@ export default function Home() {
       setNotesError("Choose a saved notes file first.");
       return;
     }
-    if (!notesPassphrase) {
+    if (!openPassphrase) {
       setNotesError("Enter the passphrase for this notes file.");
       return;
     }
@@ -1658,7 +1706,7 @@ export default function Home() {
       // the session, so the passphrase is never asked for again.
       let session: SessionKey;
       try {
-        session = await openSessionKey(notesPassphrase, envelope);
+        session = await openSessionKey(openPassphrase, envelope);
       } catch {
         setNotesError("That passphrase does not open this file.");
         return;
@@ -1688,7 +1736,7 @@ export default function Home() {
       }
 
       setSessionKey(session);
-      setNotesPassphrase("");
+      setOpenPassphrase("");
 
       // Combine rather than replace, so loading a colleague's file adds their
       // work to yours instead of discarding whoever saved first.
@@ -1759,7 +1807,7 @@ export default function Home() {
         if (merged.added > 0) parts.push(`${merged.added} added`);
         setNotesStatus(`${parts.join(" · ")}.`);
       }
-      setNotesPassphrase("");
+      setOpenPassphrase("");
       setNotesPassphraseConfirm("");
     } catch {
       setNotesError(
@@ -1832,7 +1880,9 @@ export default function Home() {
     setLoadedNotes(null);
     setNotesFile(null);
     setNotesPassphrase("");
+    setOpenPassphrase("");
     setNotesPassphraseConfirm("");
+    setNotesCreating(false);
     // Walking away from the computer must end the session in every sense: the
     // key goes with the notes it unlocked.
     setSessionKey(null);
@@ -3398,6 +3448,82 @@ export default function Home() {
     </div>
   );
 
+  // ---- Setup tab ----------------------------------------------------------
+  const hasWaitlist = cases.length > 0;
+  const [breakdownToggle, setBreakdownOpen] = useRememberedToggle(
+    "slatebuilder-office-setup-breakdown",
+  );
+  const breakdownOpen = breakdownToggle ?? false;
+  const durationsCustomised = (
+    Object.keys(STANDARD_DURATIONS) as (keyof DefaultDurations)[]
+  ).some((key) => defaultDurations[key] !== STANDARD_DURATIONS[key]);
+  const [durationsToggle, setDurationsOpen] = useRememberedToggle(
+    "slatebuilder-office-setup-durations",
+  );
+  const durationsOpen = durationsToggle ?? durationsCustomised;
+  // Which single step the notes card shows: choose a file (first use),
+  // unlock it (each week), set up a new one, or nothing but a status line.
+  // Once a key exists the new file is set up; next time it is one to unlock.
+  useEffect(() => {
+    if (sessionKey) setNotesCreating(false);
+  }, [sessionKey]);
+  const notesSavedAtLabel = (() => {
+    if (!notesSavedAt) return "";
+    const at = new Date(notesSavedAt);
+    return Number.isFinite(at.getTime())
+      ? at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : "";
+  })();
+  const notesStage: "choose" | "unlock" | "create" | "working" = sessionKey
+    ? "working"
+    : notesCreating
+      ? "create"
+      : notesHandle
+        ? "unlock"
+        : "choose";
+  const unlockField = (
+    <label className="flex flex-col gap-1.5 text-xs text-sand-700">
+      Passphrase
+      <input
+        type="password"
+        value={openPassphrase}
+        onChange={(event) => setOpenPassphrase(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") void handleLoadNotes();
+        }}
+        className="w-80 max-w-full rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+      />
+    </label>
+  );
+  const unlockButton = (
+    <button
+      type="button"
+      disabled={notesBusy || (!notesFile && !notesHandle)}
+      onClick={() => void handleLoadNotes()}
+      className="rounded-full bg-slateBlue-700 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+    >
+      {notesBusy ? "Unlocking…" : "Unlock and load notes"}
+    </button>
+  );
+  const authorField = (
+    <label className="flex flex-col gap-1.5 text-xs text-sand-700">
+      Who is saving (initials or role)
+      <input
+        type="text"
+        value={authorLabel}
+        onChange={(event) => {
+          setAuthorLabel(event.target.value);
+          try {
+            window.localStorage.setItem(AUTHOR_LABEL_KEY, event.target.value);
+          } catch {
+            // not remembering the label is harmless
+          }
+        }}
+        placeholder="e.g. MOA"
+        className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+      />
+    </label>
+  );
   return (
     <main className="relative mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-6 py-12">
       <div className="sticky top-0 z-30 -mx-6 mb-2 bg-sand-50/95 px-6 pt-3 backdrop-blur">
@@ -3484,7 +3610,7 @@ export default function Home() {
                   setNotesScope("save");
                   window.requestAnimationFrame(() =>
                     document
-                      .getElementById("notes-save-card")
+                      .getElementById("notes-card")
                       ?.scrollIntoView({ block: "center" }),
                   );
                   return;
@@ -3555,638 +3681,626 @@ export default function Home() {
 
       {activeTab === "setup" && (
         <>
-          <section className="grid gap-6 lg:grid-cols-2">
-            <div className="card p-6">
-              <StepHeading step={1} title="Load this week's waitlist" />
-              <p className="mt-1 text-sm text-sand-700">
-                The file the hospital sent, as CSV or Excel. It is read here in
-                your browser and is not uploaded anywhere.
-              </p>
-              <div className="mt-4 flex flex-col gap-4">
-                <div className="rounded-2xl border border-dashed border-sand-300 bg-white/70 p-4">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <input
-                      type="file"
-                      accept=".csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-                      onChange={handleUpload}
-                      className="flex-1 text-sm"
+          {/* Setup reads top to bottom in the order the work happens each
+              week: load the list (and see at once what it holds), bring in
+              last week's notes, set the OR dates, then go to the slates.
+              Nothing below the step you are on should need a trip back up. */}
+          <section className="card p-6">
+            <StepHeading step={1} title="Load this week's waitlist" />
+            <p className="mt-1 text-sm text-sand-700">
+              The file the hospital sent, as CSV or Excel. It is read here in
+              your browser and is not uploaded anywhere.
+            </p>
+            <div className="mt-4 flex flex-col gap-4">
+              <div className="rounded-2xl border border-dashed border-sand-300 bg-white/70 p-4">
+                <div className="flex flex-wrap items-center gap-3">
+                  <input
+                    type="file"
+                    accept=".csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                    onChange={handleUpload}
+                    className="flex-1 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={resetWorkspace}
+                    title="Clears the uploaded waitlist and all edits on this device"
+                    className="rounded-full border border-sand-300 bg-white px-4 py-2 text-xs font-semibold text-sand-800"
+                  >
+                    Clear waitlist
+                  </button>
+                </div>
+                <label className="mt-3 flex items-start gap-2 text-xs text-sand-700">
+                  <input
+                    type="checkbox"
+                    checked={includeNamesInExports}
+                    onChange={(event) =>
+                      setIncludeNamesInExports(event.target.checked)
+                    }
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <span className="font-semibold text-sand-900">
+                      Include patient names in exported CSVs
+                    </span>
+                    <span className="block text-sand-600">
+                      Off (recommended): exports carry only the opaque case
+                      code. On: adds a patient_label column. The screen always
+                      shows names either way.
+                    </span>
+                  </span>
+                </label>
+              </div>
+
+              {/* The snapshot is the answer to "is this the list I expected?",
+                  so it sits right under the upload. The four headline numbers
+                  are the confirmation and stay visible; the breakdown folds. */}
+              {hasWaitlist && (
+                <div className="rounded-2xl border border-emerald-300 bg-emerald-50/70 p-4">
+                  <p className="text-sm font-semibold text-emerald-900">
+                    {uploadSummary ??
+                      `✓ ${officeStats.totalCases} patients loaded`}
+                  </p>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-4">
+                    <StatCard
+                      label="Cases"
+                      value={String(officeStats.totalCases)}
+                      detail="Total active patients loaded"
                     />
+                    <StatCard
+                      label="Overdue"
+                      value={String(officeStats.overdue)}
+                      detail="Patients past target date"
+                    />
+                    <StatCard
+                      label="Urgent"
+                      value={String(officeStats.urgent)}
+                      detail="2w, 4w, or 6w benchmarks"
+                    />
+                    <StatCard
+                      label="Workload"
+                      value={`${officeStats.totalHours.toFixed(1)}h`}
+                      detail="Estimated operative time"
+                    />
+                  </div>
+                  {importSummary && (
+                    <p className="mt-3 text-xs text-emerald-900">
+                      <span className="font-semibold">Read as:</span>{" "}
+                      {importSummary}.{" "}
+                      <span className="text-emerald-800">
+                        If that does not match the list you know, stop and check
+                        the file rather than the slates.
+                      </span>
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    aria-expanded={breakdownOpen}
+                    onClick={() => setBreakdownOpen(!breakdownOpen)}
+                    className="mt-3 text-xs font-semibold text-slateBlue-700"
+                  >
+                    {breakdownOpen ? "Hide breakdown ▾" : "Show breakdown ▸"}
+                  </button>
+                  {breakdownOpen && (
+                    <div className="mt-3 grid items-start gap-4 lg:grid-cols-[2fr_1fr]">
+                      <div className="rounded-2xl border border-sand-200 bg-white/80 p-4 text-sm text-sand-800">
+                        <div className="flex items-center justify-between">
+                          <p className="font-semibold text-sand-900">
+                            Waitlist overview
+                          </p>
+                          <p className="text-xs text-sand-600">
+                            By benchmark · under vs. over target
+                          </p>
+                        </div>
+                        <div className="mt-2">
+                          <WaitlistHistogram buckets={waitlistOverview} />
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-sand-700">
+                          {OVERVIEW_SEGMENTS.map((seg) => (
+                            <span
+                              key={seg.key}
+                              className="inline-flex items-center gap-1.5"
+                            >
+                              <span
+                                className="inline-block h-2.5 w-2.5 rounded-sm"
+                                style={{ backgroundColor: seg.color }}
+                              />
+                              {seg.label}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-sand-200 bg-white/80 p-4 text-sm text-sand-800">
+                        <p className="font-semibold text-sand-900">
+                          Detected surgeon IDs
+                        </p>
+                        <p className="mt-1 text-xs text-sand-700">
+                          {officeSurgeons.length > 0
+                            ? officeSurgeons.join(", ")
+                            : "None found in this file."}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {warnings.length > 0 && (
+                <div className="rounded-2xl border border-sand-200 bg-sand-50 px-4 py-3 text-xs text-sand-800">
+                  <p className="font-semibold text-sand-900">
+                    Parsing warnings
+                  </p>
+                  <ul className="mt-2 list-disc pl-4">
+                    {warnings.map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* One card for the notes file: restoring and saving are the same
+              file, so they live in the same place. The card changes with the
+              situation rather than showing every control at once. */}
+          <section
+            className={`card p-6 ${hasWaitlist ? "" : "opacity-60"}`}
+            id="notes-card"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <StepHeading step={2} title="Notes file" optional />
+              {notesStage === "working" && (
+                <span className="rounded-full border border-emerald-300 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800">
+                  ✓{" "}
+                  {notesHandle
+                    ? `Saving to ${notesHandle.name}`
+                    : "Notes unlocked"}
+                  {notesSavedAtLabel ? ` · saved ${notesSavedAtLabel}` : ""}
+                </span>
+              )}
+            </div>
+
+            {canBindFile === false && notesStage !== "working" && (
+              // Not a soft suggestion. Without a linked file every save is a
+              // fresh download, and the office is one wrong double-click away
+              // from loading last month's copy and losing this week's notes --
+              // with nothing in the app able to notice.
+              <div
+                role="alert"
+                className="mt-4 rounded-xl border-2 border-rose-400 bg-rose-50 px-4 py-3 text-xs text-rose-900"
+              >
+                <p className="text-sm font-semibold">
+                  {isSecurePage
+                    ? "Please use Google Chrome or Microsoft Edge"
+                    : "This page must be opened over https://"}
+                </p>
+                <p className="mt-1.5">
+                  {isSecurePage
+                    ? "This browser cannot keep a notes file on your computer. "
+                    : "Opened over a plain http:// address, no browser can keep a notes file on your computer. "}
+                  Instead, every save downloads a new copy, and they pile up in
+                  Downloads with nothing but a date to tell them apart. Load an
+                  older copy by mistake and the newer notes are lost — and
+                  Downloads is often synced to a personal cloud account.
+                </p>
+                <p className="mt-1.5 font-semibold">
+                  {isSecurePage
+                    ? "Open SlateBuilder in Chrome or Edge on a desktop or laptop computer before you start."
+                    : "Open SlateBuilder at its https:// address before you start."}{" "}
+                  If you carry on here, keep exactly one notes file and delete
+                  older copies after every save.
+                </p>
+                {isSecurePage && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void navigator.clipboard
+                        ?.writeText(window.location.href)
+                        .then(() => setPageLinkCopied(true))
+                        .catch(() => undefined);
+                    }}
+                    className="mt-2 rounded-full border border-rose-300 bg-white px-3 py-1 font-semibold text-rose-800"
+                  >
+                    {pageLinkCopied
+                      ? "Link copied — paste it into Chrome or Edge"
+                      : "Copy this page’s link"}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* The card shows only the step that fits where the office is:
+                choosing a file the first time, unlocking it each week,
+                setting up a new one, or -- most of the time -- nothing but a
+                line saying the notes are saving themselves. */}
+            {notesStage === "choose" && (
+              <div className="mt-4 flex flex-col gap-3">
+                <p className="text-sm text-sand-700">
+                  {hasWaitlist
+                    ? "Your notes carry over from week to week — unavailable dates, case lengths, clinical flags, reasons. Has this office kept a notes file before?"
+                    : "Load this week's waitlist first: notes are matched to the patients on it."}
+                </p>
+                <div className="flex flex-wrap gap-3">
+                  {canBindFile ? (
                     <button
                       type="button"
-                      onClick={resetWorkspace}
-                      title="Clears the uploaded waitlist and all edits on this device"
-                      className="rounded-full border border-sand-300 bg-white px-4 py-2 text-xs font-semibold text-sand-800"
+                      onClick={() => void handleChooseNotesFile("open")}
+                      className="rounded-full bg-slateBlue-700 px-5 py-2.5 text-sm font-semibold text-white"
                     >
-                      Clear waitlist
+                      Open my notes file
                     </button>
-                  </div>
-                  <label className="mt-3 flex items-start gap-2 text-xs text-sand-700">
-                    <input
-                      type="checkbox"
-                      checked={includeNamesInExports}
-                      onChange={(event) =>
-                        setIncludeNamesInExports(event.target.checked)
-                      }
-                      className="mt-0.5"
-                    />
-                    <span>
-                      <span className="font-semibold text-sand-900">
-                        Include patient names in exported CSVs
-                      </span>
-                      <span className="block text-sand-600">
-                        Off (recommended): exports carry only the opaque case
-                        code. On: adds a patient_label column. The screen always
-                        shows names either way.
-                      </span>
-                    </span>
-                  </label>
+                  ) : (
+                    <label className="flex flex-col gap-1.5 text-xs font-semibold text-sand-700">
+                      Choose your notes file
+                      <input
+                        type="file"
+                        accept=".sbnotes,application/json"
+                        onChange={(event) =>
+                          setNotesFile(event.target.files?.[0] ?? null)
+                        }
+                        className="text-sm font-normal"
+                      />
+                    </label>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void startNewNotesFile()}
+                    className="rounded-full border border-slateBlue-200 bg-white px-5 py-2.5 text-sm font-semibold text-slateBlue-700"
+                  >
+                    Start a new notes file
+                  </button>
                 </div>
-
-                {uploadSummary && (
-                  <div className="rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs text-emerald-800">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <span className="font-semibold">{uploadSummary}</span>
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab("slates")}
-                        className="rounded-full bg-emerald-700 px-3 py-1.5 font-semibold text-white"
-                      >
-                        View suggested slates →
-                      </button>
-                    </div>
-                    {importSummary && (
-                      <p className="mt-2 border-t border-emerald-200 pt-2 text-emerald-900">
-                        <span className="font-semibold">Read as:</span>{" "}
-                        {importSummary}.{" "}
-                        <span className="text-emerald-800">
-                          If that does not match the list you know, stop and
-                          check the file rather than the slates.
-                        </span>
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                {warnings.length > 0 && (
-                  <div className="rounded-2xl border border-sand-200 bg-sand-50 px-4 py-3 text-xs text-sand-800">
-                    <p className="font-semibold text-sand-900">
-                      Parsing warnings
-                    </p>
-                    <ul className="mt-2 list-disc pl-4">
-                      {warnings.map((warning) => (
-                        <li key={warning}>{warning}</li>
-                      ))}
-                    </ul>
+                {!canBindFile && notesFile && (
+                  <div className="flex flex-wrap items-end gap-3">
+                    {unlockField}
+                    {unlockButton}
                   </div>
                 )}
               </div>
-            </div>
+            )}
 
-            <div className="card p-6">
-              <StepHeading step={2} title="Restore your notes" optional />
-              <p className="mt-1 text-sm text-sand-700">
-                Your notes from last week — unavailable dates, case lengths,
-                clinical flags. They are matched to whoever is still on the list
-                you just loaded.
-              </p>
+            {notesStage === "unlock" && notesHandle && (
               <div className="mt-4 flex flex-col gap-3">
-                {notesHandle ? (
-                  <div className="rounded-xl border border-slateBlue-200 bg-slateBlue-50/60 px-3 py-2 text-xs text-slateBlue-900">
-                    <span className="font-semibold">
-                      Linked to {notesHandle.name}
-                    </span>{" "}
-                    on this computer. Saving replaces this file rather than
-                    adding another copy.
-                    <button
-                      type="button"
-                      onClick={() => void handleUnbindNotesFile()}
-                      className="ml-2 font-semibold underline"
-                    >
-                      Unlink
-                    </button>
-                  </div>
-                ) : canBindFile ? (
-                  <div className="rounded-xl border border-sand-200 bg-white/70 px-3 py-2 text-xs text-sand-700">
-                    <span className="font-semibold text-sand-900">
-                      Recommended:
-                    </span>{" "}
-                    link one notes file on this computer, so every save replaces
-                    it instead of leaving copies in Downloads.
-                    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
-                      {/* Both ways in matter. "Use an existing file" opens a picker
-                      that can only select a file that is already there, so on
-                      the first day of use -- when no notes file exists yet --
-                      it is the one thing that cannot work. */}
-                      <button
-                        type="button"
-                        onClick={() => void handleChooseNotesFile("create")}
-                        className="font-semibold text-slateBlue-700 underline"
-                      >
-                        Create a new notes file
-                      </button>
-                      <span className="text-sand-500">or</span>
-                      <button
-                        type="button"
-                        onClick={() => void handleChooseNotesFile("open")}
-                        className="font-semibold text-slateBlue-700 underline"
-                      >
-                        use one you already have
-                      </button>
-                    </div>
-                  </div>
-                ) : canBindFile === false ? (
-                  // Not a soft suggestion. Without a linked file every save is
-                  // a fresh download, and the office is one wrong double-click
-                  // away from loading last month's copy and losing this week's
-                  // notes -- with nothing in the app able to notice.
-                  <div
-                    role="alert"
-                    className="rounded-xl border-2 border-rose-400 bg-rose-50 px-4 py-3 text-xs text-rose-900"
+                <p className="text-sm text-sand-700">
+                  <span className="font-semibold text-sand-900">
+                    {notesHandle.name}
+                  </span>{" "}
+                  — enter its passphrase to bring last week&apos;s notes onto
+                  this week&apos;s list.
+                </p>
+                <div className="flex flex-wrap items-end gap-3">
+                  {unlockField}
+                  {unlockButton}
+                </div>
+                <p className="text-xs text-sand-600">
+                  <button
+                    type="button"
+                    onClick={() => void handleChooseNotesFile("open")}
+                    className="font-semibold text-slateBlue-700 underline"
                   >
-                    <p className="text-sm font-semibold">
-                      {isSecurePage
-                        ? "Please use Google Chrome or Microsoft Edge"
-                        : "This page must be opened over https://"}
-                    </p>
-                    <p className="mt-1.5">
-                      {isSecurePage
-                        ? "This browser cannot keep a notes file on your computer. "
-                        : "Opened over a plain http:// address, no browser can keep a notes file on your computer. "}
-                      Instead, every save downloads a new copy, and they pile up
-                      in Downloads with nothing but a date to tell them apart.
-                      Load an older copy by mistake and the newer notes are lost
-                      — and Downloads is often synced to a personal cloud
-                      account.
-                    </p>
-                    <p className="mt-1.5 font-semibold">
-                      {isSecurePage
-                        ? "Open SlateBuilder in Chrome or Edge on a desktop or laptop computer before you start."
-                        : "Open SlateBuilder at its https:// address before you start."}{" "}
-                      If you carry on here, keep exactly one notes file and
-                      delete older copies after every save.
-                    </p>
-                    {isSecurePage && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void navigator.clipboard
-                            ?.writeText(window.location.href)
-                            .then(() => setPageLinkCopied(true))
-                            .catch(() => undefined);
-                        }}
-                        className="mt-2 rounded-full border border-rose-300 bg-white px-3 py-1 font-semibold text-rose-800"
-                      >
-                        {pageLinkCopied
-                          ? "Link copied — paste it into Chrome or Edge"
-                          : "Copy this page’s link"}
-                      </button>
-                    )}
-                  </div>
-                ) : null}
+                    Use a different file
+                  </button>
+                  <span className="mx-2 text-sand-400">·</span>
+                  <button
+                    type="button"
+                    onClick={() => void startNewNotesFile()}
+                    className="font-semibold text-slateBlue-700 underline"
+                  >
+                    Start a new notes file
+                  </button>
+                </p>
+              </div>
+            )}
+
+            {notesStage === "create" && (
+              <div className="mt-4 flex max-w-2xl flex-col gap-3">
+                <p className="text-sm text-sand-700">
+                  {notesHandle ? (
+                    <>
+                      New notes file:{" "}
+                      <span className="font-semibold text-sand-900">
+                        {notesHandle.name}
+                      </span>
+                      . Lock it with a passphrase you will use every week.
+                    </>
+                  ) : (
+                    "Choose a passphrase for your notes file. You will use it every week."
+                  )}
+                </p>
                 <label className="flex flex-col gap-1.5 text-xs text-sand-700">
-                  {notesHandle ? "Or choose a different file" : "Notes file"}
-                  <input
-                    type="file"
-                    accept=".sbnotes,application/json"
-                    onChange={(event) =>
-                      setNotesFile(event.target.files?.[0] ?? null)
-                    }
-                    className="text-sm"
-                  />
-                </label>
-                <label className="flex flex-col gap-1.5 text-xs text-sand-700">
-                  Passphrase for this file
+                  New passphrase (at least {MIN_PASSPHRASE_LENGTH} characters)
                   <input
                     type="password"
                     value={notesPassphrase}
                     onChange={(event) => setNotesPassphrase(event.target.value)}
+                    placeholder={`e.g. ${PASSPHRASE_EXAMPLE}`}
                     className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
                   />
                 </label>
-                <button
-                  type="button"
-                  disabled={notesBusy || (!notesFile && !notesHandle)}
-                  onClick={() => void handleLoadNotes()}
-                  className="self-start rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700 disabled:opacity-50"
-                >
-                  {notesBusy ? "Working…" : "Load notes"}
-                </button>
-                {notesScope === "load" && notesStatus && (
-                  <div className="rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs font-semibold text-emerald-800">
-                    {notesStatus}
-                  </div>
-                )}
-                {notesScope === "load" && notesError && (
-                  <div className="rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-800">
-                    {notesError}
-                  </div>
-                )}
                 <p className="text-xs text-sand-600">
-                  First time using SlateBuilder, or no notes yet? Skip this —
-                  you can save a notes file at the end of the session.
+                  Use 4 or 5 random words joined by hyphens — unrelated words
+                  you would not put together yourself.
                 </p>
-              </div>
-            </div>
-          </section>
-
-          <section className="card p-6">
-            <StepHeading step={3} title="Check the scheduling rules" />
-            <div className="mt-4 grid gap-6">
-              <div className="rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <p className="font-semibold text-sand-900">
-                    Default case durations (min)
-                  </p>
+                {notesPassphrase &&
+                  (() => {
+                    const strength = assessPassphrase(notesPassphrase);
+                    const tone =
+                      strength.level === "strong"
+                        ? "text-emerald-700"
+                        : strength.level === "fair"
+                          ? "text-amber-700"
+                          : "text-rose-700";
+                    const filled =
+                      strength.level === "strong"
+                        ? 3
+                        : strength.level === "fair"
+                          ? 2
+                          : 1;
+                    const bar =
+                      strength.level === "strong"
+                        ? "bg-emerald-500"
+                        : strength.level === "fair"
+                          ? "bg-amber-500"
+                          : "bg-rose-500";
+                    return (
+                      <div className="flex flex-col gap-1" aria-live="polite">
+                        <div className="flex gap-1">
+                          {[0, 1, 2].map((i) => (
+                            <span
+                              key={i}
+                              className={`h-1.5 flex-1 rounded-full ${i < filled ? bar : "bg-sand-200"}`}
+                            />
+                          ))}
+                        </div>
+                        <p className={`text-xs font-semibold ${tone}`}>
+                          {strength.message}
+                        </p>
+                      </div>
+                    );
+                  })()}
+                <label className="flex flex-col gap-1.5 text-xs text-sand-700">
+                  Confirm passphrase
+                  <input
+                    type="password"
+                    value={notesPassphraseConfirm}
+                    onChange={(event) =>
+                      setNotesPassphraseConfirm(event.target.value)
+                    }
+                    className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                  />
+                </label>
+                {authorField}
+                <div className="flex flex-wrap items-center gap-3">
                   <button
                     type="button"
-                    onClick={saveDefaultDurations}
-                    className="rounded-full border border-sand-300 bg-white px-3 py-1 text-xs font-semibold text-slateBlue-700"
+                    disabled={notesBusy || annotationsCount === 0}
+                    onClick={() => void handleSaveNotes()}
+                    className="rounded-full bg-slateBlue-700 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
                   >
-                    Save defaults
+                    {notesBusy ? "Working…" : "Save and lock"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNotesCreating(false)}
+                    className="text-xs font-semibold text-slateBlue-700 underline"
+                  >
+                    Cancel
                   </button>
                 </div>
-                <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                  <label className="flex items-center justify-between gap-3 text-xs text-sand-700">
-                    Hysteroscopy
-                    <input
-                      type="number"
-                      min={10}
-                      step={5}
-                      value={defaultDurations.hysteroscopy}
-                      onChange={(event) =>
-                        setDefaultDurations((prev) => ({
-                          ...prev,
-                          hysteroscopy: Number(event.target.value),
-                        }))
-                      }
-                      className="w-20 rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
-                    />
-                  </label>
-                  <label className="flex items-center justify-between gap-3 text-xs text-sand-700">
-                    Laparoscopy
-                    <input
-                      type="number"
-                      min={10}
-                      step={5}
-                      value={defaultDurations.laparoscopy}
-                      onChange={(event) =>
-                        setDefaultDurations((prev) => ({
-                          ...prev,
-                          laparoscopy: Number(event.target.value),
-                        }))
-                      }
-                      className="w-20 rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
-                    />
-                  </label>
-                  <label className="flex items-center justify-between gap-3 text-xs text-sand-700">
-                    Hysterectomy
-                    <input
-                      type="number"
-                      min={10}
-                      step={5}
-                      value={defaultDurations.hysterectomy}
-                      onChange={(event) =>
-                        setDefaultDurations((prev) => ({
-                          ...prev,
-                          hysterectomy: Number(event.target.value),
-                        }))
-                      }
-                      className="w-20 rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
-                    />
-                  </label>
-                  <label className="flex items-center justify-between gap-3 text-xs text-sand-700">
-                    Other
-                    <input
-                      type="number"
-                      min={10}
-                      step={5}
-                      value={defaultDurations.other}
-                      onChange={(event) =>
-                        setDefaultDurations((prev) => ({
-                          ...prev,
-                          other: Number(event.target.value),
-                        }))
-                      }
-                      className="w-20 rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
-                    />
-                  </label>
-                </div>
-                {defaultsSavedAt && (
-                  <p className="mt-3 text-xs text-sand-600">
-                    Saved {defaultsSavedAt}
+                {annotationsCount === 0 && (
+                  <p className="text-xs text-sand-600">
+                    Nothing to save yet. Notes appear once you set an
+                    unavailable date, adjust a case length, tick a clinical
+                    flag, or remove someone.
                   </p>
                 )}
               </div>
+            )}
 
-              <div className="rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
-                <p className="font-semibold text-sand-900">OR slate dates</p>
-                <p className="mt-1 text-xs text-sand-600">
-                  Defaults to 3, 5, and 7 weeks from today — confirm these match
-                  your actual OR block dates before finalizing a slate.
-                </p>
-                <div className="mt-3 flex flex-col gap-4">
-                  <label className="flex flex-col gap-2">
-                    Number of slates
-                    <select
-                      value={slateCount}
-                      onChange={(event) =>
-                        setSlateCount(Number(event.target.value))
-                      }
-                      className="rounded-lg border border-sand-300 bg-white px-3 py-2"
+            {notesStage === "working" && (
+              <div className="mt-4 flex flex-col gap-3">
+                <div className="flex flex-wrap items-end gap-3">
+                  {authorField}
+                  {notesDirty && (
+                    <button
+                      type="button"
+                      disabled={notesBusy}
+                      onClick={() => void handleSaveNotes()}
+                      className="rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
                     >
-                      <option value={1}>1 slate</option>
-                      <option value={2}>2 slates</option>
-                      <option value={3}>3 slates</option>
-                    </select>
-                  </label>
-                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                    {Array.from({ length: slateCount }).map((_, index) => (
+                      {notesBusy ? "Working…" : "Save now"}
+                    </button>
+                  )}
+                  {notesHandle && (
+                    <button
+                      type="button"
+                      onClick={() => void handleUnbindNotesFile()}
+                      className="pb-2 text-xs font-semibold text-slateBlue-700 underline"
+                    >
+                      Unlink file
+                    </button>
+                  )}
+                </div>
+                {loadedNotes && (
+                  <p className="text-xs text-sand-600">
+                    Working from revision {loadedNotes.revision}
+                    {loadedNotes.savedBy
+                      ? `, saved by ${loadedNotes.savedBy}`
+                      : ""}{" "}
+                    on {loadedNotes.updatedAt.slice(0, 10)}
+                    {loadedNotes.patientCount !== undefined
+                      ? ` against a ${loadedNotes.patientCount}-patient list`
+                      : ""}
+                    . Saving will write revision {loadedNotes.revision + 1}.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {notesStatus && (
+              <p className="mt-3 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
+                {notesStatus}
+              </p>
+            )}
+            {notesError && (
+              <p className="mt-3 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">
+                {notesError}
+              </p>
+            )}
+
+            <details className="mt-4 text-xs text-sand-700">
+              <summary className="cursor-pointer font-semibold text-slateBlue-700">
+                What is in the notes file?
+              </summary>
+              <p className="mt-2">
+                Only your notes, locked with your passphrase: each
+                patient&apos;s PHN, any unavailable date, adjusted case length,
+                clinical flags, reasons for booking out of order, and whether
+                you removed them. It does{" "}
+                <span className="font-semibold">not</span> contain patient
+                names, diagnoses, or the waitlist itself — the hospital&apos;s
+                file stays the only list.
+              </p>
+              <p className="mt-1">
+                It is still a health record: keep it somewhere your office keeps
+                confidential files, and delete it when the pilot ends. Nobody
+                can recover it if the passphrase is lost.
+              </p>
+            </details>
+          </section>
+
+          <section className={`card p-6 ${hasWaitlist ? "" : "opacity-60"}`}>
+            <StepHeading step={3} title="OR dates" />
+            <p className="mt-1 text-sm text-sand-700">
+              Defaults to 3, 5, and 7 weeks from today — confirm these match
+              your actual OR dates before finalizing a slate.
+            </p>
+            <div className="mt-4 flex flex-wrap items-end gap-4">
+              <label className="flex flex-col gap-1.5 text-xs font-semibold text-sand-700">
+                Number of slates
+                <select
+                  value={slateCount}
+                  onChange={(event) =>
+                    setSlateCount(Number(event.target.value))
+                  }
+                  className="rounded-lg border border-sand-300 bg-white px-3 py-2.5 text-base font-semibold text-slateBlue-900"
+                >
+                  <option value={1}>1 slate</option>
+                  <option value={2}>2 slates</option>
+                  <option value={3}>3 slates</option>
+                </select>
+              </label>
+              {Array.from({ length: slateCount }).map((_, index) => (
+                <label
+                  key={`date-${index}`}
+                  className="flex flex-col gap-1.5 text-xs font-semibold text-sand-700"
+                >
+                  Slate {index + 1} date
+                  <input
+                    type="date"
+                    value={slateDates[index] || ""}
+                    onChange={(event) =>
+                      updateSlateDate(index, event.target.value)
+                    }
+                    className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-base font-semibold text-slateBlue-900"
+                  />
+                </label>
+              ))}
+              {/* Right after the dates: choosing them is the last decision
+                  before the slates, so the way there sits beside them. */}
+              <button
+                type="button"
+                disabled={!hasWaitlist}
+                onClick={() => setActiveTab("slates")}
+                className="rounded-full bg-slateBlue-700 px-6 py-3 text-sm font-semibold text-white shadow-sm disabled:opacity-40"
+              >
+                View suggested slates →
+              </button>
+            </div>
+            <p className="mt-3 text-xs text-sand-600">
+              Standard day is 08:00-16:00. The 2nd and 4th Thursday run
+              09:00-16:00.
+            </p>
+
+            {/* Folded by default, but never hiding a change: if the defaults
+                differ from the built-in ones it opens, so a non-standard
+                setting is always in view. */}
+            <div className="mt-5 rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
+              <button
+                type="button"
+                aria-expanded={durationsOpen}
+                onClick={() => setDurationsOpen(!durationsOpen)}
+                className="flex w-full flex-wrap items-center justify-between gap-2 text-left"
+              >
+                <span>
+                  <span className="font-semibold text-sand-900">
+                    Default case lengths:
+                  </span>{" "}
+                  Hysteroscopy {defaultDurations.hysteroscopy} · Laparoscopy{" "}
+                  {defaultDurations.laparoscopy} · Hysterectomy{" "}
+                  {defaultDurations.hysterectomy} · Other{" "}
+                  {defaultDurations.other} min
+                  {durationsCustomised && (
+                    <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
+                      Changed from the standard
+                    </span>
+                  )}
+                </span>
+                <span className="text-xs font-semibold text-slateBlue-700">
+                  {durationsOpen ? "Done ▾" : "Edit ▸"}
+                </span>
+              </button>
+              {durationsOpen && (
+                <>
+                  <p className="mt-2 text-xs text-sand-600">
+                    Starting estimates by procedure type. Any single case can be
+                    changed on its slate card.
+                  </p>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    {(
+                      [
+                        ["hysteroscopy", "Hysteroscopy"],
+                        ["laparoscopy", "Laparoscopy"],
+                        ["hysterectomy", "Hysterectomy"],
+                        ["other", "Other"],
+                      ] as const
+                    ).map(([key, label]) => (
                       <label
-                        key={`date-${index}`}
-                        className="flex flex-col gap-2 text-xs text-sand-700"
+                        key={key}
+                        className="flex items-center justify-between gap-3 text-xs text-sand-700"
                       >
-                        Slate {index + 1} date
+                        {label}
                         <input
-                          type="date"
-                          value={slateDates[index] || ""}
+                          type="number"
+                          min={10}
+                          step={5}
+                          value={defaultDurations[key]}
                           onChange={(event) =>
-                            updateSlateDate(index, event.target.value)
+                            setDefaultDurations((prev) => ({
+                              ...prev,
+                              [key]: Number(event.target.value),
+                            }))
                           }
-                          className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
+                          className="w-20 rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
                         />
                       </label>
                     ))}
                   </div>
-                  <p className="text-xs text-sand-600">
-                    Standard day is 08:00-16:00. The 2nd and 4th Thursday run
-                    09:00-16:00.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section className="card p-6">
-            <h2 className="text-lg font-semibold text-slateBlue-900">
-              Office Snapshot
-            </h2>
-            <p className="mt-1 text-sm text-sand-700">
-              A quick read on the uploaded office waitlist.
-            </p>
-            <div className="mt-4 grid gap-3 sm:grid-cols-4">
-              <StatCard
-                label="Cases"
-                value={String(officeStats.totalCases)}
-                detail="Total active patients loaded"
-              />
-              <StatCard
-                label="Overdue"
-                value={String(officeStats.overdue)}
-                detail="Patients past target date"
-              />
-              <StatCard
-                label="Urgent"
-                value={String(officeStats.urgent)}
-                detail="2w, 4w, or 6w benchmarks"
-              />
-              <StatCard
-                label="Workload"
-                value={`${officeStats.totalHours.toFixed(1)}h`}
-                detail="Estimated operative time"
-              />
-            </div>
-            <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_1fr]">
-              <div className="rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
-                <div className="flex items-center justify-between">
-                  <p className="font-semibold text-sand-900">
-                    Waitlist overview
-                  </p>
-                  <p className="text-xs text-sand-600">
-                    By benchmark · under vs. over target
-                  </p>
-                </div>
-                {officeStats.totalCases > 0 ? (
-                  <>
-                    <div className="mt-2">
-                      <WaitlistHistogram buckets={waitlistOverview} />
-                    </div>
-                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-sand-700">
-                      {OVERVIEW_SEGMENTS.map((seg) => (
-                        <span
-                          key={seg.key}
-                          className="inline-flex items-center gap-1.5"
-                        >
-                          <span
-                            className="inline-block h-2.5 w-2.5 rounded-sm"
-                            style={{ backgroundColor: seg.color }}
-                          />
-                          {seg.label}
-                        </span>
-                      ))}
-                    </div>
-                  </>
-                ) : (
-                  <p className="mt-2 text-xs text-sand-600">
-                    No waitlist uploaded yet.
-                  </p>
-                )}
-              </div>
-              <div className="rounded-2xl border border-sand-200 bg-white/70 p-4 text-sm text-sand-800">
-                <p className="font-semibold text-sand-900">
-                  Detected surgeon IDs
-                </p>
-                <p className="mt-1 text-xs text-sand-700">
-                  {officeSurgeons.length > 0
-                    ? officeSurgeons.join(", ")
-                    : "No waitlist uploaded yet."}
-                </p>
-              </div>
-            </div>
-          </section>
-
-          <section className="card p-6" id="notes-save-card">
-            <h2 className="text-lg font-semibold text-slateBlue-900">
-              {sessionKey && notesHandle
-                ? "Your notes are saving themselves"
-                : "Before you finish: save your notes"}
-            </h2>
-            <p className="mt-1 max-w-3xl text-sm text-sand-700">
-              {sessionKey && notesHandle
-                ? `Every change you make is written to ${notesHandle.name} a couple of seconds later, without asking for the passphrase again. The header shows whether anything is still outstanding, from whichever tab you are on.`
-                : "Closing the tab clears everything. Save your notes to this computer and you can restore them at step 2 next week, instead of entering them again."}
-            </p>
-
-            {loadedNotes && (
-              <p className="mt-2 text-xs text-sand-600">
-                Working from revision {loadedNotes.revision}
-                {loadedNotes.savedBy
-                  ? `, saved by ${loadedNotes.savedBy}`
-                  : ""}{" "}
-                on {loadedNotes.updatedAt.slice(0, 10)}
-                {loadedNotes.patientCount !== undefined
-                  ? ` against a ${loadedNotes.patientCount}-patient list`
-                  : ""}
-                . Saving will write revision {loadedNotes.revision + 1}.
-              </p>
-            )}
-
-            <div className="mt-4 grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
-              <div className="rounded-2xl border border-sand-200 bg-white/70 p-4">
-                <p className="text-xs text-sand-600">
-                  {annotationsCount > 0
-                    ? `${annotationsCount} patient${annotationsCount === 1 ? " has" : "s have"} notes to save: unavailable dates, case lengths you have adjusted, clinical flags, and anyone you have taken off the list.`
-                    : "Nothing to save yet. Notes appear here once you set an unavailable date, adjust a case length, tick a clinical flag, or remove someone."}
-                </p>
-                <div className="mt-3 flex flex-col gap-3">
-                  <label className="flex flex-col gap-1.5 text-xs text-sand-700">
-                    Who is saving (initials or role)
-                    <input
-                      type="text"
-                      value={authorLabel}
-                      onChange={(event) => {
-                        setAuthorLabel(event.target.value);
-                        try {
-                          window.localStorage.setItem(
-                            AUTHOR_LABEL_KEY,
-                            event.target.value,
-                          );
-                        } catch {
-                          // not remembering the label is harmless
-                        }
-                      }}
-                      placeholder="e.g. MOA"
-                      className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-                    />
-                  </label>
-                  {/* Asked for once, when this file is first created. After that
-                  the key lives in memory for the session and neither a manual
-                  save nor an autosave needs it again. */}
-                  {!sessionKey && (
-                    <>
-                      <label className="flex flex-col gap-1.5 text-xs text-sand-700">
-                        Passphrase (at least {MIN_PASSPHRASE_LENGTH} characters)
-                        <input
-                          type="password"
-                          value={notesPassphrase}
-                          onChange={(event) =>
-                            setNotesPassphrase(event.target.value)
-                          }
-                          placeholder={`e.g. ${PASSPHRASE_EXAMPLE}`}
-                          className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-                        />
-                      </label>
-                      <p className="text-xs text-sand-600">
-                        Use 4 or 5 random words joined by hyphens — unrelated
-                        words you would not put together yourself. Strong, and
-                        far easier to type than a jumble of symbols.
-                      </p>
-                      {notesPassphrase &&
-                        (() => {
-                          const strength = assessPassphrase(notesPassphrase);
-                          const tone =
-                            strength.level === "strong"
-                              ? "text-emerald-700"
-                              : strength.level === "fair"
-                                ? "text-amber-700"
-                                : "text-rose-700";
-                          const filled =
-                            strength.level === "strong"
-                              ? 3
-                              : strength.level === "fair"
-                                ? 2
-                                : 1;
-                          const bar =
-                            strength.level === "strong"
-                              ? "bg-emerald-500"
-                              : strength.level === "fair"
-                                ? "bg-amber-500"
-                                : "bg-rose-500";
-                          return (
-                            <div
-                              className="flex flex-col gap-1"
-                              aria-live="polite"
-                            >
-                              <div className="flex gap-1">
-                                {[0, 1, 2].map((i) => (
-                                  <span
-                                    key={i}
-                                    className={`h-1.5 flex-1 rounded-full ${i < filled ? bar : "bg-sand-200"}`}
-                                  />
-                                ))}
-                              </div>
-                              <p className={`text-xs font-semibold ${tone}`}>
-                                {strength.message}
-                              </p>
-                            </div>
-                          );
-                        })()}
-                      <label className="flex flex-col gap-1.5 text-xs text-sand-700">
-                        Confirm passphrase
-                        <input
-                          type="password"
-                          value={notesPassphraseConfirm}
-                          onChange={(event) =>
-                            setNotesPassphraseConfirm(event.target.value)
-                          }
-                          className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-sm"
-                        />
-                      </label>
-                      <p className="text-xs text-sand-600">
-                        You will be asked for this once. It is needed again only
-                        when this file is opened afresh — next week, or by
-                        whoever you share it with.
-                      </p>
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    disabled={
-                      notesBusy ||
-                      annotationsCount === 0 ||
-                      (Boolean(sessionKey) && !notesDirty)
-                    }
-                    onClick={() => void handleSaveNotes()}
-                    className="self-start rounded-full bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
-                  >
-                    {notesBusy
-                      ? "Working…"
-                      : sessionKey
-                        ? notesDirty
-                          ? "Save now"
-                          : "Everything is saved"
-                        : "Save notes file"}
-                  </button>
-                  {notesScope === "save" && notesStatus && (
-                    <div className="rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs font-semibold text-emerald-800">
-                      {notesStatus}
-                    </div>
-                  )}
-                  {notesScope === "save" && notesError && (
-                    <div className="rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-800">
-                      {notesError}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-sand-200 bg-sand-50 px-4 py-3 text-xs text-sand-700">
-                <p className="font-semibold text-sand-900">
-                  What is in the notes file
-                </p>
-                <p className="mt-1">
-                  Only your notes, locked with your passphrase: each
-                  patient&apos;s PHN, any unavailable date, adjusted case
-                  length, clinical flags, and whether you removed them. It does{" "}
-                  <span className="font-semibold">not</span> contain patient
-                  names, diagnoses, or the waitlist itself — the hospital&apos;s
-                  file stays the only list.
-                </p>
-                <p className="mt-1">
-                  It is still a health record: keep it somewhere your office
-                  keeps confidential files, and delete it when the pilot ends.
-                  Nobody can recover it if the passphrase is lost.
-                </p>
-              </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={saveDefaultDurations}
+                      className="rounded-full border border-sand-300 bg-white px-3 py-1 text-xs font-semibold text-slateBlue-700"
+                    >
+                      Save as my defaults
+                    </button>
+                    {defaultsSavedAt && (
+                      <span className="text-xs text-sand-600">
+                        Saved {defaultsSavedAt}
+                      </span>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           </section>
 

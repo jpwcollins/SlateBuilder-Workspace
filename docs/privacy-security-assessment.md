@@ -11,7 +11,7 @@ SlateBuilder is a calculator, not a record system. It has no accounts, no databa
 Three things can be checked by anyone who wants to verify that:
 
 - **There is no server code.** The application builds to static pages only — no server routes, no interfaces that could receive data.
-- **Nothing about a patient is written to the browser.** Browser storage holds only settings: which tab you were last on, your saved default case durations, the "Who is saving" label, a reference to the linked notes file, and a save counter and timestamp the app uses to spot an out-of-date notes file. No names, PHNs or notes.
+- **Nothing about a patient is written to the browser.** Browser storage holds only settings: which tab you were last on, which Setup sections you have folded open, your saved default case durations, the "Who is saving" label, a reference to the linked notes file, and a save counter and timestamp the app uses to spot an out-of-date notes file. No names, PHNs or notes.
 - **Opening a page contacts no one else.** There are no analytics, no trackers and no outside assets — even the typeface is served by the application itself.
 
 ## B · What information the tool handles
