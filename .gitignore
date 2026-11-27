@@ -4,3 +4,6 @@ package-lock.json
 *.tsbuildinfo
 .DS_Store
 .env*
+
+# demo video renders
+docs/video/out/

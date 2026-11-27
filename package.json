@@ -9,5 +9,8 @@
     "build": "npm run build --workspaces --if-present",
     "dev:pro": "npm run dev -w @slatebuilder/pro",
     "dev:offices": "npm run dev -w @slatebuilder/offices"
+  },
+  "devDependencies": {
+    "playwright": "^1.65.1"
   }
 }

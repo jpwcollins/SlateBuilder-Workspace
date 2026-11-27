@@ -4,14 +4,32 @@
     {
       "name": "offices",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev:offices"],
+      "runtimeArgs": [
+        "run",
+        "dev:offices"
+      ],
       "port": 3000
     },
     {
       "name": "pro",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev:pro"],
+      "runtimeArgs": [
+        "run",
+        "dev:pro"
+      ],
       "port": 3000
+    },
+    {
+      "name": "offices-prod",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "next",
+        "start",
+        "apps/slatebuilder-for-offices",
+        "-p",
+        "3100"
+      ],
+      "port": 3100
     }
   ]
 }
