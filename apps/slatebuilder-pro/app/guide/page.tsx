@@ -103,6 +103,12 @@ export default function Guide() {
             <span className="font-semibold">Flags, availability, remove</span>.
           </li>
           <li>
+            Date fields (unavailable-until and the OR dates) take effect when you press Enter, click{" "}
+            <span className="font-semibold">Set</span>, or move on from the field, not while you
+            scroll or type through dates; Escape puts the old date back. An unavailable-until date
+            can be at most a year from today.
+          </li>
+          <li>
             Drag a case onto another day&apos;s slate to move the patient there. The rest of the
             slates are re-planned around that choice: anyone displaced goes to the best day left for
             them, or back to the waitlist if there is no room. You see the list of changes and

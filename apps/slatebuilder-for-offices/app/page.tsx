@@ -522,6 +522,88 @@ function SlateMark() {
   );
 }
 
+// A date field that sets its date only once the person is done choosing.
+// Chrome changes a date field's value many times on the way (scrolling over
+// it steps the day, month or year; typing fills one part at a time), and
+// acting on each of those would, for an unavailable-until date, move the
+// patient off a slate, and for an OR date, rebuild the slates, before the
+// office has finished. So the field holds a draft, and the date is set only on
+// Enter, on the Set button, or on leaving the field. A half-typed date is never
+// set, nor one past `max`; Escape puts the field back.
+function DraftDateInput({
+  value,
+  onCommit,
+  className,
+  max,
+  maxMessage,
+}: {
+  value: string;
+  onCommit: (value: string) => void;
+  className: string;
+  /** Latest date allowed (YYYY-MM-DD). */
+  max?: string;
+  /** Shown when a later date is refused. */
+  maxMessage?: string;
+}) {
+  const [draft, setDraft] = useState(value);
+  const [refused, setRefused] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => setDraft(value), [value]);
+  const commit = () => {
+    if (inputRef.current?.validity.badInput) {
+      setDraft(value);
+      return;
+    }
+    if (max && draft && draft > max) {
+      setDraft(value);
+      setRefused(true);
+      return;
+    }
+    if (draft !== value) onCommit(draft);
+  };
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      <input
+        ref={inputRef}
+        type="date"
+        value={draft}
+        max={max}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          setRefused(false);
+        }}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commit();
+          } else if (event.key === "Escape") {
+            setDraft(value);
+          }
+        }}
+        className={className}
+      />
+      {draft !== value && (
+        <button
+          type="button"
+          // Keep focus in the field until the click lands, so the blur does
+          // not set the date first and the button then find nothing to do.
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={commit}
+          className="rounded-lg bg-slateBlue-700 px-2 py-1 text-[11px] font-semibold text-white"
+        >
+          Set
+        </button>
+      )}
+      {refused && maxMessage && (
+        <span role="alert" className="basis-full text-[11px] font-semibold text-rose-700">
+          {maxMessage}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function CapacityBar({
   totalMinutes,
   blockMinutes,
@@ -1877,6 +1959,15 @@ export default function Home() {
       setNotesBusy(false);
     }
   };
+
+  // An unavailable-until date can be at most a year from today: anything
+  // later is almost certainly a slip of the picker, and would quietly keep the
+  // patient off every slate.
+  const unavailableMaxISO = useMemo(() => {
+    const limit = new Date();
+    limit.setFullYear(limit.getFullYear() + 1);
+    return toLocalDateOnly(limit);
+  }, []);
 
   const updateSlateDate = (index: number, value: string) => {
     setSlateDates((prev) => {
@@ -3300,13 +3391,12 @@ export default function Home() {
                   </label>
                   <label className="flex items-center gap-2">
                     Patient unavailable until
-                    <input
-                      type="date"
+                    <DraftDateInput
                       value={item.unavailableUntil ?? ""}
-                      onChange={(event) =>
-                        updateUnavailableUntil(item.caseId, event.target.value)
-                      }
+                      onCommit={(value) => updateUnavailableUntil(item.caseId, value)}
                       className="rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
+                      max={unavailableMaxISO}
+                      maxMessage={`Unavailable dates can be at most a year ahead (until ${unavailableMaxISO}).`}
                     />
                     {item.unavailableUntil && (
                       <button
@@ -4188,12 +4278,9 @@ export default function Home() {
                   className="flex flex-col gap-1.5 text-xs font-semibold text-sand-700"
                 >
                   Slate {index + 1} date
-                  <input
-                    type="date"
+                  <DraftDateInput
                     value={slateDates[index] || ""}
-                    onChange={(event) =>
-                      updateSlateDate(index, event.target.value)
-                    }
+                    onCommit={(value) => updateSlateDate(index, value)}
                     className="rounded-lg border border-sand-300 bg-white px-3 py-2 text-base font-semibold text-slateBlue-900"
                   />
                 </label>
@@ -4785,16 +4872,12 @@ export default function Home() {
                                       </div>
                                       <label className="mt-2 flex flex-wrap items-center gap-2">
                                         Patient unavailable until
-                                        <input
-                                          type="date"
+                                        <DraftDateInput
                                           value={item.unavailableUntil ?? ""}
-                                          onChange={(event) =>
-                                            updateUnavailableUntil(
-                                              item.caseId,
-                                              event.target.value,
-                                            )
-                                          }
+                                          onCommit={(value) => updateUnavailableUntil(item.caseId, value)}
                                           className="rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
+                                          max={unavailableMaxISO}
+                                          maxMessage={`Unavailable dates can be at most a year ahead (until ${unavailableMaxISO}).`}
                                         />
                                         {item.unavailableUntil && (
                                           <button

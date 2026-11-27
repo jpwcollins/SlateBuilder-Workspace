@@ -235,6 +235,13 @@ export default function Guide() {
             placed by hand, are never moved.
           </li>
           <li>
+            Date fields (unavailable-until and the OR dates) take effect when
+            you press Enter, click <span className="font-semibold">Set</span>,
+            or move on from the field, not while you scroll or type through
+            dates; Escape puts the old date back. An unavailable-until date can
+            be at most a year from today.
+          </li>
+          <li>
             Edit a case&apos;s duration or clinical flags, or set a date a
             patient is <span className="font-semibold">unavailable until</span>.
             If that date falls on or after a slate the patient is already on,
