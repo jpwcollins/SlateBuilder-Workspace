@@ -1,5 +1,5 @@
 {
-  "total": 297.4,
+  "total": 297.41,
   "items": [
     {
       "kind": "card",
@@ -54,7 +54,7 @@
       "file": "/Users/jonathan/Developer/SlateBuilder-Workspace/docs/video/out/s03-load/s03-load.mp4",
       "take": "s03-load",
       "src_in": 3.69,
-      "src_out": 20.72,
+      "src_out": 20.71,
       "start": 49.2,
       "framed": false
     },
@@ -64,7 +64,7 @@
       "take": "s04-rules",
       "src_in": 0,
       "src_out": 21.31,
-      "start": 66.23,
+      "start": 66.22,
       "framed": false
     },
     {
@@ -73,7 +73,7 @@
       "take": "s05-slates",
       "src_in": 0,
       "src_out": 59.05,
-      "start": 87.54,
+      "start": 87.53,
       "framed": false
     },
     {
@@ -81,8 +81,8 @@
       "file": "/Users/jonathan/Developer/SlateBuilder-Workspace/docs/video/out/s06-booking-order/s06-booking-order.mp4",
       "take": "s06-booking-order",
       "src_in": 0,
-      "src_out": 28.65,
-      "start": 146.59,
+      "src_out": 28.67,
+      "start": 146.58,
       "framed": false
     },
     {
@@ -90,14 +90,14 @@
       "file": "/Users/jonathan/Developer/SlateBuilder-Workspace/docs/video/out/s07-waitlist/s07-waitlist.mp4",
       "take": "s07-waitlist",
       "src_in": 0,
-      "src_out": 16.87,
-      "start": 175.24,
+      "src_out": 16.89,
+      "start": 175.25,
       "framed": false
     },
     {
       "kind": "image",
       "file": "/Users/jonathan/Developer/SlateBuilder-Workspace/docs/video/out/stills/s07c-removal-email.png",
-      "start": 192.11,
+      "start": 192.14,
       "duration": 3.6,
       "label": "Removal email"
     },
@@ -105,9 +105,9 @@
       "kind": "video",
       "file": "/Users/jonathan/Developer/SlateBuilder-Workspace/docs/video/out/s07-waitlist/s07-waitlist.mp4",
       "take": "s07-waitlist",
-      "src_in": 16.87,
+      "src_in": 16.89,
       "src_out": 35.1,
-      "start": 195.71,
+      "start": 195.74,
       "framed": false
     },
     {
@@ -115,14 +115,14 @@
       "file": "/Users/jonathan/Developer/SlateBuilder-Workspace/docs/video/out/s08-export/s08-export.mp4",
       "take": "s08-export",
       "src_in": 0,
-      "src_out": 5.36,
-      "start": 213.94,
+      "src_out": 5.37,
+      "start": 213.95,
       "framed": false
     },
     {
       "kind": "image",
       "file": "/Users/jonathan/Developer/SlateBuilder-Workspace/docs/video/out/s08-export/slates-page-1.png",
-      "start": 219.3,
+      "start": 219.32,
       "duration": 12.36,
       "label": "Slate PDF"
     },
@@ -132,13 +132,13 @@
       "take": "s09-notes",
       "src_in": 0,
       "src_out": 11.4,
-      "start": 231.66,
+      "start": 231.68,
       "framed": false
     },
     {
       "kind": "image",
       "file": "/Users/jonathan/Developer/SlateBuilder-Workspace/docs/video/out/stills/s09b-save-dialog.png",
-      "start": 243.06,
+      "start": 243.08,
       "duration": 9.25,
       "label": "Save dialog"
     },
@@ -148,7 +148,7 @@
       "take": "s09-notes",
       "src_in": 11.7,
       "src_out": 13.7,
-      "start": 252.31,
+      "start": 252.33,
       "framed": false
     },
     {
@@ -157,14 +157,14 @@
       "take": "s09-notes",
       "src_in": 20.14,
       "src_out": 31.53,
-      "start": 254.31,
+      "start": 254.33,
       "framed": false
     },
     {
       "kind": "card",
       "text": "One week later",
       "sub": null,
-      "start": 265.7,
+      "start": 265.72,
       "duration": 2.4
     },
     {
@@ -173,7 +173,7 @@
       "take": "s09-notes",
       "src_in": 31.53,
       "src_out": 44.34,
-      "start": 268.1,
+      "start": 268.12,
       "framed": false
     },
     {
@@ -181,51 +181,51 @@
       "file": "/Users/jonathan/Developer/SlateBuilder-Workspace/docs/video/out/s10-close/s10-close.mp4",
       "take": "s10-close",
       "src_in": 0,
-      "src_out": 7.61,
-      "start": 280.91,
+      "src_out": 7.6,
+      "start": 280.93,
       "framed": true
     },
     {
       "kind": "card",
       "text": "SlateBuilder for Offices",
       "sub": "slatebuilder.ca",
-      "start": 288.52,
+      "start": 288.53,
       "duration": 8.88
     }
   ],
   "vo": {
     "S01a": 5.78,
-    "S01b": 15.26,
+    "S01b": 15.27,
     "S02a": 24.03,
-    "S02b": 31.71,
-    "S03a": 43.7,
+    "S02b": 31.7,
+    "S03a": 43.69,
     "S03b": 53.78,
     "S03c": 60.46,
-    "S04a": 67.01,
-    "S04b": 74.42,
-    "S05a": 88.33,
-    "S05b": 99.17,
-    "S05c": 107.53,
-    "S05d": 113.41,
-    "S05e": 122.33,
-    "S05f": 126.35,
-    "S05g": 131.99,
-    "S06a": 147.36,
-    "S06b": 153.81,
-    "S06c": 163.05,
-    "S06d": 169.29,
-    "S07a": 176.01,
-    "S07b": 182.29,
+    "S04a": 67.0,
+    "S04b": 74.41,
+    "S05a": 88.31,
+    "S05b": 99.15,
+    "S05c": 107.51,
+    "S05d": 113.39,
+    "S05e": 122.31,
+    "S05f": 126.34,
+    "S05g": 131.98,
+    "S06a": 147.35,
+    "S06b": 153.8,
+    "S06c": 163.04,
+    "S06d": 169.3,
+    "S07a": 176.02,
+    "S07b": 182.3,
     "S07c": 189.3,
     "S07d": 206.14,
-    "S08a": 214.72,
-    "S08b": 219.8,
-    "S09a": 232.43,
-    "S09b": 243.41,
-    "S09c": 254.61,
-    "S09e": 268.3,
-    "S10a": 281.69,
-    "S10b": 289.12
+    "S08a": 214.73,
+    "S08b": 219.82,
+    "S09a": 232.45,
+    "S09b": 243.43,
+    "S09c": 254.63,
+    "S09e": 268.32,
+    "S10a": 281.7,
+    "S10b": 289.13
   },
   "zooms": [
     {
@@ -238,77 +238,77 @@
     {
       "take": "s03-load",
       "label": "Show breakdown",
-      "time": 61.04,
+      "time": 61.03,
       "x": 0.228,
-      "y": 0.512
+      "y": 0.549
     },
     {
       "take": "s04-rules",
       "label": "Number of slates: 3",
-      "time": 68.7,
+      "time": 68.71,
       "x": 0.218,
       "y": 0.628
     },
     {
       "take": "s04-rules",
       "label": "Default case lengths",
-      "time": 75.0,
+      "time": 74.99,
       "x": 0.5,
       "y": 0.718
     },
     {
       "take": "s05-slates",
       "label": "Suggested slates tab",
-      "time": 89.44,
+      "time": 89.41,
       "x": 0.255,
       "y": 0.064
     },
     {
       "take": "s05-slates",
       "label": "Priya Natarajan duration",
-      "time": 108.11,
+      "time": 108.08,
       "x": 0.272,
       "y": 0.492
     },
     {
       "take": "s05-slates",
       "label": "Grace Whitfield controls",
-      "time": 114.14,
+      "time": 114.11,
       "x": 0.293,
       "y": 0.733
     },
     {
       "take": "s05-slates",
       "label": "Grace Whitfield unavailable",
-      "time": 114.99,
+      "time": 114.96,
       "x": 0.308,
       "y": 0.82
     },
     {
       "take": "s05-slates",
       "label": "Lock Slate 1",
-      "time": 127.89,
+      "time": 127.88,
       "x": 0.222,
       "y": 0.5
     },
     {
       "take": "s05-slates",
       "label": "Optimize Utilization",
-      "time": 133.92,
+      "time": 133.91,
       "x": 0.595,
       "y": 0.161
     },
     {
       "take": "s06-booking-order",
       "label": "Reason: Clinical urgency",
-      "time": 157.97,
+      "time": 157.95,
       "x": 0.448,
       "y": 0.489
     },
     {
       "take": "s06-booking-order",
       "label": "Done",
-      "time": 159.13,
+      "time": 159.1,
       "x": 0.622,
       "y": 0.577
     },
@@ -322,176 +322,176 @@
     {
       "take": "s06-booking-order",
       "label": "hold back Leila Haddad",
-      "time": 164.47,
+      "time": 164.46,
       "x": 0.465,
       "y": 0.294
     },
     {
       "take": "s06-booking-order",
       "label": "Skip for now",
-      "time": 166.26,
+      "time": 166.25,
       "x": 0.61,
       "y": 0.577
     },
     {
       "take": "s06-booking-order",
       "label": "Reason: patient deferred",
-      "time": 169.92,
+      "time": 169.93,
       "x": 0.725,
       "y": 0.213
     },
     {
       "take": "s07-waitlist",
       "label": "Priority waitlist tab",
-      "time": 177.05,
+      "time": 177.07,
       "x": 0.337,
       "y": 0.064
     },
     {
       "take": "s07-waitlist",
       "label": "show slated patients too",
-      "time": 178.99,
+      "time": 179.0,
       "x": 0.762,
       "y": 0.458
     },
     {
       "take": "s07-waitlist",
       "label": "Wait time only",
-      "time": 183.07,
+      "time": 183.1,
       "x": 0.465,
       "y": 0.386
     },
     {
       "take": "s07-waitlist",
       "label": "Urgency first",
-      "time": 185.44,
+      "time": 185.47,
       "x": 0.277,
       "y": 0.386
     },
     {
       "take": "s07-waitlist",
       "label": "open Rachel Goldberg",
-      "time": 190.89,
+      "time": 190.9,
       "x": 0.5,
       "y": 0.5
     },
     {
       "take": "s07-waitlist",
       "label": "Remove from waitlist",
-      "time": 191.84,
+      "time": 191.87,
       "x": 0.245,
       "y": 0.612
     },
     {
       "take": "s07-waitlist",
       "label": "Restore to waitlist",
-      "time": 199.11,
+      "time": 199.15,
       "x": 0.235,
       "y": 0.579
     },
     {
       "take": "s07-waitlist",
       "label": "Long-waiters tab",
-      "time": 207.95,
+      "time": 207.93,
       "x": 0.413,
       "y": 0.064
     },
     {
       "take": "s08-export",
       "label": "Export all slates (PDF)",
-      "time": 215.53,
+      "time": 215.54,
       "x": 0.677,
       "y": 0.161
     },
     {
       "take": "s09-notes",
       "label": "Start a new notes file",
-      "time": 242.81,
+      "time": 242.83,
       "x": 0.329,
       "y": 0.399
     },
     {
       "take": "s09-notes",
       "label": "weak passphrase",
-      "time": 255.19,
+      "time": 255.21,
       "x": 0.367,
       "y": 0.436
     },
     {
       "take": "s09-notes",
       "label": "strong passphrase",
-      "time": 258.51,
+      "time": 258.53,
       "x": 0.367,
       "y": 0.436
     },
     {
       "take": "s09-notes",
       "label": "confirm passphrase",
-      "time": 261.74,
+      "time": 261.76,
       "x": 0.367,
       "y": 0.564
     },
     {
       "take": "s09-notes",
       "label": "Who is saving",
-      "time": 263.67,
+      "time": 263.69,
       "x": 0.367,
       "y": 0.631
     },
     {
       "take": "s09-notes",
       "label": "Create notes file",
-      "time": 264.72,
+      "time": 264.74,
       "x": 0.23,
       "y": 0.678
     },
     {
       "take": "s09-notes",
       "label": "Clear screen",
-      "time": 269.84,
+      "time": 269.86,
       "x": 0.797,
       "y": 0.023
     },
     {
       "take": "s09-notes",
       "label": "load week 2",
-      "time": 271.74,
+      "time": 271.77,
       "x": 0.469,
       "y": 0.233
     },
     {
       "take": "s09-notes",
       "label": "passphrase",
-      "time": 273.97,
+      "time": 274.0,
       "x": 0.276,
       "y": 0.375
     },
     {
       "take": "s09-notes",
       "label": "Unlock and load notes",
-      "time": 275.9,
+      "time": 275.94,
       "x": 0.413,
       "y": 0.374
     },
     {
       "take": "s10-close",
       "label": "Clear screen",
-      "time": 282.9,
+      "time": 282.88,
       "x": 0.797,
       "y": 0.023
     }
   ],
   "captions": [
     {
-      "time": 115.27,
+      "time": 115.25,
       "text": "Patient Grace Whitfield was taken off the 2026-12-18 slate (now before their unavailable-until date). No later slate had room, so they're back on the waitlist as not-yet-slated."
     },
     {
-      "time": 133.93,
+      "time": 133.92,
       "text": "All unlocked slates are already as full as they can be. 1 overdue patient is still waiting: Patient Grace Whitfield."
     },
     {
-      "time": 231.66,
+      "time": 231.68,
       "text": "Patient Grace Whitfield was taken off the 2026-12-18 slate (now before their unavailable-until date). No later slate had room, so they're back on the waitlist as not-yet-slated."
     }
   ]
