@@ -161,7 +161,7 @@ Timings are targets. The final cut follows the voiceover.
 |---|---|---|---|
 | S09a | Setup tab, step 2 "Notes file": click "Start a new notes file". | PW-stub | Zoom on step 2 |
 | S09b | The macOS Save dialog (still: `s09b-save-dialog.png`), in a folder named "Office – confidential", with Chrome's line "Warning: this site can see edits you make" at the top. Back in the app, step 2 reads "New notes file: slatebuilder-notes-….sbnotes". | Still, then PW-stub | — |
-| S09c | Type `Summer2026!!` as the passphrase: the strength bar goes red ("Too easy to guess"). Replace it with `harbour-velvet-spoon-orbit`: the bar goes green. Confirm, "MOA" in "Who is saving", then "Save and lock". The card reads "✓ Saving to slatebuilder-notes-….sbnotes". | PW-stub | Zoom on the passphrase field and strength bar, then the status |
+| S09c | Type `Summer2026!!` as the passphrase: the strength bar goes red ("Too easy to guess"). Replace it with `harbour-velvet-spoon-orbit`: the bar goes green. Confirm, "MOA" in "Who is saving", then "Create notes file". The card reads "✓ Saving to slatebuilder-notes-….sbnotes". | PW-stub | Zoom on the passphrase field and strength bar, then the status |
 | S09d | Card: "One week later". | Card | — |
 | S09e | Click "Clear screen". Load `week-2-waitlist.csv`. Step 2 now only asks for the passphrase: enter it and click "Unlock and load notes". The message reports how many patients on this week's list now carry notes. | PW-stub | Zoom on the status message |
 

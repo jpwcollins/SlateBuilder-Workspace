@@ -97,7 +97,7 @@ await runTake("s09-notes", async (take) => {
     await take.sleep(900);
     await take.type(page.getByLabel("Confirm passphrase"), PASSPHRASE, { label: "confirm passphrase", delay: 40 });
     await take.type(page.getByLabel("Who is saving (initials or role)"), "MOA", { label: "Who is saving" });
-    await take.click(page.getByRole("button", { name: "Save and lock" }), { label: "Save and lock" });
+    await take.click(page.getByRole("button", { name: "Create notes file" }), { label: "Create notes file" });
     const saving = notesCard.getByText(/Saving to /).first();
     await saving.waitFor();
     await take.pointAt(saving);

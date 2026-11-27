@@ -40,6 +40,7 @@ import {
   BENCHMARK_WEEKS_ORDER,
   buildCaseSchedule,
   caseFitsInSlate,
+  planDropWithCascade,
   checkImportedWaitlist,
   ImportCheck,
   summarizeImport,
@@ -1510,6 +1511,7 @@ export default function Home() {
     // required, and the one moment it is worth confirming, since there is no
     // existing file to check it against.
     let session = sessionKey;
+    const creating = !session;
     if (!session) {
       if (silent) return;
       const strength = assessPassphrase(notesPassphrase);
@@ -1641,7 +1643,9 @@ export default function Home() {
       if (!silent || mergedInFirst > 0) {
         setNotesScope("save");
         setNotesStatus(
-          `Saved revision ${revision} to ${wroteTo} — notes for ${n} patient${n === 1 ? "" : "s"}.${mergedNote}${keepNote}`,
+          creating && n === 0
+            ? `Created ${wroteTo}. Your notes will be saved to it as you add them.${keepNote}`
+            : `Saved revision ${revision} to ${wroteTo} — notes for ${n} patient${n === 1 ? "" : "s"}.${mergedNote}${keepNote}`,
         );
       }
     } catch {
@@ -2084,25 +2088,51 @@ export default function Home() {
     }
     const scored = scoreCases([source])[0];
 
-    // Record that a person chose this date for this patient -- but only if the
-    // drop is actually going to land (the updater below rejects one that does
-    // not fit, and a rejected drop must not overwrite an earlier real one).
-    const targetNow = (orderedSlates[targetSlateIndex] ?? []).filter(
-      (c) => c.caseId !== current.caseId,
-    );
-    const surgicalNow = targetNow.reduce(
-      (sum, c) => sum + c.estimatedDurationMin,
-      0,
-    );
-    if (
-      targetDateISO &&
-      caseFitsInSlate(
-        surgicalNow,
-        targetNow.length,
-        scored.estimatedDurationMin,
-        blockMinutes,
-      )
-    ) {
+    // A full slate makes room rather than refusing: its lowest-priority cases
+    // move down to later unlocked slates (which may move their own), and
+    // anyone who fits nowhere goes back to the waitlist. Hand-placed cases and
+    // locked slates never move. See planDropWithCascade.
+    const pinned: Record<string, boolean> = {};
+    slateSlots.forEach((slot, i) => {
+      (orderedSlates[i] ?? []).forEach((c) => {
+        if (manualPlacements[c.caseId] === slot.dateISO) pinned[c.caseId] = true;
+      });
+    });
+    const plan = planDropWithCascade({
+      slates: slateSlots.map((slot, i) => ({
+        dateISO: slot.dateISO,
+        blockMinutes: slot.blockMinutes,
+        locked: Boolean(lockedSlates[slot.dateISO]),
+        cases: orderedSlates[i] ?? [],
+      })),
+      dropped: scored,
+      targetIndex: targetSlateIndex,
+      pinned,
+      priorityMode,
+    });
+    if (!plan.ok) {
+      window.alert(
+        plan.reason === "pinned"
+          ? "That slate is full, and the only cases that could make room were placed there by hand. Move one of them first."
+          : "This patient's case is too long for that day's block, even with other cases moved out.",
+      );
+      return;
+    }
+    if (plan.moves.length > 0) {
+      const lines = plan.moves.map((m) =>
+        m.toDateISO
+          ? `• ${m.displayLabel}: ${m.fromDateISO} → ${m.toDateISO}`
+          : `• ${m.displayLabel}: off ${m.fromDateISO}, back to the waitlist`,
+      );
+      const ok = window.confirm(
+        `That slate is full. Placing ${source.displayLabel} on ${targetDateISO} moves:\n\n${lines.join("\n")}\n\nGo ahead?`,
+      );
+      if (!ok) return;
+    }
+
+    // Record that a person chose this date for this patient. Cases the
+    // cascade moved were not chosen by anyone, so they are not recorded.
+    if (targetDateISO) {
       setManualPlacements((prev) => ({
         ...prev,
         [current.caseId]: targetDateISO,
@@ -2110,31 +2140,9 @@ export default function Home() {
       setReasonCheckCaseId(current.caseId);
     }
 
-    setOrderedSlates((prev) => {
-      const withoutCase = prev.map((slate) =>
-        slate.filter((c) => c.caseId !== current.caseId),
-      );
-      const target = withoutCase[targetSlateIndex] ?? [];
-      const surgical = target.reduce(
-        (sum, c) => sum + c.estimatedDurationMin,
-        0,
-      );
-      if (
-        !caseFitsInSlate(
-          surgical,
-          target.length,
-          scored.estimatedDurationMin,
-          blockMinutes,
-        )
-      ) {
-        window.alert("Not enough room in that slate for this patient.");
-        return prev;
-      }
-      const next = [...withoutCase];
-      next[targetSlateIndex] = sortSlateByPriority([...target, scored]);
-      setOrderedSlateCaseIds(next.map((slate) => slate.map((c) => c.caseId)));
-      return next;
-    });
+    const next = plan.slates.map((cases) => sortSlateByPriority(cases));
+    setOrderedSlates(next);
+    setOrderedSlateCaseIds(next.map((slate) => slate.map((c) => c.caseId)));
     setMovedCaseIds((prev) =>
       prev[current.caseId] ? prev : { ...prev, [current.caseId]: true },
     );
@@ -4000,7 +4008,7 @@ export default function Home() {
                       <span className="font-semibold text-sand-900">
                         {notesHandle.name}
                       </span>
-                      . Lock it with a passphrase you will use every week.
+                      . Choose the passphrase that encrypts it; you will use it every week.
                     </>
                   ) : (
                     "Choose a passphrase for your notes file. You will use it every week."
@@ -4072,11 +4080,15 @@ export default function Home() {
                 <div className="flex flex-wrap items-center gap-3">
                   <button
                     type="button"
-                    disabled={notesBusy || annotationsCount === 0}
+                    disabled={
+                      notesBusy ||
+                      !assessPassphrase(notesPassphrase).ok ||
+                      notesPassphrase !== notesPassphraseConfirm
+                    }
                     onClick={() => void handleSaveNotes()}
                     className="rounded-full bg-slateBlue-700 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
                   >
-                    {notesBusy ? "Working…" : "Save and lock"}
+                    {notesBusy ? "Working…" : "Create notes file"}
                   </button>
                   <button
                     type="button"
@@ -4086,13 +4098,17 @@ export default function Home() {
                     Cancel
                   </button>
                 </div>
-                {annotationsCount === 0 && (
-                  <p className="text-xs text-sand-600">
-                    Nothing to save yet. Notes appear once you set an
-                    unavailable date, adjust a case length, tick a clinical
-                    flag, or remove someone.
-                  </p>
-                )}
+                {notesPassphraseConfirm &&
+                  notesPassphrase !== notesPassphraseConfirm && (
+                    <p className="text-xs font-semibold text-rose-700">
+                      The two passphrases do not match.
+                    </p>
+                  )}
+                <p className="text-xs text-sand-600">
+                  {annotationsCount === 0
+                    ? "The file starts empty. Notes are saved to it as you add them: an unavailable date, a case length, a clinical flag, a removal."
+                    : `It will start with your notes for ${annotationsCount} patient${annotationsCount === 1 ? "" : "s"}, and keep saving as you add more.`}
+                </p>
               </div>
             )}
 

@@ -133,7 +133,9 @@ export default function Guide() {
           office has kept notes before, or{" "}
           <span className="font-semibold">Start a new notes file</span>: pick
           where it goes, choose a passphrase and{" "}
-          <span className="font-semibold">Save and lock</span>. After that the
+          <span className="font-semibold">Create notes file</span>. You can do
+          this before you have any notes; the file starts empty and fills as
+          you work. It is always encrypted on disk. After that the
           card remembers the file, so each week it only asks for the passphrase:{" "}
           <span className="font-semibold">Unlock and load notes</span> brings
           last week&apos;s notes onto this week&apos;s list, matched to whoever
@@ -209,6 +211,16 @@ export default function Guide() {
           <li>
             Drag cases to reorder them; the order is the running order for the
             day.
+          </li>
+          <li>
+            Drag a patient onto a slate that is already full and the slate makes
+            room: its lowest-priority cases move out, each to the earliest
+            unlocked slate it can have. That can be an earlier slate with free
+            time, or a later one that moves out one of its own lower-priority
+            cases in turn. Anyone who fits nowhere goes back to the waitlist as
+            not yet slated. You see the list of moves and
+            confirm before anything changes. Locked slates, and patients someone
+            placed by hand, are never moved.
           </li>
           <li>
             Edit a case&apos;s duration or clinical flags, or set a date a
