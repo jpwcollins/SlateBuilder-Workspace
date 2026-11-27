@@ -14,6 +14,7 @@ import {
   getBlockStartMinutes,
   describePlacement,
   PlacementMove,
+  PlacementWarning,
   scoreCases,
   isAvailableOnDate,
   caseFitsInSlate,
@@ -47,6 +48,7 @@ import {
   BookingOrderTally,
   OrderReasonEditor,
   OrderReasonPrompt,
+  PlacementConfirmDialog,
 } from "./bookingOrderUi";
 
 // Aggregate sanity checks on a freshly uploaded waitlist.
@@ -249,6 +251,13 @@ export default function Home() {
     null
   );
   const [reasonPrompt, setReasonPrompt] = useState<{ caseId: string; what: string } | null>(null);
+  // A hand placement waiting on its confirmation dialog: what it would move,
+  // and how to carry it out.
+  const [pendingPlacement, setPendingPlacement] = useState<{
+    caseId: string;
+    warning: PlacementWarning;
+    apply: (reason: OrderReason | undefined, asked: boolean) => void;
+  } | null>(null);
   // Patients a person dragged onto another day's slate: case id → that date.
   // The optimizer puts each on its date first and plans everyone else around
   // them, so a placement holds when the slates are re-planned after an edit.
@@ -637,10 +646,17 @@ export default function Home() {
       cases: scoreCases(slateEligibleCases),
       priorityMode,
     });
-    if (warning && !window.confirm(warning.message)) return;
-    setManualPlacements(nextPlacements);
-    setMovedCaseIds((prev) => (prev[item.caseId] ? prev : { ...prev, [item.caseId]: true }));
-    setReasonCheck({ caseId: item.caseId, dateISO: target.dateISO });
+    // Applied at once when nobody else moves, otherwise once the placement
+    // dialog is confirmed. `asked` is whether that dialog already asked for
+    // the reason; if it did, the separate reason prompt is not shown again.
+    const apply = (reason: OrderReason | undefined, asked: boolean) => {
+      setManualPlacements(nextPlacements);
+      setMovedCaseIds((prev) => (prev[item.caseId] ? prev : { ...prev, [item.caseId]: true }));
+      if (reason) updateOrderReason(item.caseId, reason);
+      if (!asked) setReasonCheck({ caseId: item.caseId, dateISO: target.dateISO });
+    };
+    if (warning) setPendingPlacement({ caseId: item.caseId, warning, apply });
+    else apply(undefined, false);
   };
 
   const restoreToSuggestedSlates = (caseId: string) => {
@@ -2187,6 +2203,17 @@ export default function Home() {
             </div>
           </div>
         </div>
+      )}
+      {pendingPlacement && (
+        <PlacementConfirmDialog
+          warning={pendingPlacement.warning}
+          initialReason={orderReasons[pendingPlacement.caseId]}
+          onCancel={() => setPendingPlacement(null)}
+          onConfirm={(reason) => {
+            pendingPlacement.apply(reason, pendingPlacement.warning.higherRanked.length > 0);
+            setPendingPlacement(null);
+          }}
+        />
       )}
       {reasonPrompt &&
         (() => {

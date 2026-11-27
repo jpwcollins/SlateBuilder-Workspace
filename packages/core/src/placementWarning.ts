@@ -32,8 +32,22 @@ export function isPushedLater(move: PlacementMove): boolean {
   return move.toDateISO > move.fromDateISO;
 }
 
+export type PlacementWarning = {
+  /** e.g. "Megan O'Connor (26w, priority 2.19)". */
+  placedSummary: string;
+  /** The target date, short, e.g. "Dec 18". */
+  toLabel: string;
+  /** Patients ranking above the one placed who are pushed later or off. */
+  higherRanked: { caseId: string; label: string; wait: string; priority: string; toLabel: string }[];
+  /** Every other move, one line each. */
+  otherChanges: { caseId: string; text: string }[];
+  /** The whole warning as plain text, for a browser confirm box. */
+  message: string;
+  higherRankedPushed: string[];
+};
+
 /**
- * The confirmation text for placing `placed` on `toDateISO`, or null when the
+ * The confirmation for placing `placed` on `toDateISO`, or null when the
  * placement moves nobody else. `cases` must include everyone in `moves`.
  */
 export function describePlacement(input: {
@@ -42,7 +56,7 @@ export function describePlacement(input: {
   moves: PlacementMove[];
   cases: ScoredCase[];
   priorityMode: PriorityMode;
-}): { message: string; higherRankedPushed: string[] } | null {
+}): PlacementWarning | null {
   const { placed, toDateISO, priorityMode } = input;
   const byId = new Map(input.cases.map((c) => [c.caseId, c]));
   const moves = input.moves.filter((m) => m.caseId !== placed.caseId && byId.has(m.caseId));
@@ -54,17 +68,19 @@ export function describePlacement(input: {
   const others = moves.filter((m) => !higher.includes(m));
 
   const where = (iso: string | null) => (iso ? shortDate(iso) : "back to the waitlist");
-  const routine = (m: PlacementMove) => {
+  const routineText = (m: PlacementMove) => {
     const item = byId.get(m.caseId)!;
-    if (m.fromDateISO === null) return `• ${item.displayLabel}: from the waitlist → ${shortDate(m.toDateISO!)}`;
-    return `• ${item.displayLabel}: ${shortDate(m.fromDateISO)} → ${where(m.toDateISO)}`;
+    if (m.fromDateISO === null) return `${item.displayLabel}: from the waitlist → ${shortDate(m.toDateISO!)}`;
+    return `${item.displayLabel}: ${shortDate(m.fromDateISO)} → ${where(m.toDateISO)}`;
   };
+  const routine = (m: PlacementMove) => `• ${routineText(m)}`;
+  const placedSummary = `${placed.displayLabel} (${placed.benchmarkWeeks}w, priority ${placed.priorityScore.toFixed(2)})`;
 
   const lines: string[] = [];
   if (higher.length > 0) {
     const n = higher.length;
     lines.push(
-      `Placing ${placed.displayLabel} (${placed.benchmarkWeeks}w, priority ${placed.priorityScore.toFixed(2)}) ` +
+      `Placing ${placedSummary} ` +
         `on ${shortDate(toDateISO)} pushes ${n} higher-ranked ${n === 1 ? "patient" : "patients"} later:`,
     );
     higher.forEach((m) => {
@@ -76,12 +92,25 @@ export function describePlacement(input: {
     if (others.length > 0) {
       lines.push("", "Other changes:", ...others.map(routine));
     }
-    lines.push("", "You'll be asked to record the reason next.");
+    lines.push("", "A reason for placing them ahead is needed.");
   } else {
     lines.push(`Placing ${placed.displayLabel} on ${shortDate(toDateISO)} also changes:`, ...others.map(routine));
   }
   lines.push("", "Go ahead?");
   return {
+    placedSummary,
+    toLabel: shortDate(toDateISO),
+    higherRanked: higher.map((m) => {
+      const item = byId.get(m.caseId)!;
+      return {
+        caseId: m.caseId,
+        label: item.displayLabel,
+        wait: waitPhrase(item),
+        priority: item.priorityScore.toFixed(1),
+        toLabel: where(m.toDateISO),
+      };
+    }),
+    otherChanges: others.map((m) => ({ caseId: m.caseId, text: routineText(m) })),
     message: lines.join("\n"),
     higherRankedPushed: higher.map((m) => m.caseId),
   };

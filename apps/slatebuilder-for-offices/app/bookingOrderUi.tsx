@@ -18,7 +18,9 @@ import {
   ORDER_REASONS,
   OrderReason,
   OrderReasonCode,
+  PlacementWarning,
 } from "@slatebuilder/core";
+import { useState } from "react";
 
 const STATUS_CLASSES: Record<BookingOrderStatus, string> = {
   fifo: "bg-emerald-100 text-emerald-800",
@@ -260,6 +262,112 @@ export function OrderReasonPrompt({
             }
           >
             {reason ? "Done" : "Skip for now"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Confirms placing a patient on a slate by hand when that moves others.
+ * Anyone who ranks above the patient and would be pushed later is named
+ * first; when there is anyone, the reason for the placement is asked for here
+ * too, so it is recorded in the same step. Leaving it blank still places the
+ * patient, who then stays listed at the top of the slates tab until a reason
+ * is recorded.
+ */
+export function PlacementConfirmDialog({
+  warning,
+  initialReason,
+  onConfirm,
+  onCancel,
+}: {
+  warning: PlacementWarning;
+  initialReason: OrderReason | undefined;
+  onConfirm: (reason: OrderReason | undefined) => void;
+  onCancel: () => void;
+}) {
+  const [reason, setReason] = useState<OrderReason | undefined>(initialReason);
+  const higher = warning.higherRanked;
+  const asksReason = higher.length > 0;
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="placement-confirm-title"
+      onKeyDown={(event) => {
+        if (event.key === "Escape") onCancel();
+      }}
+    >
+      <div className="max-h-[85vh] w-full max-w-xl overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
+        <h2 id="placement-confirm-title" className="text-lg font-semibold text-slateBlue-900">
+          {asksReason
+            ? `This pushes ${higher.length} higher-ranked ${higher.length === 1 ? "patient" : "patients"} later`
+            : "This moves other patients"}
+        </h2>
+        <p className="mt-2 text-sm text-sand-800">
+          Placing <span className="font-semibold text-slateBlue-900">{warning.placedSummary}</span>{" "}
+          on {warning.toLabel}
+          {asksReason ? " moves these patients, who rank above them:" : " also changes:"}
+        </p>
+        {asksReason && (
+          <ul className="mt-3 flex flex-col gap-1.5">
+            {higher.map((h) => (
+              <li
+                key={h.caseId}
+                className="flex flex-wrap items-baseline justify-between gap-x-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm"
+              >
+                <span>
+                  <span className="font-semibold text-slateBlue-900">{h.label}</span>
+                  <span className="ml-2 text-xs text-rose-700">
+                    {h.wait} · priority {h.priority}
+                  </span>
+                </span>
+                <span className="text-xs font-semibold text-sand-800">→ {h.toLabel}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {warning.otherChanges.length > 0 && (
+          <div className="mt-3">
+            {asksReason && <p className="text-xs font-semibold text-sand-700">Other changes</p>}
+            <ul className="mt-1 flex flex-col gap-0.5 text-xs text-sand-700">
+              {warning.otherChanges.map((o) => (
+                <li key={o.caseId}>• {o.text}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {asksReason && (
+          <div className="mt-4 rounded-lg border border-sand-200 bg-sand-50 px-3 py-3 text-xs text-sand-700">
+            <p className="mb-2 font-semibold text-sand-900">Why is this patient going ahead of them?</p>
+            <div className="flex justify-start">
+              <OrderReasonEditor label="Reason" reason={reason} onChange={setReason} />
+            </div>
+            <p className="mt-2 text-sand-600">
+              Only a reason from this list can appear on an export; a typed note never does. If you
+              leave it blank, the patient is listed at the top of the slates tab until a reason is
+              recorded.
+            </p>
+          </div>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-lg border border-sand-300 px-4 py-2 text-xs font-semibold text-sand-800"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            autoFocus
+            onClick={() => onConfirm(reason)}
+            className="rounded-lg bg-slateBlue-700 px-4 py-2 text-xs font-semibold text-white"
+          >
+            {asksReason && !reason ? "Place without a reason" : "Place patient"}
           </button>
         </div>
       </div>

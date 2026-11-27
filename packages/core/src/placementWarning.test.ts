@@ -45,8 +45,12 @@ describe("describePlacement", () => {
     expect(text).toContain("Sofia Marchetti, 28 days overdue");
     expect(text).toContain("→ back to the waitlist");
     expect(text).toContain("Other changes:\n• Hannah Liu: Jan 1 → Jan 15");
-    expect(text).toContain("You'll be asked to record the reason next.");
+    expect(text).toContain("A reason for placing them ahead is needed.");
     expect(text.indexOf("Ruth")).toBeLessThan(text.indexOf("Other changes"));
+    expect(result!.higherRanked[0]).toMatchObject({ label: "Ruth Abernathy", wait: "14 days overdue", toLabel: "Jan 1" });
+    expect(result!.higherRanked[1].toLabel).toBe("back to the waitlist");
+    expect(result!.otherChanges).toEqual([{ caseId: "H", text: "Hannah Liu: Jan 1 → Jan 15" }]);
+    expect(result!.toLabel).toBe("Dec 18");
   });
 
   it("treats a lower-ranked patient pushed later, or anyone moved earlier, as routine", () => {

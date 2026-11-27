@@ -230,7 +230,8 @@ export default function Guide() {
             not yet slated. You see the list of moves and
             confirm before anything changes; anyone who ranks above the
             patient you are placing and would be pushed later is named first,
-            with how overdue they are. Locked slates, and patients someone
+            with how overdue they are, and the same dialog asks for the reason
+            for placing them ahead. Locked slates, and patients someone
             placed by hand, are never moved.
           </li>
           <li>

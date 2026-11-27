@@ -20,6 +20,7 @@ import {
   BookingOrderTally,
   OrderReasonEditor,
   OrderReasonPrompt,
+  PlacementConfirmDialog,
 } from "./bookingOrderUi";
 import {
   downloadSlatePdf,
@@ -42,6 +43,7 @@ import {
   caseFitsInSlate,
   planDropWithCascade,
   describePlacement,
+  PlacementWarning,
   planOptimizeUtilization,
   occupiedMinutes,
   checkImportedWaitlist,
@@ -742,6 +744,13 @@ export default function Home() {
   const [reasonCheckCaseId, setReasonCheckCaseId] = useState<string | null>(
     null,
   );
+  // A hand placement waiting on its confirmation dialog: what it would move,
+  // and how to carry it out.
+  const [pendingPlacement, setPendingPlacement] = useState<{
+    caseId: string;
+    warning: PlacementWarning;
+    apply: (reason: OrderReason | undefined, asked: boolean) => void;
+  } | null>(null);
   const [reasonPrompt, setReasonPrompt] = useState<{
     caseId: string;
     what: string;
@@ -2178,31 +2187,39 @@ export default function Home() {
       cases: orderedSlates.flat(),
       priorityMode,
     });
-    if (warning && !window.confirm(warning.message)) return;
 
-    // Record that a person chose this date for this patient. Cases the
-    // cascade moved were not chosen by anyone, so they are not recorded.
-    if (targetDateISO) {
-      setManualPlacements((prev) => ({
-        ...prev,
-        [current.caseId]: targetDateISO,
-      }));
-      setReasonCheckCaseId(current.caseId);
-    }
+    // Applied at once when nobody else moves, otherwise once the placement
+    // dialog is confirmed. `asked` is whether that dialog already asked for
+    // the reason; if it did, the separate reason prompt is not shown again.
+    const apply = (reason: OrderReason | undefined, asked: boolean) => {
+      // Record that a person chose this date for this patient. Cases the
+      // cascade moved were not chosen by anyone, so they are not recorded.
+      if (targetDateISO) {
+        setManualPlacements((prev) => ({
+          ...prev,
+          [current.caseId]: targetDateISO,
+        }));
+        if (reason) updateOrderReason(current.caseId, reason);
+        if (!asked) setReasonCheckCaseId(current.caseId);
+      }
 
-    const next = plan.slates.map((cases) => sortSlateByPriority(cases));
-    setOrderedSlates(next);
-    setOrderedSlateCaseIds(next.map((slate) => slate.map((c) => c.caseId)));
-    setMovedCaseIds((prev) =>
-      prev[current.caseId] ? prev : { ...prev, [current.caseId]: true },
-    );
-    touchAnnotations(current.caseId);
-    setRemovedFromSlateSuggestions((prev) => {
-      if (!prev[current.caseId]) return prev;
-      const next = { ...prev };
-      delete next[current.caseId];
-      return next;
-    });
+      const next = plan.slates.map((cases) => sortSlateByPriority(cases));
+      setOrderedSlates(next);
+      setOrderedSlateCaseIds(next.map((slate) => slate.map((c) => c.caseId)));
+      setMovedCaseIds((prev) =>
+        prev[current.caseId] ? prev : { ...prev, [current.caseId]: true },
+      );
+      touchAnnotations(current.caseId);
+      setRemovedFromSlateSuggestions((prev) => {
+        if (!prev[current.caseId]) return prev;
+        const next = { ...prev };
+        delete next[current.caseId];
+        return next;
+      });
+    };
+
+    if (warning) setPendingPlacement({ caseId: current.caseId, warning, apply });
+    else apply(undefined, false);
   };
 
   // Dropping onto the waitlist removes the case from whichever slate it came
@@ -5255,6 +5272,20 @@ export default function Home() {
           before relying on them clinically.
         </p>
       </footer>
+      {pendingPlacement && (
+        <PlacementConfirmDialog
+          warning={pendingPlacement.warning}
+          initialReason={orderReasons[pendingPlacement.caseId]}
+          onCancel={() => setPendingPlacement(null)}
+          onConfirm={(reason) => {
+            pendingPlacement.apply(
+              reason,
+              pendingPlacement.warning.higherRanked.length > 0,
+            );
+            setPendingPlacement(null);
+          }}
+        />
+      )}
       {reasonPrompt &&
         (() => {
           const item = officeCasesWithOverrides.find(
