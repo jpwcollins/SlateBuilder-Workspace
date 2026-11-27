@@ -279,11 +279,15 @@ export async function openTake(name, { slow = 1 } = {}) {
       await page.keyboard.press("Tab");
     },
 
-    /** Fill a field there is no comfortable way to type into (a date). */
+    /**
+     * Fill a field there is no comfortable way to type into (a date). The
+     * app's date fields set their date on Enter (Tab only steps between the
+     * day, month and year parts), so finish with Enter.
+     */
     async setValue(target, value, { label } = {}) {
       await this.click(target, { label });
       await locate(target).fill(value);
-      await page.keyboard.press("Tab");
+      await page.keyboard.press("Enter");
     },
 
     /** Choose an option in a <select>. The menu itself is never drawn headless. */

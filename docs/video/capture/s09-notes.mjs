@@ -64,8 +64,8 @@ await runTake("s09-notes", async (take) => {
   await openCardControls(card(page, "Grace Whitfield"));
   const grace = card(page, "Grace Whitfield").getByLabel("Patient unavailable until");
   await grace.fill(addDays(date, 3));
-  // She leaves the slate as soon as the date lands, taking the field with her.
-  await page.keyboard.press("Tab");
+  // The date is set on Enter; she then leaves the slate, taking the field with her.
+  await grace.press("Enter");
   await page.getByRole("button", { name: /^Setup/ }).click();
   await page.evaluate(() => window.scrollTo(0, 0));
   await take.record();
