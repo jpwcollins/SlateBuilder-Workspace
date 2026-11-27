@@ -5,8 +5,15 @@ describe("sanitizeCsvCell", () => {
   it("neutralizes leading formula triggers", () => {
     expect(sanitizeCsvCell("=cmd|'/c calc'!A1")).toBe("'=cmd|'/c calc'!A1");
     expect(sanitizeCsvCell("+1")).toBe("'+1");
-    expect(sanitizeCsvCell("-2")).toBe("'-2");
+    expect(sanitizeCsvCell("-2+3")).toBe("'-2+3");
+    expect(sanitizeCsvCell("-1e5")).toBe("'-1e5");
+    expect(sanitizeCsvCell("-A1")).toBe("'-A1");
     expect(sanitizeCsvCell("@SUM(A1)")).toBe("'@SUM(A1)");
+  });
+
+  it("leaves plain negative numbers as numbers", () => {
+    expect(sanitizeCsvCell("-28")).toBe("-28");
+    expect(sanitizeCsvCell("-2.5")).toBe("-2.5");
   });
 
   it("leaves ordinary values untouched", () => {
