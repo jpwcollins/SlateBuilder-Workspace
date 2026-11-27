@@ -106,7 +106,8 @@ export default function Guide() {
             Drag a case onto another day&apos;s slate to move the patient there. The rest of the
             slates are re-planned around that choice: anyone displaced goes to the best day left for
             them, or back to the waitlist if there is no room. You see the list of changes and
-            confirm before anything moves. The placement holds through later edits; patients placed
+            confirm before anything moves; anyone who ranks above the patient you are placing and
+            would be pushed later is named first, with how overdue they are. The placement holds through later edits; patients placed
             by hand are never moved to make room for another.
           </li>
           <li>

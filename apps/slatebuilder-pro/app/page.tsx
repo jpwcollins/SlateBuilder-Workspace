@@ -12,6 +12,9 @@ import {
   formatMinutesToTime,
   getBlockMinutes,
   getBlockStartMinutes,
+  describePlacement,
+  PlacementMove,
+  scoreCases,
   isAvailableOnDate,
   caseFitsInSlate,
   optimizeSlatesForDates,
@@ -617,31 +620,24 @@ export default function Home() {
     );
     const after = new Map<string, string>();
     preview.forEach((s) => s.selected.forEach((c) => after.set(c.caseId, s.dateISO)));
-    const lines: string[] = [];
+    const moves: PlacementMove[] = [];
     before.forEach((fromISO, caseId) => {
-      if (caseId === item.caseId) return;
-      const toISO = after.get(caseId);
-      if (toISO === fromISO) return;
-      const label = slateEligibleCases.find((c) => c.caseId === caseId)?.displayLabel ?? caseId;
-      lines.push(
-        toISO
-          ? `• ${label}: ${fromISO} → ${toISO}`
-          : `• ${label}: off ${fromISO}, back to the waitlist`
-      );
+      const toISO = after.get(caseId) ?? null;
+      if (toISO !== fromISO) moves.push({ caseId, fromDateISO: fromISO, toDateISO: toISO });
     });
     after.forEach((toISO, caseId) => {
-      if (before.has(caseId) || caseId === item.caseId) return;
-      const label = slateEligibleCases.find((c) => c.caseId === caseId)?.displayLabel ?? caseId;
-      lines.push(`• ${label}: from the waitlist onto ${toISO}`);
+      if (!before.has(caseId)) moves.push({ caseId, fromDateISO: null, toDateISO: toISO });
     });
-    if (
-      lines.length > 0 &&
-      !window.confirm(
-        `Placing ${item.displayLabel} on ${target.dateISO} also changes:\n\n${lines.join("\n")}\n\nGo ahead?`
-      )
-    ) {
-      return;
-    }
+    // Who else moves, with anyone ranked above this patient who is pushed
+    // later named first. See describePlacement.
+    const warning = describePlacement({
+      placed: scoreCases([item])[0],
+      toDateISO: target.dateISO,
+      moves,
+      cases: scoreCases(slateEligibleCases),
+      priorityMode,
+    });
+    if (warning && !window.confirm(warning.message)) return;
     setManualPlacements(nextPlacements);
     setMovedCaseIds((prev) => (prev[item.caseId] ? prev : { ...prev, [item.caseId]: true }));
     setReasonCheck({ caseId: item.caseId, dateISO: target.dateISO });

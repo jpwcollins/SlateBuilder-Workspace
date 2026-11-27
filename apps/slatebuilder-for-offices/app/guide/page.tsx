@@ -228,7 +228,9 @@ export default function Guide() {
             time, or a later one that moves out one of its own lower-priority
             cases in turn. Anyone who fits nowhere goes back to the waitlist as
             not yet slated. You see the list of moves and
-            confirm before anything changes. Locked slates, and patients someone
+            confirm before anything changes; anyone who ranks above the
+            patient you are placing and would be pushed later is named first,
+            with how overdue they are. Locked slates, and patients someone
             placed by hand, are never moved.
           </li>
           <li>

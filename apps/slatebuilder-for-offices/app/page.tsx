@@ -41,6 +41,7 @@ import {
   buildCaseSchedule,
   caseFitsInSlate,
   planDropWithCascade,
+  describePlacement,
   planOptimizeUtilization,
   occupiedMinutes,
   checkImportedWaitlist,
@@ -2164,17 +2165,20 @@ export default function Home() {
       );
       return;
     }
-    if (plan.moves.length > 0) {
-      const lines = plan.moves.map((m) =>
-        m.toDateISO
-          ? `• ${m.displayLabel}: ${m.fromDateISO} → ${m.toDateISO}`
-          : `• ${m.displayLabel}: off ${m.fromDateISO}, back to the waitlist`,
-      );
-      const ok = window.confirm(
-        `That slate is full. Placing ${source.displayLabel} on ${targetDateISO} moves:\n\n${lines.join("\n")}\n\nGo ahead?`,
-      );
-      if (!ok) return;
-    }
+    // Who else moves, with anyone ranked above this patient who is pushed
+    // later named first. See describePlacement.
+    const warning = describePlacement({
+      placed: scored,
+      toDateISO: targetDateISO,
+      moves: plan.moves.map((m) => ({
+        caseId: m.caseId,
+        fromDateISO: m.fromDateISO,
+        toDateISO: m.toDateISO,
+      })),
+      cases: orderedSlates.flat(),
+      priorityMode,
+    });
+    if (warning && !window.confirm(warning.message)) return;
 
     // Record that a person chose this date for this patient. Cases the
     // cascade moved were not chosen by anyone, so they are not recorded.
