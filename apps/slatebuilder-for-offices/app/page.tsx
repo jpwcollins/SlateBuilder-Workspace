@@ -851,9 +851,17 @@ export default function Home() {
 
   // A reload discards the uploaded waitlist by design — nothing about it is
   // written to browser storage — so warn before one is lost by accident.
+  //
+  // Handing a mailto: link to the mail app counts as leaving the page as far
+  // as the browser is concerned, so without the exception below every
+  // "Remove from waitlist" asked "Leave site?" -- and answering Cancel meant
+  // the email to booking never opened, though the patient was already marked
+  // removed here. The page is not actually unloaded by a mailto: link.
+  const handingOffToMailRef = useRef(false);
   useEffect(() => {
     if (cases.length === 0) return;
     const warn = (event: BeforeUnloadEvent) => {
+      if (handingOffToMailRef.current) return;
       event.preventDefault();
       event.returnValue = "";
     };
@@ -2478,7 +2486,12 @@ export default function Home() {
     const mailto = `mailto:BCWHSSBooking@phsa.ca?subject=${encodeURIComponent(
       "Please remove from waitlist",
     )}&body=${encodeURIComponent(body)}`;
+    handingOffToMailRef.current = true;
     window.location.href = mailto;
+    // The browser asks before leaving asynchronously; give it a moment.
+    window.setTimeout(() => {
+      handingOffToMailRef.current = false;
+    }, 1000);
   };
 
   // Reverses removeFromWaitlist: the patient reappears as "not yet slated" in
