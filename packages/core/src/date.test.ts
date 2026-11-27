@@ -3,6 +3,9 @@ import {
   getBlockMinutes,
   isAvailableOnDate,
   isUnavailableBeyondLimit,
+  daysBetween,
+  timeToTargetOn,
+  timeToTargetPhrase,
   toLocalDateOnly,
   unavailableLimitISO,
 } from "./date";
@@ -44,5 +47,24 @@ describe("unavailable-until limit", () => {
     expect(isUnavailableBeyondLimit("2027-11-28", today)).toBe(true);
     expect(isUnavailableBeyondLimit(undefined, today)).toBe(false);
     expect(isUnavailableBeyondLimit("2030-01-01T00:00:00", today)).toBe(true);
+  });
+});
+
+describe("time to target on the OR date", () => {
+  it("counts the days from the list date", () => {
+    expect(daysBetween("2026-11-27", "2027-01-01")).toBe(35);
+    expect(daysBetween("2027-03-01", "2027-03-31")).toBe(30); // across a DST change
+    expect(daysBetween("2027-01-01", "2026-11-27")).toBe(-35);
+  });
+  it("takes a day off for every day after the list date", () => {
+    expect(timeToTargetOn(7, "2026-11-27", "2027-01-01")).toBe(-28);
+    expect(timeToTargetOn(-21, "2026-11-27", "2026-12-18")).toBe(-42);
+    expect(timeToTargetOn(7, "", "2027-01-01")).toBe(7);
+  });
+  it("words it", () => {
+    expect(timeToTargetPhrase(-28)).toBe("28 days overdue");
+    expect(timeToTargetPhrase(-1)).toBe("1 day overdue");
+    expect(timeToTargetPhrase(0)).toBe("due that day");
+    expect(timeToTargetPhrase(5)).toBe("5 days to target");
   });
 });

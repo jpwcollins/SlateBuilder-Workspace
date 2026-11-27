@@ -89,3 +89,32 @@ export function isUnavailableBeyondLimit(
   const normalized = normalizeDateOnly(unavailableUntil);
   return Boolean(normalized) && normalized! > unavailableLimitISO(today);
 }
+
+/** Whole calendar days from one YYYY-MM-DD date to another (negative if earlier). */
+export function daysBetween(fromISO: string, toISO: string): number {
+  const from = new Date(`${fromISO}T00:00:00`);
+  const to = new Date(`${toISO}T00:00:00`);
+  // Rounded, so a daylight-saving change in between doesn't cost a day.
+  return Math.round((to.getTime() - from.getTime()) / 86_400_000);
+}
+
+/**
+ * Time to target on a given day. The waitlist's figure is as of the day the
+ * list was produced (`listDateISO`); every day after that takes one off it, so
+ * on an OR date five weeks later a patient 7 days from target is 28 days over.
+ */
+export function timeToTargetOn(
+  timeToTargetDays: number,
+  listDateISO: string,
+  onDateISO: string
+): number {
+  if (!listDateISO || !onDateISO) return timeToTargetDays;
+  return timeToTargetDays - daysBetween(listDateISO, onDateISO);
+}
+
+/** "28 days overdue", "due that day", "1 day to target". */
+export function timeToTargetPhrase(days: number): string {
+  if (days < 0) return `${-days} ${days === -1 ? "day" : "days"} overdue`;
+  if (days === 0) return "due that day";
+  return `${days} ${days === 1 ? "day" : "days"} to target`;
+}

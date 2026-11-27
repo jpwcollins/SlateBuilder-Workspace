@@ -123,6 +123,12 @@ export default function Guide() {
           target, recently overdue and well overdue, and lists the surgeon IDs
           found in the file.
         </p>
+        <p>
+          The summary also shows the <span className="font-semibold">list date</span>:
+          the day the file&apos;s time-to-target figures are as of. It is the day
+          you load the file; if the hospital sent it a few days earlier, set it to
+          that day.
+        </p>
       </Section>
 
       <Section title="2. Notes file">
@@ -209,6 +215,17 @@ export default function Guide() {
             each in its own colour; every patient card carries its slate&apos;s
             colour down its left edge. Drag a card across to another column to
             move that patient to that day.
+          </li>
+          <li>
+            Each patient card shows time to target{" "}
+            <span className="font-semibold">at surgery</span>: counted on from
+            the list date to that slate&apos;s OR date, so a patient 7 days from
+            target on the list is 28 days overdue on a slate five weeks later.
+            The figure on the list is shown beside it. The slate PDF&apos;s
+            overdue marks and the slate CSV&apos;s{" "}
+            <span className="font-semibold">time_to_target_at_surgery_days</span>{" "}
+            column use the same count; the Priority Waitlist and Long-waiters
+            tabs keep the list&apos;s figures.
           </li>
           <li>
             The capacity bar shows time used vs. the block, including

@@ -84,6 +84,8 @@ import {
   sortForWaitlist,
   toLocalDateOnly,
   unavailableLimitISO,
+  timeToTargetOn,
+  timeToTargetPhrase,
   isUnavailableBeyondLimit,
   UNAVAILABLE_LIMIT_ADVICE,
   scoreCases,
@@ -842,6 +844,12 @@ export default function Home() {
   const [priorityMode, setPriorityMode] =
     useState<PriorityMode>("urgency_then_ttt");
   const [slateCount, setSlateCount] = useState(2);
+  // The day the hospital's list was produced: its time-to-target figures are
+  // as of then. Slate cards count on from it to each slate's OR date. It is
+  // the day the list was loaded unless the office says otherwise.
+  const [listDateISO, setListDateISO] = useState<string>(() =>
+    toLocalDateOnly(new Date()),
+  );
   const [slateDates, setSlateDates] = useState<string[]>(() => {
     const today = new Date();
     return [21, 35, 49].map((offset) => {
@@ -2131,6 +2139,7 @@ export default function Home() {
     if (!file) return;
     setUploadSummary(null);
     justUploadedRef.current = true;
+    setListDateISO(toLocalDateOnly(new Date()));
 
     // Snapshot the notes currently on screen so the parse effect can carry them
     // over to matching patients in the new file. Nothing is cleared here: if the
@@ -2914,6 +2923,7 @@ export default function Home() {
         "procedure_name",
         "benchmark_weeks",
         "time_to_target_days",
+        "time_to_target_at_surgery_days",
         "estimated_duration_min",
         "unavailable_until",
         "surgeon_id",
@@ -2943,6 +2953,7 @@ export default function Home() {
         item.procedureName ?? "",
         String(item.benchmarkWeeks),
         String(item.timeToTargetDays),
+        String(timeToTargetOn(item.timeToTargetDays, listDateISO, dateISO)),
         String(item.estimatedDurationMin),
         item.unavailableUntil ?? "",
         item.surgeonId,
@@ -2998,7 +3009,10 @@ export default function Home() {
         durationMin: Math.round(item.estimatedDurationMin),
         tatAfter,
         benchmarkWeeks: item.benchmarkWeeks,
-        overdueDays: Math.max(0, -item.timeToTargetDays),
+        overdueDays: Math.max(
+          0,
+          -timeToTargetOn(item.timeToTargetDays, listDateISO, dateISO),
+        ),
         primary: includeNamesInExports ? item.displayLabel : item.caseId,
         secondary: includeNamesInExports ? item.caseId : undefined,
         procedure: item.procedureName ?? "",
@@ -3904,6 +3918,24 @@ export default function Home() {
                       </span>
                     </p>
                   )}
+                  <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-emerald-900">
+                    <span>
+                      <span className="font-semibold">List dated</span>
+                    </span>
+                    <DraftDateInput
+                      value={listDateISO}
+                      onCommit={(value) =>
+                        setListDateISO(value || toLocalDateOnly(new Date()))
+                      }
+                      max={toLocalDateOnly(new Date())}
+                      className="rounded-md border border-emerald-300 bg-white px-2 py-1 text-xs"
+                    />
+                    <span className="text-emerald-800">
+                      Time to target in the list is as of this day; slate cards
+                      count on from it to each OR date. Change it if the file is
+                      older than today.
+                    </span>
+                  </div>
                   <button
                     type="button"
                     aria-expanded={breakdownOpen}
@@ -4829,7 +4861,11 @@ export default function Home() {
                                     <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-sand-700">
                                       <UrgencyBadge
                                         benchmarkWeeks={item.benchmarkWeeks}
-                                        timeToTargetDays={item.timeToTargetDays}
+                                        timeToTargetDays={timeToTargetOn(
+                                          item.timeToTargetDays,
+                                          listDateISO,
+                                          slateDate,
+                                        )}
                                       />
                                       <BookingOrderBadge
                                         order={bookingOrder[item.caseId]}
@@ -4858,8 +4894,35 @@ export default function Home() {
                                         </span>
                                       )}
                                     </div>
-                                    <p className="mt-1 text-xs text-sand-700">
-                                      Time to target {item.timeToTargetDays}d
+                                    <p
+                                      className="mt-1 text-xs text-sand-700"
+                                      title={`Time to target on this slate's date. On the list dated ${listDateISO}: ${timeToTargetPhrase(item.timeToTargetDays)}.`}
+                                    >
+                                      <span
+                                        className={
+                                          timeToTargetOn(
+                                            item.timeToTargetDays,
+                                            listDateISO,
+                                            slateDate,
+                                          ) < 0
+                                            ? "font-semibold text-rose-700"
+                                            : ""
+                                        }
+                                      >
+                                        At surgery:{" "}
+                                        {timeToTargetPhrase(
+                                          timeToTargetOn(
+                                            item.timeToTargetDays,
+                                            listDateISO,
+                                            slateDate,
+                                          ),
+                                        )}
+                                      </span>
+                                      <span className="text-sand-500">
+                                        {" "}
+                                        · on the list:{" "}
+                                        {timeToTargetPhrase(item.timeToTargetDays)}
+                                      </span>
                                     </p>
                                     {item.procedureName && (
                                       <p className="text-xs text-sand-600">
