@@ -1,5 +1,6 @@
 module.exports = {
-  content: ["./app/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}"],
+  // packages/core holds some class names too (urgencyChipClasses).
+  content: ["./app/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}", "../../packages/core/src/**/*.ts"],
   theme: {
     extend: {
       fontFamily: {
@@ -8,28 +9,28 @@ module.exports = {
       },
       colors: {
         slateBlue: {
-          50: "#f3f5ff",
-          100: "#e6e9ff",
-          200: "#c7ceff",
-          300: "#a2adff",
-          400: "#7a88ff",
-          500: "#5969f1",
-          600: "#4a54d6",
-          700: "#3f46ad",
-          800: "#343a88",
-          900: "#2b2f6b"
+          50: "#eff4ff",
+          100: "#dce6fd",
+          200: "#c0d2fb",
+          300: "#94b2f6",
+          400: "#638bef",
+          500: "#3f68e6",
+          600: "#2b4fd6",
+          700: "#2440b4",
+          800: "#22368f",
+          900: "#172447"
         },
         sand: {
-          50: "#fbf7f1",
-          100: "#f3eadc",
-          200: "#e7d3b2",
-          300: "#d9b584",
-          400: "#c89457",
-          500: "#b47a3a",
-          600: "#985f2d",
-          700: "#7b4724",
-          800: "#633920",
-          900: "#512f1c"
+          50: "#f7f8fa",
+          100: "#f0f2f5",
+          200: "#e3e7ec",
+          300: "#cdd3db",
+          400: "#97a1ae",
+          500: "#6b7584",
+          600: "#4f5867",
+          700: "#3a4351",
+          800: "#29303b",
+          900: "#1a1f27"
         }
       }
     }

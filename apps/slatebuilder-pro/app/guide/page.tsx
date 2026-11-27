@@ -15,7 +15,7 @@ export default function Guide() {
   return (
     <main className="relative mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-6 px-6 py-12">
       <header className="flex flex-col gap-2">
-        <p className="text-sm uppercase tracking-[0.2em] text-sand-600">User guide</p>
+        <p className="text-sm font-semibold tracking-wide text-sand-600">User guide</p>
         <h1 className="text-3xl font-semibold text-slateBlue-900">SlateBuilder Pro</h1>
         <p className="text-sm text-sand-700">
           Build single-surgeon OR slates and priority waitlists from a deidentified list. Everything
@@ -23,7 +23,7 @@ export default function Guide() {
         </p>
         <a
           href="/"
-          className="mt-1 w-fit rounded-full border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
+          className="mt-1 w-fit rounded-lg border border-slateBlue-200 px-4 py-2 text-xs font-semibold text-slateBlue-700"
         >
           ← Back to the app
         </a>
@@ -92,7 +92,23 @@ export default function Guide() {
           cases as possible.
         </p>
         <ul className="list-disc pl-5">
-          <li>Drag cases to set the running order; edit durations, flags or unavailability.</li>
+          <li>
+            On a wide screen the slates sit side by side, one column per day, each in its own
+            colour. The capacity bar is green when the day is at least 85% used, amber when it is
+            noticeably underused, and red if the cases run past the block.
+          </li>
+          <li>
+            Drag cases to set the running order. Duration is on each card; flags, the
+            unavailable-until date and Remove from suggested slates are under{" "}
+            <span className="font-semibold">Flags, availability, remove</span>.
+          </li>
+          <li>
+            Drag a case onto another day&apos;s slate to move the patient there. The rest of the
+            slates are re-planned around that choice: anyone displaced goes to the best day left for
+            them, or back to the waitlist if there is no room. You see the list of changes and
+            confirm before anything moves. The placement holds through later edits; patients placed
+            by hand are never moved to make room for another.
+          </li>
           <li>
             <span className="font-semibold">Remove from suggested slates</span> frees the time for the
             next case; restore from the Priority Waitlist.
@@ -121,11 +137,21 @@ export default function Guide() {
             <span className="font-semibold text-sky-800">Optimization</span> — booked ahead of
             someone higher-ranked because this mix of cases makes best use of the OR time.
           </li>
+          <li>
+            <span className="font-semibold text-sky-800">Clinical</span> — dragged onto this slate
+            by hand, ahead of someone higher-ranked, with a recorded reason or a clinical flag that
+            accounts for it.
+          </li>
+          <li>
+            <span className="font-semibold text-rose-700">No reason</span> — dragged onto this slate
+            by hand, ahead of someone higher-ranked, with nothing recorded to account for it.
+          </li>
         </ul>
         <p>
-          A mark is about that case only. Removing a patient from the suggested slates does not
-          change the marks on the cases behind them. Instead the app asks why at the moment you do
-          it; if you skip that, the patient is listed in a red panel at the top of the Slates tab and
+          A mark is about that case only. Removing a patient from the suggested slates, or dragging
+          them to a later day, does not change the marks on the cases behind them. Instead the app
+          asks why at the moment you do it (it asks the same when you drag someone onto a slate
+          ahead of others); if you skip that, the patient is listed in a red panel at the top of the Slates tab and
           tagged <span className="font-semibold">Reason needed</span> on their Priority Waitlist row,
           and each slate where someone lower-ranked is booked in their place says so in one line. The
           count is in the CSV&apos;s{" "}
@@ -133,8 +159,8 @@ export default function Guide() {
         </p>
         <p>
           A clinical flag on the held-back patient counts as a reason by itself. Passing a patient
-          who is unavailable that day does not count, and dragging a case within a slate changes only
-          the running order, never its mark. Reasons come from a fixed list; the optional typed note
+          who is unavailable that day does not count, and dragging a case up or down within a slate
+          changes only the running order, never its mark. Reasons come from a fixed list; the optional typed note
           beside one is never exported. Reasons last for the session only — this app keeps nothing
           between uploads.
         </p>

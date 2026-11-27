@@ -86,15 +86,27 @@ const occupiedFor = (count: number, surgical: number) =>
  * never bumped to fit less-urgent ones. The remaining block time is then filled
  * with not-yet-overdue cases via a knapsack that maximizes total priority.
  */
-export function optimizeSlate(cases: PatientCase[], date: Date): SlateResult {
+export function optimizeSlate(
+  cases: PatientCase[],
+  date: Date,
+  /**
+   * Cases a person placed on this date by hand. They go on first, whatever
+   * their rank, and the rest of the block is filled around them. They are
+   * left out of `cases` if also passed there.
+   */
+  pinned: PatientCase[] = []
+): SlateResult {
   const blockMinutes = getBlockMinutes(date);
-  const scored = scoreCases(cases);
+  const pinnedIds = new Set(pinned.map((c) => c.caseId));
+  const scored = scoreCases(cases.filter((c) => !pinnedIds.has(c.caseId)));
   const TAT = TURNAROUND_MINUTES;
+
+  // Phase 0 — hand-placed cases, as placed.
+  const selected: ScoredCase[] = scoreCases(pinned);
+  let surgical = selected.reduce((sum, c) => sum + Math.round(c.estimatedDurationMin), 0);
 
   // Phase 1 — anchor over-target cases greedily by priority.
   const anchors = scored.filter((c) => c.timeToTargetDays < 0).sort(byPriorityThenWait);
-  const selected: ScoredCase[] = [];
-  let surgical = 0;
   for (const a of anchors) {
     if (selected.length >= MAX_CASES_PER_SLATE) break;
     const dur = Math.round(a.estimatedDurationMin);
@@ -237,21 +249,37 @@ export function optimizeMultipleSlates(
 
 export function optimizeSlatesForDates(
   cases: PatientCase[],
-  dates: Date[]
+  dates: Date[],
+  /**
+   * Hand placements: case id → the date (YYYY-MM-DD) a person put it on. Each
+   * goes on that date's slate first and is kept off the others. A placement
+   * on a date not being planned, or one the patient is unavailable for, is
+   * ignored and the case is planned as usual.
+   */
+  pinned: Record<string, string> = {}
 ): SlateResult[] {
   const results: SlateResult[] = [];
+  const dateISOs = dates.map((d) => toLocalDateOnly(d));
+  const pinDate = (item: PatientCase): string | null => {
+    const iso = pinned[item.caseId];
+    if (!iso) return null;
+    const i = dateISOs.indexOf(iso);
+    if (i < 0 || !isAvailableOnDate(item.unavailableUntil, dates[i])) return null;
+    return iso;
+  };
   let remainingCases = [...cases];
 
   for (let i = 0; i < dates.length; i += 1) {
     if (remainingCases.length === 0) break;
     const date = dates[i];
-    const eligibleCases = remainingCases.filter((item) =>
-      isAvailableOnDate(item.unavailableUntil, date)
+    const pinnedHere = remainingCases.filter((item) => pinDate(item) === dateISOs[i]);
+    const eligibleCases = remainingCases.filter(
+      (item) => pinDate(item) === null && isAvailableOnDate(item.unavailableUntil, date)
     );
-    if (eligibleCases.length === 0) {
+    if (eligibleCases.length === 0 && pinnedHere.length === 0) {
       continue;
     }
-    const result = optimizeSlate(eligibleCases, date);
+    const result = optimizeSlate(eligibleCases, date, pinnedHere);
     if (result.selected.length === 0) break;
     results.push(result);
     const selectedIds = new Set(result.selected.map((item) => item.caseId));

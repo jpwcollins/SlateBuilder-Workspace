@@ -137,13 +137,12 @@
 
 body {
   @apply bg-sand-50 text-slateBlue-900 font-body;
+  /* The top bar is window-wide; clip rather than scroll the sliver a
+     vertical scrollbar would otherwise add. clip keeps sticky working. */
+  overflow-x: clip;
 }
 
 .card {
-  @apply bg-white/80 backdrop-blur border border-sand-200 rounded-2xl shadow-[0_20px_50px_-30px_rgba(35,40,85,0.35)];
+  @apply bg-white border border-sand-200 rounded-xl shadow-sm;
 }
 
-.gridline {
-  background-image: radial-gradient(rgba(52, 58, 136, 0.08) 1px, transparent 1px);
-  background-size: 18px 18px;
-}

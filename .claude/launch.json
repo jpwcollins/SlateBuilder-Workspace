@@ -30,6 +30,18 @@
         "3100"
       ],
       "port": 3100
+    },
+    {
+      "name": "pro-prod",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "next",
+        "start",
+        "apps/slatebuilder-pro",
+        "-p",
+        "3200"
+      ],
+      "port": 3200
     }
   ]
 }

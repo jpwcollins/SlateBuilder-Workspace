@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   optimizeSlate,
+  optimizeSlatesForDates,
   scoreCases,
   reorderSlateByCaseIds,
   priorityScoreOf,
@@ -132,5 +133,42 @@ describe("reorderSlateByCaseIds", () => {
   it("returns input unchanged when no order is given", () => {
     const scored = scoreCases(fixture.slice(0, 2));
     expect(reorderSlateByCaseIds(scored, undefined)).toBe(scored);
+  });
+});
+
+describe("hand placements", () => {
+  const MON = new Date(2026, 0, 5);
+  const TUE = new Date(2026, 0, 6);
+  // Two overdue 210-minute cases fill a day (210 + 30 + 210 = 450).
+  const urgent = [makeCase(1, 2, -30, 210), makeCase(2, 2, -20, 210)];
+  const low = makeCase(3, 26, 100, 210);
+
+  it("puts a hand-placed case on its date ahead of higher-ranked ones", () => {
+    const results = optimizeSlatesForDates([...urgent, low], [MON, TUE], { "C-003": "2026-01-05" });
+    expect(results[0].selected.map((c) => c.caseId).sort()).toEqual(["C-001", "C-003"]);
+    expect(results[1].selected.map((c) => c.caseId)).toEqual(["C-002"]);
+  });
+
+  it("keeps a hand-placed case off the other dates", () => {
+    const results = optimizeSlatesForDates([...urgent, low], [MON, TUE], { "C-001": "2026-01-06" });
+    expect(results[0].selected.map((c) => c.caseId)).not.toContain("C-001");
+    expect(results[1].selected.map((c) => c.caseId)).toContain("C-001");
+  });
+
+  it("ignores a placement on a date not planned or the patient can't make", () => {
+    const away = { ...low, unavailableUntil: "2026-01-10" };
+    const results = optimizeSlatesForDates([...urgent, away], [MON, TUE], {
+      "C-003": "2026-01-06",
+      "C-001": "2026-02-01",
+    });
+    const all = results.flatMap((r) => r.selected.map((c) => c.caseId));
+    expect(all).not.toContain("C-003");
+    expect(results[0].selected.map((c) => c.caseId)).toContain("C-001");
+  });
+
+  it("matches the plain optimizer when nothing is placed by hand", () => {
+    const plain = optimizeSlate(fixture, DATE);
+    const pinnedNone = optimizeSlate(fixture, DATE, []);
+    expect(pinnedNone.selected.map((c) => c.caseId)).toEqual(plain.selected.map((c) => c.caseId));
   });
 });
