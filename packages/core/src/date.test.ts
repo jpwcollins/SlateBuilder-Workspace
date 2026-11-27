@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { getBlockMinutes, isAvailableOnDate, toLocalDateOnly } from "./date";
+import {
+  getBlockMinutes,
+  isAvailableOnDate,
+  isUnavailableBeyondLimit,
+  toLocalDateOnly,
+  unavailableLimitISO,
+} from "./date";
 
 describe("getBlockMinutes", () => {
   it("uses 420 minutes on the 2nd Thursday of the month", () => {
@@ -25,5 +31,18 @@ describe("isAvailableOnDate", () => {
   it("treats a missing unavailable date as available", () => {
     expect(isAvailableOnDate(undefined, new Date(2026, 0, 9))).toBe(true);
     expect(isAvailableOnDate("", new Date(2026, 0, 9))).toBe(true);
+  });
+});
+
+describe("unavailable-until limit", () => {
+  const today = new Date(2026, 10, 27); // 27 Nov 2026
+  it("is a year from today", () => {
+    expect(unavailableLimitISO(today)).toBe("2027-11-27");
+  });
+  it("flags only dates after the limit", () => {
+    expect(isUnavailableBeyondLimit("2027-11-27", today)).toBe(false);
+    expect(isUnavailableBeyondLimit("2027-11-28", today)).toBe(true);
+    expect(isUnavailableBeyondLimit(undefined, today)).toBe(false);
+    expect(isUnavailableBeyondLimit("2030-01-01T00:00:00", today)).toBe(true);
   });
 });

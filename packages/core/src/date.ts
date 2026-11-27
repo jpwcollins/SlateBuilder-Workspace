@@ -66,3 +66,26 @@ function getWeekdayOccurrenceInMonth(date: Date): number {
   }
   return count;
 }
+
+/**
+ * What the apps suggest for a patient who can't come for more than a year:
+ * at that range they are better off the waitlist than held on it.
+ */
+export const UNAVAILABLE_LIMIT_ADVICE =
+  "Consider removing this patient from your waitlist and rebooking them when they are ready to proceed with surgery.";
+
+/** The latest unavailable-until date the apps accept: a year from `today`. */
+export function unavailableLimitISO(today: Date = new Date()): string {
+  const limit = new Date(today);
+  limit.setFullYear(limit.getFullYear() + 1);
+  return toLocalDateOnly(limit);
+}
+
+/** Whether an unavailable-until date is more than a year from `today`. */
+export function isUnavailableBeyondLimit(
+  unavailableUntil: string | undefined,
+  today: Date = new Date()
+): boolean {
+  const normalized = normalizeDateOnly(unavailableUntil);
+  return Boolean(normalized) && normalized! > unavailableLimitISO(today);
+}

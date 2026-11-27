@@ -32,6 +32,10 @@ import {
   sortForSlate,
   sortForWaitlist,
   toLocalDateOnly,
+  normalizeDateOnly,
+  unavailableLimitISO,
+  isUnavailableBeyondLimit,
+  UNAVAILABLE_LIMIT_ADVICE,
   urgencyChipClasses,
   TURNAROUND_MINUTES,
   BOOKING_ORDER_TEXT,
@@ -218,6 +222,58 @@ function DraftDateInput({
         </span>
       )}
     </span>
+  );
+}
+
+// Patients whose unavailable-until date is more than a year away, however it
+// got there (the hospital's file, a notes file, or an edit). They would sit
+// off every slate for that long, so the office is told and given the advice.
+// "Got it" hides the panel until the list of patients changes.
+function FarUnavailablePanel({
+  patients,
+  limitISO,
+}: {
+  patients: PatientCase[];
+  limitISO: string;
+}) {
+  const key = patients.map((p) => p.caseId).join(",");
+  const [dismissedKey, setDismissedKey] = useState<string | null>(null);
+  if (patients.length === 0 || dismissedKey === key) return null;
+  const n = patients.length;
+  return (
+    <section
+      role="alert"
+      className="rounded-xl border-2 border-amber-300 bg-amber-50 px-5 py-4 text-sm text-amber-950"
+    >
+      <p className="font-semibold">
+        {n === 1
+          ? "1 patient is unavailable for more than a year"
+          : `${n} patients are unavailable for more than a year`}
+      </p>
+      <p className="mt-1 text-xs text-amber-900">
+        Their unavailable-until date is after {limitISO}, so they stay off every
+        slate until then.
+      </p>
+      <ul className="mt-2 flex flex-col gap-0.5 text-xs">
+        {patients.map((p) => (
+          <li key={p.caseId}>
+            <span className="font-semibold">{p.displayLabel}</span>
+            <span className="ml-1.5 text-[10px] uppercase tracking-wider text-amber-700">
+              {p.caseId}
+            </span>{" "}
+            · unavailable until {normalizeDateOnly(p.unavailableUntil)}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-xs font-semibold">{UNAVAILABLE_LIMIT_ADVICE}</p>
+      <button
+        type="button"
+        onClick={() => setDismissedKey(key)}
+        className="mt-3 rounded-lg border border-amber-400 bg-white px-3 py-1 text-xs font-semibold text-amber-900"
+      >
+        Got it
+      </button>
+    </section>
   );
 }
 
@@ -543,11 +599,11 @@ export default function Home() {
   // An unavailable-until date can be at most a year from today: anything
   // later is almost certainly a slip of the picker, and would quietly keep the
   // patient off every slate.
-  const unavailableMaxISO = useMemo(() => {
-    const limit = new Date();
-    limit.setFullYear(limit.getFullYear() + 1);
-    return toLocalDateOnly(limit);
-  }, []);
+  const unavailableMaxISO = useMemo(() => unavailableLimitISO(), []);
+  const farUnavailable = useMemo(
+    () => casesWithDefaults.filter((item) => isUnavailableBeyondLimit(item.unavailableUntil)),
+    [casesWithDefaults],
+  );
 
   const updateSlateDate = (index: number, value: string) => {
     setSlateDates((prev) => {
@@ -1198,6 +1254,8 @@ export default function Home() {
         </div>
       </div>
 
+      <FarUnavailablePanel patients={farUnavailable} limitISO={unavailableMaxISO} />
+
       {importChecks.length > 0 && !importChecksRead && (
         <ImportCheckPanel checks={importChecks} onAcknowledge={() => setImportChecksRead(true)} />
       )}
@@ -1782,7 +1840,7 @@ export default function Home() {
                                   onCommit={(value) => updateUnavailableUntil(item.caseId, value)}
                                   className="rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
                                   max={unavailableMaxISO}
-                                  maxMessage={`Unavailable dates can be at most a year ahead (until ${unavailableMaxISO}).`}
+                                  maxMessage={`Unavailable dates can be at most a year ahead (until ${unavailableMaxISO}). ${UNAVAILABLE_LIMIT_ADVICE}`}
                                 />
                               </label>
                               <button
@@ -2017,7 +2075,7 @@ export default function Home() {
                             onCommit={(value) => updateUnavailableUntil(item.caseId, value)}
                             className="rounded-md border border-sand-200 bg-white px-2 py-1 text-xs"
                             max={unavailableMaxISO}
-                            maxMessage={`Unavailable dates can be at most a year ahead (until ${unavailableMaxISO}).`}
+                            maxMessage={`Unavailable dates can be at most a year ahead (until ${unavailableMaxISO}). ${UNAVAILABLE_LIMIT_ADVICE}`}
                           />
                         </label>
                       </div>

@@ -239,7 +239,10 @@ export default function Guide() {
             you press Enter, click <span className="font-semibold">Set</span>,
             or move on from the field, not while you scroll or type through
             dates; Escape puts the old date back. An unavailable-until date can
-            be at most a year from today.
+            be at most a year from today. A patient unavailable for longer,
+            whether from the hospital&apos;s file or your notes file, is flagged
+            at the top of the app with the suggestion to take them off the
+            waitlist and rebook them when they are ready for surgery.
           </li>
           <li>
             Edit a case&apos;s duration or clinical flags, or set a date a

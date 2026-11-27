@@ -106,7 +106,9 @@ export default function Guide() {
             Date fields (unavailable-until and the OR dates) take effect when you press Enter, click{" "}
             <span className="font-semibold">Set</span>, or move on from the field, not while you
             scroll or type through dates; Escape puts the old date back. An unavailable-until date
-            can be at most a year from today.
+            can be at most a year from today. A patient unavailable for longer in the hospital&apos;s
+            file is flagged at the top of the app with the suggestion to take them off the waitlist
+            and rebook them when they are ready for surgery.
           </li>
           <li>
             Drag a case onto another day&apos;s slate to move the patient there. The rest of the
