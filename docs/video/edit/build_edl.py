@@ -68,6 +68,8 @@ def beats_events(name, offset, lo, hi):
         if e["type"] == "dialog" and lo <= e["t"] < hi and e.get("kind") == "alert":
             captions.append({"time": round(e["t"] + offset, 3), "text": e["message"]})
 
+# 0 Opening title: the site, and that every patient and provider is simulated
+card("SlateBuilder.ca", 5.0, "All patient and provider data in this video is simulated.")
 # 1 Cold open
 d = take("s01-cold-open"); off = footage("s01-cold-open", 0, end_of("s01-cold-open")); beats_events("s01-cold-open", off, 0, 1e9)
 # 2 Title card, then the empty app in an iMac frame
@@ -95,7 +97,7 @@ vo["S08b"] = round(t + 0.5, 3); still(OUT / "s08-export" / "slates-page-1.png", 
 # 9 Notes: the click on "Create a new notes file" lands as S09a ends; the Save
 # dialog follows with S09b's line over it, then the app shows the linked file.
 d = take("s09-notes"); bt = {b["id"]: b["start"] for b in d["beats"]}
-cut = click_time("s09-notes", "Create a new notes file") + 0.25
+cut = click_time("s09-notes", "Start a new notes file") + 0.25
 off = footage("s09-notes", 0, cut); beats_events("s09-notes", off, 0, cut)
 vo["S09b"] = round(t + 0.35, 3)
 still(VIDEO / "out" / "stills" / "s09b-save-dialog.png", 0.35 + vo_len("S09b") + 0.5, "Save dialog")

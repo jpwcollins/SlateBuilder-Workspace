@@ -27,7 +27,15 @@ Timings are targets. The final cut follows the voiceover.
 
 ---
 
-## 1 · Cold open: the problem · 0:00–0:20
+## 0 · Title card · 0:00–0:05
+
+| Shot | On screen | Capture | Zoom / motion |
+|---|---|---|---|
+| S00 | **SlateBuilder.ca**, with a line beneath: "All patient and provider data in this video is simulated." | Card | — |
+
+> No voiceover — music only.
+
+## 1 · Cold open: the problem · 0:05–0:25
 
 | Shot | On screen | Capture | Zoom / motion |
 |---|---|---|---|
@@ -54,8 +62,8 @@ Timings are targets. The final cut follows the voiceover.
 | Shot | On screen | Capture | Zoom / motion |
 |---|---|---|---|
 | S03a | Pointer clicks "Choose File" in step 1. Cut to the macOS Open dialog (still: `s03a-open-dialog.png`) with `week-1-waitlist.csv` selected in "Office – confidential". | Still, then PW (file loads) | Zoom on step 1 |
-| S03b | The top bar fills: Cases 40 · Overdue 8. The Office Snapshot appears below: cases, overdue, urgent, workload. | PW | Pull back to show the snapshot |
-| S03c | The Waitlist overview histogram. | PW | Zoom on the histogram |
+| S03b | The summary appears right under the upload: "✓ 40 patients loaded", then Cases 40 · Overdue 8 · Urgent 11 · Workload 51.5h. | PW | Zoom on the four numbers |
+| S03c | Click "Show breakdown ▸": the Waitlist overview histogram opens. | PW | Zoom on the histogram |
 
 > **VO S03a:** Start on the Setup tab. In step one, choose the file the hospital sent — Excel or CSV.
 >
@@ -63,16 +71,16 @@ Timings are targets. The final cut follows the voiceover.
 >
 > **VO S03c:** And the overview shows where the pressure is building, class by class.
 
-## 4 · Check the scheduling rules · 1:02–1:20
+## 4 · OR dates · 1:02–1:20
 
 | Shot | On screen | Capture | Zoom / motion |
 |---|---|---|---|
-| S04a | Step 3: the four default durations. | PW | Zoom on the durations |
-| S04b | "Number of slates" changes from 2 to 3. The three OR dates appear. | PW | Zoom on the dates |
+| S04a | Step 3 "OR dates": "Number of slates" changes from 2 to 3 and the third date appears, with "View suggested slates →" beside them. | PW | Zoom on the dates |
+| S04b | Open "Default case lengths… Edit ▸": the four defaults. Pointer ends on "View suggested slates →". | PW | Zoom on the case lengths |
 
-> **VO S04a:** Step three holds the rules. Case lengths start from four defaults by procedure type — you can adjust any single case later.
+> **VO S04a:** Step three sets your OR dates. Choose up to three, and check them against your actual OR days.
 >
-> **VO S04b:** Choose up to three OR dates and check them against your actual blocks. Each case is followed by a thirty-minute turnaround, except the last of the day, and a slate holds seven cases at most.
+> **VO S04b:** Case lengths start from four defaults by procedure type, and you can adjust any single case later. Each case is followed by a thirty-minute turnaround, and a slate holds seven cases at most.
 
 *(Step 2, restoring notes, is skipped here and covered in section 9.)*
 
@@ -151,13 +159,13 @@ Timings are targets. The final cut follows the voiceover.
 
 | Shot | On screen | Capture | Zoom / motion |
 |---|---|---|---|
-| S09a | Setup tab, step 2 "Restore your notes": click "Create a new notes file". | PW-stub | Zoom on step 2 |
-| S09b | The macOS Save dialog (still: `s09b-save-dialog.png`), in a folder named "Office – confidential", with Chrome's line "Warning: this site can see edits you make" at the top. Back in the app, step 2 reads "Linked to slatebuilder-notes-….sbnotes". | Still, then PW-stub | — |
-| S09c | "Before you finish: save your notes". Type "MOA" in "Who is saving". Type `Summer2026!!` as the passphrase: the strength bar goes red ("Too easy to guess"). Replace it with `harbour-velvet-spoon-orbit`: the bar goes green. Confirm, then "Save notes file". The top bar reads "Notes saved". | PW-stub | Zoom on the passphrase field and strength bar, then the top bar |
+| S09a | Setup tab, step 2 "Notes file": click "Start a new notes file". | PW-stub | Zoom on step 2 |
+| S09b | The macOS Save dialog (still: `s09b-save-dialog.png`), in a folder named "Office – confidential", with Chrome's line "Warning: this site can see edits you make" at the top. Back in the app, step 2 reads "New notes file: slatebuilder-notes-….sbnotes". | Still, then PW-stub | — |
+| S09c | Type `Summer2026!!` as the passphrase: the strength bar goes red ("Too easy to guess"). Replace it with `harbour-velvet-spoon-orbit`: the bar goes green. Confirm, "MOA" in "Who is saving", then "Save and lock". The card reads "✓ Saving to slatebuilder-notes-….sbnotes". | PW-stub | Zoom on the passphrase field and strength bar, then the status |
 | S09d | Card: "One week later". | Card | — |
-| S09e | Click "Clear screen". Load `week-2-waitlist.csv`. In step 2, enter the passphrase and click "Load notes". The status message reports how many patients on this week's list now carry notes. | PW-stub | Zoom on the status message |
+| S09e | Click "Clear screen". Load `week-2-waitlist.csv`. Step 2 now only asks for the passphrase: enter it and click "Unlock and load notes". The message reports how many patients on this week's list now carry notes. | PW-stub | Zoom on the status message |
 
-> **VO S09a:** Your notes are worth keeping from week to week: unavailable dates, case lengths, flags, reasons. In step two, create a notes file on this computer.
+> **VO S09a:** Your notes are worth keeping from week to week: unavailable dates, case lengths, flags, reasons. The first time, start a new notes file on this computer.
 >
 > **VO S09b:** Pick a folder that doesn't sync to a personal cloud. Chrome will mention that SlateBuilder can edit this file — that's how it saves your notes for you.
 >
@@ -165,7 +173,7 @@ Timings are targets. The final cut follows the voiceover.
 >
 > **VO S09d:** *(no voiceover — music only)*
 >
-> **VO S09e:** Next week, load the new list, then your notes file. Each note finds its patient again, and anyone no longer on the list is left behind.
+> **VO S09e:** Next week, load the new list and unlock your notes file with its passphrase. Each note finds its patient again, and anyone no longer on the list is left behind.
 
 ## 10 · Close · 4:20–4:35
 

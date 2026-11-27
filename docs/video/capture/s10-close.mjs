@@ -11,6 +11,6 @@ await runTake("s10-close", async (take) => {
   await take.beat("S10a", async () => {
     await take.click(page.getByRole("button", { name: "Clear screen" }), { label: "Clear screen" });
     await take.sleep(600);
-    await take.pointAt(page.getByText("Load this week's waitlist"));
+    await take.pointAt(page.getByText("Load this week's waitlist", { exact: true }));
   }, { tail: 1.5 });
 });

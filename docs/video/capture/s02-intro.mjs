@@ -5,11 +5,11 @@ import { runTake, BASE_URL } from "./lib.mjs";
 await runTake("s02-intro", async (take) => {
   const { page } = take;
   await page.goto(BASE_URL);
-  await page.getByText("Load this week's waitlist").waitFor();
+  await page.getByText("Load this week's waitlist", { exact: true }).waitFor();
   await take.record();
 
   await take.beat("S02b", async () => {
     await take.sleep(1500);
-    await take.pointAt(page.getByText("Load this week's waitlist"));
+    await take.pointAt(page.getByText("Load this week's waitlist", { exact: true }));
   });
 });

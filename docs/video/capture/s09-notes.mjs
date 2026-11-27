@@ -70,33 +70,37 @@ await runTake("s09-notes", async (take) => {
 
   // The click lands as the line ends ("...create a notes file on this
   // computer"), so the Save dialog cut in after it follows the words.
+  const notesCard = page.locator("#notes-card");
+
+  // The click lands as the line ends ("...start a new notes file on this
+  // computer"), so the Save dialog cut in after it follows the words.
   await take.beat("S09a", async () => {
-    await take.scrollTo(page.getByText("Restore your notes"), { block: "start" });
-    const create = page.getByRole("button", { name: "Create a new notes file" });
+    await take.scrollTo(notesCard, { block: "start" });
+    const create = page.getByRole("button", { name: "Start a new notes file" });
     await take.pointAt(create);
     const wait = take.lineSeconds("S09a") - take.sinceBeat() - 0.6;
     if (wait > 0) await take.sleep(wait * 1000);
-    await take.click(create, { label: "Create a new notes file" });
+    await take.click(create, { label: "Start a new notes file" });
   }, { tail: 0 });
 
-  // The macOS Save dialog is cut in here in the edit (recorded separately).
+  // The macOS Save dialog is cut in here in the edit (a still).
   await take.beat("S09b", async () => {
-    await page.getByText(/^Linked to /).first().waitFor();
-    await take.pointAt(page.getByText(/^Linked to /).first());
+    await notesCard.getByText(/^New notes file:/).waitFor();
+    await take.pointAt(notesCard.getByText(/^New notes file:/));
   });
 
   await take.beat("S09c", async () => {
-    await take.scrollTo(page.getByText("Before you finish: save your notes"), { block: "start" });
-    await take.type(page.getByLabel("Who is saving (initials or role)"), "MOA", { label: "Who is saving" });
-    const pass = page.getByLabel(/^Passphrase \(at least/);
+    const pass = page.getByLabel(/^New passphrase/);
     await take.type(pass, "Summer2026!!", { label: "weak passphrase" });
     await take.sleep(1600);
     await take.type(pass, PASSPHRASE, { label: "strong passphrase", delay: 55 });
     await take.sleep(900);
     await take.type(page.getByLabel("Confirm passphrase"), PASSPHRASE, { label: "confirm passphrase", delay: 40 });
-    await take.click(page.getByRole("button", { name: "Save notes file" }), { label: "Save notes file" });
-    await page.getByText(/Notes saved/).first().waitFor();
-    await take.pointAt(page.getByText(/Notes saved/).first());
+    await take.type(page.getByLabel("Who is saving (initials or role)"), "MOA", { label: "Who is saving" });
+    await take.click(page.getByRole("button", { name: "Save and lock" }), { label: "Save and lock" });
+    const saving = notesCard.getByText(/Saving to /).first();
+    await saving.waitFor();
+    await take.pointAt(saving);
   }, { tail: 1.2 });
 
   // S09d, the "One week later" card, sits between these in the edit.
@@ -106,15 +110,9 @@ await runTake("s09-notes", async (take) => {
     await take.chooseFile(page.locator('input[type="file"]').first(), "week-2-waitlist.csv", {
       label: "load week 2",
     });
-    await take.scrollTo(page.getByText("Restore your notes"), { block: "start" });
-    // A week later the office points the app at its notes file again.
-    const useExisting = page.getByRole("button", { name: "use one you already have" });
-    if (await useExisting.isVisible()) {
-      await take.click(useExisting, { label: "use one you already have" });
-      await take.sleep(500);
-    }
-    await take.type(page.getByLabel("Passphrase for this file"), PASSPHRASE, { label: "passphrase", delay: 40 });
-    await take.click(page.getByRole("button", { name: "Load notes" }), { label: "Load notes" });
+    await take.scrollTo(notesCard, { block: "start" });
+    await take.type(page.getByLabel("Passphrase", { exact: true }), PASSPHRASE, { label: "passphrase", delay: 40 });
+    await take.click(page.getByRole("button", { name: "Unlock and load notes" }), { label: "Unlock and load notes" });
     const status = page.getByText(/now carry notes/).first();
     await status.waitFor();
     await take.pointAt(status);
