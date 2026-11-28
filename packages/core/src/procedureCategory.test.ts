@@ -23,6 +23,14 @@ describe("classifyProcedure", () => {
     expect(minutes("Colpocleisis")).toBe(90);
   });
 
+  it("gives Acessa and vNOTES the hysterectomy length", () => {
+    expect(minutes("Radiofrequency Ablation Fibroid Laparoscopic")).toBe(180);
+    expect(minutes("Acessa Procedure")).toBe(180);
+    expect(minutes("Hysterectomy Transvaginal Endoscopic")).toBe(180);
+    expect(minutes("Salpingectomy vNOTES")).toBe(180);
+    expect(minutes("Ablation Endometrium")).toBe(30);
+  });
+
   it("keeps the named approaches", () => {
     expect(minutes("Hysteroscopy with Dilatation and Curettage")).toBe(30);
     expect(minutes("Myomectomy Laparoscopic")).toBe(60);

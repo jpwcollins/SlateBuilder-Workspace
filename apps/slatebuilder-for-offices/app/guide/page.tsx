@@ -190,7 +190,9 @@ export default function Guide() {
           </li>
           <li>
             <span className="font-semibold">Default case lengths</span> — six
-            buckets: hysteroscopy 30, laparoscopy 60, hysterectomy 180, and
+            buckets: hysteroscopy 30, laparoscopy 60, hysterectomy 180 (which
+            also covers radiofrequency fibroid ablation, Acessa, and vNOTES),
+            and
             other procedures split into minor 30 (e.g. D&amp;C, IUD, lesion
             excision), intermediate 60 (e.g. a single repair, sling,
             labiaplasty) and major 90 (e.g. anterior and posterior repair,
@@ -200,7 +202,9 @@ export default function Guide() {
             doesn&apos;t recognise gets the major length. Where a length rests
             on an assumption like that, the case card says so and the note
             after loading lists those procedures, so you can check them. The
-            lengths are shown on one line under the dates;{" "}
+            lengths are shown on one line under the dates, with{" "}
+            <span className="font-semibold">How procedures are grouped</span>{" "}
+            beneath listing what falls in each;{" "}
             <span className="font-semibold">Edit</span> opens them. These are
             starting estimates; you can override any case&apos;s duration on its
             slate card, and most offices will want to.{" "}

@@ -1,5 +1,9 @@
 // Which default case length a procedure gets.
 //
+// Groups: hysteroscopy; laparoscopy; hysterectomy, which also takes
+// radiofrequency fibroid ablation (Acessa) and vNOTES; and Other in three
+// tiers (minor, intermediate, major).
+//
 // The hospital's SURG_DESC names come from a fixed list, so the names seen in
 // a year of its procedures are classified one by one below. Anything not on
 // that list falls back to the words in its name (hysterectomy, hysteroscopy,
@@ -24,7 +28,7 @@ export type ProcedureCategory =
 export const PROCEDURE_CATEGORY_LABELS: Record<ProcedureCategory, string> = {
   hysteroscopy: "Hysteroscopy",
   laparoscopy: "Laparoscopy",
-  hysterectomy: "Hysterectomy",
+  hysterectomy: "Hysterectomy/Acessa/vNOTES",
   otherMinor: "Other – minor",
   otherIntermediate: "Other – intermediate",
   otherMajor: "Other – major",
@@ -140,6 +144,12 @@ export function classifyProcedure(name: string | undefined): ProcedureClassifica
   }
   const known = KNOWN[key];
   if (known) return known;
+  // Radiofrequency ablation of fibroids (Acessa) and vNOTES (transvaginal
+  // endoscopic surgery) take as long as a hysterectomy, so share its length,
+  // even where the name also says laparoscopic.
+  if (/radiofrequency|acessa|transvaginal endoscopic|\bv-?notes\b/.test(key)) {
+    return { category: "hysterectomy" };
+  }
   if (key.includes("hysterectomy")) return { category: "hysterectomy" };
   if (key.includes("hysteroscop")) return { category: "hysteroscopy" };
   if (key.includes("laparoscop")) return { category: "laparoscopy" };

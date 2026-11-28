@@ -4375,7 +4375,7 @@ export default function Home() {
                     Default case lengths:
                   </span>{" "}
                   Hysteroscopy {defaultDurations.hysteroscopy} · Laparoscopy{" "}
-                  {defaultDurations.laparoscopy} · Hysterectomy{" "}
+                  {defaultDurations.laparoscopy} · Hysterectomy/Acessa/vNOTES{" "}
                   {defaultDurations.hysterectomy} · Other: minor{" "}
                   {defaultDurations.otherMinor ?? STANDARD_DURATIONS.otherMinor},
                   intermediate{" "}
@@ -4392,22 +4392,78 @@ export default function Home() {
                   {durationsOpen ? "Done ▾" : "Edit ▸"}
                 </span>
               </button>
+              <details className="mt-2 text-xs text-sand-700">
+                <summary className="cursor-pointer select-none font-semibold text-slateBlue-700">
+                  How procedures are grouped
+                </summary>
+                <dl className="mt-2 grid gap-x-4 gap-y-2 sm:grid-cols-[13rem_1fr]">
+                  <dt className="font-semibold text-sand-900">Hysteroscopy</dt>
+                  <dd>
+                    Any hysteroscopic procedure: polypectomy, D&amp;C with
+                    hysteroscopy, myomectomy, resection, septum division, IUD
+                    removal.
+                  </dd>
+                  <dt className="font-semibold text-sand-900">Laparoscopy</dt>
+                  <dd>
+                    Any other laparoscopic procedure: ovarian cystectomy,
+                    salpingectomy, oophorectomy, myomectomy, endometriosis
+                    excision, diagnostic laparoscopy. A procedure named without
+                    an approach (e.g. &quot;Salpingectomy&quot;, &quot;Lysis
+                    Adhesions&quot;) is taken as laparoscopic.
+                  </dd>
+                  <dt className="font-semibold text-sand-900">
+                    Hysterectomy/Acessa/vNOTES
+                  </dt>
+                  <dd>
+                    Every hysterectomy (laparoscopic, abdominal, vaginal, with
+                    repair), radiofrequency fibroid ablation (Acessa), and
+                    vNOTES (transvaginal endoscopic) procedures.
+                  </dd>
+                  <dt className="font-semibold text-sand-900">Other – minor</dt>
+                  <dd>
+                    D&amp;C and D&amp;E, IUD and implant insertion or removal,
+                    endometrial biopsy and ablation, EUA, LEEP, cervical cautery,
+                    excision or biopsy of a vulvar, vaginal or cervical lesion,
+                    Bartholin marsupialization, hymenotomy, cystoscopy.
+                  </dd>
+                  <dt className="font-semibold text-sand-900">
+                    Other – intermediate
+                  </dt>
+                  <dd>
+                    Cystocele or rectocele repair alone, perineorrhaphy, TVT and
+                    TOT slings, labiaplasty, vaginoplasty, vestibulectomy,
+                    vaginal myomectomy, vaginal mesh removal, mini-laparotomy,
+                    scar revision, haematoma evacuation, laceration repair.
+                  </dd>
+                  <dt className="font-semibold text-sand-900">Other – major</dt>
+                  <dd>
+                    Combined cystocele and rectocele repair, colpocleisis,
+                    uterosacral suspension, vaginal apical repair,
+                    sacrocolpopexy, fascial sling, repair with sling, abdominal
+                    myomectomy, exploratory laparotomy, tubal reanastomosis, and
+                    any procedure the app doesn&apos;t recognise.
+                  </dd>
+                </dl>
+                <p className="mt-2 text-sand-600">
+                  Where a case&apos;s length rests on an assumption (no approach
+                  in the name, or a procedure the app doesn&apos;t know), its
+                  card says so and the note after loading lists it.
+                  &quot;Procedure Not Performed&quot; and procedural sedation
+                  (PS) rows are left out.
+                </p>
+              </details>
               {durationsOpen && (
                 <>
                   <p className="mt-2 text-xs text-sand-600">
-                    Starting estimates by procedure type. Other procedures are
-                    split into minor (e.g. D&amp;C, IUD, lesion excision),
-                    intermediate (e.g. a single repair, sling, labiaplasty) and
-                    major (e.g. anterior and posterior repair, colpocleisis);
-                    a procedure the app doesn&apos;t recognise gets the major
-                    length. Any single case can be changed on its slate card.
+                    Starting estimates by procedure type. Any single case can
+                    be changed on its slate card.
                   </p>
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
                     {(
                       [
                         ["hysteroscopy", "Hysteroscopy"],
                         ["laparoscopy", "Laparoscopy"],
-                        ["hysterectomy", "Hysterectomy"],
+                        ["hysterectomy", "Hysterectomy/Acessa/vNOTES"],
                         ["otherMinor", "Other – minor"],
                         ["otherIntermediate", "Other – intermediate"],
                         ["other", "Other – major"],
