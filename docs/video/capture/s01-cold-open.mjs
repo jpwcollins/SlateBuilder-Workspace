@@ -1,5 +1,8 @@
 // Section 1 · Cold open: the hospital's list as a plain spreadsheet (S01a–S01b).
-// A generic grid rendered from the week-1 CSV, not any particular spreadsheet app.
+// A generic grid rendered from the week-1 file, not any particular spreadsheet
+// app. The file has the hospital's export columns: SURGEON, PAT_NAME1, PHN,
+// SURG_DESC, BOOK_FORM_RECEIVED_DTM, REQUEST_QUEUE, DIAGNOSIS, TIME_WAITING,
+// TARGET_TIME, TARGET_PERCENT.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -9,10 +12,12 @@ const rows = fs
   .readFileSync(path.join(DATA_DIR, "week-1-waitlist.csv"), "utf8")
   .trim()
   .split("\n")
-  .map((line) => line.split(","));
-const letters = "ABCDEF";
+  .map((line) => (line.match(/("([^"]|"")*"|[^,]*)(,|$)/g) ?? []).slice(0, -1).map((cell) => cell.replace(/,$/, "").replace(/^"|"$/g, "").trim()));
+const letters = "ABCDEFGHIJ";
 const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
-const overdue = (r) => Number(r[5]) > parseInt(r[4], 10);
+const WAIT = 7; // TIME_WAITING
+const TARGET = 8; // TARGET_TIME, e.g. "12.00 wks"
+const overdue = (r) => Number(r[WAIT]) > parseFloat(r[TARGET]);
 
 const html = `<!doctype html><html><head><style>
   body { margin: 0; background: #fff; font: 15px/1.2 -apple-system, "Helvetica Neue", Arial, sans-serif; color: #1f2933; }
@@ -27,13 +32,13 @@ const html = `<!doctype html><html><head><style>
 </style></head><body>
 <div class="bar">week-1-waitlist.csv</div>
 <table>
-  <colgroup><col style="width:46px"><col style="width:220px"><col style="width:140px"><col style="width:120px"><col style="width:520px"><col style="width:150px"><col style="width:150px"></colgroup>
+  <colgroup><col style="width:46px"><col style="width:150px"><col style="width:170px"><col style="width:110px"><col style="width:330px"><col style="width:120px"><col style="width:250px"><col style="width:100px"><col style="width:120px"><col style="width:120px"><col style="width:130px"></colgroup>
   <tr><th></th>${[...letters].map((l) => `<th>${l}</th>`).join("")}</tr>
   ${rows
     .map(
       (r, i) =>
-        `<tr class="${i === 0 ? "head" : overdue(r) ? "flag" : ""}" data-name="${esc(r[0])}"><td class="n">${i + 1}</td>${r
-          .map((c, j) => `<td class="${j >= 4 && i > 0 ? "num" : ""}${j === 5 ? " wait" : ""}">${esc(c)}</td>`)
+        `<tr class="${i === 0 ? "head" : overdue(r) ? "flag" : ""}" data-name="${esc(r[1])}"><td class="n">${i + 1}</td>${r
+          .map((c, j) => `<td class="${j >= WAIT && i > 0 ? "num" : ""}${j === WAIT ? " wait" : ""}">${esc(c)}</td>`)
           .join("")}</tr>`,
     )
     .join("\n")}
@@ -64,6 +69,6 @@ await runTake("s01-cold-open", async (take) => {
   });
 
   await take.beat("S01b", async () => {
-    await take.scrollTo('tr[data-name="Hannah Liu"]');
+    await take.scrollTo('tr[data-name="Liu, Hannah"]');
   });
 });

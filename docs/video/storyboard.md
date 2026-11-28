@@ -4,8 +4,11 @@
 
 - **Length:** about 4:30 (~640 words of voiceover at ~145 words per minute)
 - **Audience:** MOAs and surgeons in an office receiving the hospital's weekly waitlist
-- **Surgeon on screen:** "Dr Jane" (the SURGEON column of the dummy data). No practice name.
-- **Data:** `docs/video/data/week-1-waitlist.csv` (40 patients, 8 over target) and
+- **Surgeon on screen:** "Doe, Jane, MD" (the SURGEON column of the dummy data). No practice name.
+- **Data:** in the hospital's export format (SURGEON, PAT_NAME1 as "Surname, First", PHN,
+  SURG_DESC from the hospital's procedure list, BOOK_FORM_RECEIVED_DTM, REQUEST_QUEUE,
+  DIAGNOSIS code, TIME_WAITING, TARGET_TIME, TARGET_PERCENT):
+  `docs/video/data/week-1-waitlist.csv` (40 patients, 8 over target) and
   `week-2-waitlist.csv` (the same list a week later: everyone one week older, Claire Dubois
   removed after her surgery, one new urgent referral, Ava Robinson)
 - **Voice:** ElevenLabs, your cloned voice. One audio file per shot, named by shot ID
@@ -76,11 +79,11 @@ Timings are targets. The final cut follows the voiceover.
 | Shot | On screen | Capture | Zoom / motion |
 |---|---|---|---|
 | S04a | Step 3 "OR dates": "Number of slates" changes from 2 to 3 and the third date appears, with "View suggested slates →" beside them. | PW | Zoom on the dates |
-| S04b | Open "Default case lengths… Edit ▸": the four defaults. Pointer ends on "View suggested slates →". | PW | Zoom on the case lengths |
+| S04b | Open "Default case lengths… Edit ▸": the six defaults. Pointer ends on "View suggested slates →". | PW | Zoom on the case lengths |
 
 > **VO S04a:** Step three sets your OR dates. Choose up to three, and check them against your actual OR days.
 >
-> **VO S04b:** Case lengths start from four defaults by procedure type, and you can adjust any single case later. Each case is followed by a thirty-minute turnaround, and a slate holds seven cases at most.
+> **VO S04b:** Case lengths start from six defaults by procedure type, and you can adjust any single case later. Each case is followed by a thirty-minute turnaround, and a slate holds seven cases at most.
 
 *(Step 2, restoring notes, is skipped here and covered in section 9.)*
 
@@ -149,7 +152,7 @@ Timings are targets. The final cut follows the voiceover.
 | Shot | On screen | Capture | Zoom / motion |
 |---|---|---|---|
 | S08a | Back on Suggested slates, click "Export all slates (PDF)". | PW | Zoom on the button |
-| S08b | One PDF page: Dr Jane and the date at the top, case codes instead of names, the booking-order marks with the key at the foot. | Still (rendered PDF page) | Slow pan down the page |
+| S08b | One PDF page: the surgeon (Doe, Jane, MD) and the date at the top, case codes instead of names, the booking-order marks with the key at the foot. | Still (rendered PDF page) | Slow pan down the page |
 
 > **VO S08a:** When the slates are ready, export them.
 >
@@ -191,7 +194,10 @@ Timings are targets. The final cut follows the voiceover.
 The edit is a Matte project (`~/Movies/SlateBuilder Demo v2.matte`) laid out from
 `edit/edl.json`, with the voiceover as one track (`edit/vo-track.wav`).
 
-- **After a re-record.** Run `capture/record-all.mjs`, then `edit/build_edl.py`, then
+- **After a re-record.** Run `capture/record-all.mjs` (under `caffeinate -dimsu`, and check
+  each take's length: a stalled take runs for minutes), then `edit/composite_stills.py`, which
+  lays the real macOS windows kept in `out/stills/original/` over the new takes and blurs the
+  sender's address on the Mail draft, then `edit/build_edl.py`, then
   `edit/rebuild_matte.py <project.matte> <old edl.json>` with the project closed in Matte.
   It keeps the clip, text and canvas styling and redoes the timing: each zoom moves with
   its voiceover line, and close zooms are re-aimed where the pointer rests in the new take

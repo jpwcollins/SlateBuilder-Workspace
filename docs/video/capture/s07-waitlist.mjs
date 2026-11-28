@@ -29,7 +29,7 @@ await runTake("s07-waitlist", async (take) => {
   });
 
   await take.beat("S07c", async () => {
-    const row = page.getByRole("button").filter({ hasText: "Rachel Goldberg" }).first();
+    const row = page.getByRole("button").filter({ hasText: "Goldberg, Rachel" }).first();
     await take.click(row, { label: "open Rachel Goldberg" });
     await take.click(page.getByRole("button", { name: "Remove from waitlist" }), { label: "Remove from waitlist" });
     await take.sleep(1200);
@@ -41,7 +41,7 @@ await runTake("s07-waitlist", async (take) => {
   await take.beat("S07d", async () => {
     await take.click(page.getByRole("button", { name: /^Long-waiters/ }), { label: "Long-waiters tab" });
     await take.sleep(800);
-    await take.scrollTo(page.getByText("Hannah Liu").first());
+    await take.scrollTo(page.getByText("Liu, Hannah").first());
   }, { tail: 1.2 });
 
 });

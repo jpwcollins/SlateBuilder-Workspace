@@ -55,14 +55,14 @@ await runTake("s09-notes", async (take) => {
   await page.getByLabel("Number of slates").selectOption("3");
   // Off camera: this week's notes, made the way an office would.
   await page.getByRole("button", { name: /^Suggested slates/ }).click();
-  const priya = card(page, "Priya Natarajan").getByLabel("Duration (min)");
+  const priya = card(page, "Natarajan, Priya").getByLabel("Duration (min)");
   await priya.fill("210");
   await priya.press("Tab");
-  await openCardControls(card(page, "Amara Okafor"));
-  await card(page, "Amara Okafor").getByLabel("OSA").check();
+  await openCardControls(card(page, "Okafor, Amara"));
+  await card(page, "Okafor, Amara").getByLabel("OSA").check();
   const date = (await slate(page, 1).innerText()).match(/(\d{4}-\d{2}-\d{2})/)[1];
-  await openCardControls(card(page, "Grace Whitfield"));
-  const grace = card(page, "Grace Whitfield").getByLabel("Patient unavailable until");
+  await openCardControls(card(page, "Whitfield, Grace"));
+  const grace = card(page, "Whitfield, Grace").getByLabel("Patient unavailable until");
   await grace.fill(addDays(date, 3));
   // The date is set on Enter; she then leaves the slate, taking the field with her.
   await grace.press("Enter");

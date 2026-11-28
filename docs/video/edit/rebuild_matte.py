@@ -37,6 +37,8 @@ CAPTIONS = {
 CAPTION_LEN = 6.6
 # Image items whose picture differs from the edl's file.
 IMAGE_SWAP = {"slates-page-1.png": "slates-page-1-white.png"}
+# Stills rebuilt by composite_stills.py, framed for the full screen.
+COMPOSITED_STILLS = {"s03a-open-dialog.png", "s09b-save-dialog.png", "s07c-removal-email.png"}
 
 def new_id():
     return str(uuid.uuid4()).upper()
@@ -88,6 +90,11 @@ for it in edl["items"]:
         c["sourceIn"], c["sourceOut"] = it["src_in"], it["src_out"]
     else:
         c["sourceIn"], c["sourceOut"] = 0, it["duration"]
+        if name in COMPOSITED_STILLS:
+            # Already framed by composite_stills.py: show the whole image.
+            crop = c["bezelSettings"]["crop"]
+            crop["normalizedRect"], crop["contentOffset"] = [[0, 0], [1, 1]], [0.5, 0.5]
+            c["transform3D"]["scale"] = 0.96  # the same size as the screen recordings
     clips.append(c)
 v1["clips"] = clips
 

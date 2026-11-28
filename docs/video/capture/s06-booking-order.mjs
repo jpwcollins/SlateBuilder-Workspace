@@ -17,7 +17,7 @@ await runTake("s06-booking-order", async (take) => {
   await page.getByRole("button", { name: /^Suggested slates/ }).click();
   // Off camera: Amara Okafor's case is quicker than the default, leaving 60
   // minutes free on Slate 2.
-  const amara = card(page, "Amara Okafor").getByLabel("Duration (min)");
+  const amara = card(page, "Okafor, Amara").getByLabel("Duration (min)");
   await amara.fill("120");
   await amara.press("Tab");
   // Off camera: fold away Slates 1 and 3 so Slate 2 sits just above the
@@ -40,19 +40,19 @@ await runTake("s06-booking-order", async (take) => {
   });
 
   await take.beat("S06b", async () => {
-    const row = page.locator('[draggable="true"]').filter({ hasText: "Anika Sharma" }).first();
+    const row = page.locator('[draggable="true"]').filter({ hasText: "Sharma, Anika" }).first();
     const target = slate(page, 2).locator('[draggable="true"]').filter({ hasText: "Duration (min)" }).last();
     await take.scrollTo(row, { block: "center" });
     await take.drag(row, target, { label: "drag Anika Sharma onto Slate 2", ms: 1400 });
     await reasonDialog(page).waitFor();
     await take.select(reasonDialog(page).getByLabel("Reason"), "clinical_urgency", { label: "Reason: Clinical urgency" });
     await take.click(reasonDialog(page).getByRole("button", { name: "Done" }), { label: "Done" });
-    await take.pointAt(card(page, "Anika Sharma").getByText("Clinical", { exact: true }));
+    await take.pointAt(card(page, "Sharma, Anika").getByText("Clinical", { exact: true }));
   });
 
   await take.beat("S06c", async () => {
-    await take.click(card(page, "Leila Haddad").locator("summary"), { label: "Leila Haddad controls" });
-    await take.click(card(page, "Leila Haddad").getByRole("button", { name: "Remove from suggested slates" }), {
+    await take.click(card(page, "Haddad, Leila").locator("summary"), { label: "Leila Haddad controls" });
+    await take.click(card(page, "Haddad, Leila").getByRole("button", { name: "Remove from suggested slates" }), {
       label: "hold back Leila Haddad",
     });
     await reasonDialog(page).waitFor();

@@ -19,7 +19,7 @@ try {
       label: "Suggested slates tab",
     });
     await take.scrollTo(slate(page, 1), { block: "start" });
-    await take.pointAt(card(page, "Priya Natarajan").getByText("FIFO", { exact: true }));
+    await take.pointAt(card(page, "Natarajan, Priya").getByText("FIFO", { exact: true }));
   });
 
   await take.beat("S05b", async () => {
@@ -27,7 +27,7 @@ try {
   });
 
   await take.beat("S05c", async () => {
-    const duration = card(page, "Priya Natarajan").getByLabel("Duration (min)");
+    const duration = card(page, "Natarajan, Priya").getByLabel("Duration (min)");
     await take.type(duration, "210", { label: "Priya Natarajan duration" });
     await take.pointAt(slate(page, 1).getByText(/min free|^Full$/).first());
   });
@@ -39,8 +39,8 @@ try {
     const until = new Date(`${date}T12:00:00`);
     until.setDate(until.getDate() + 3);
     const value = until.toISOString().slice(0, 10);
-    await take.click(card(page, "Grace Whitfield").locator("summary"), { label: "Grace Whitfield controls" });
-    const field = card(page, "Grace Whitfield").getByLabel("Patient unavailable until");
+    await take.click(card(page, "Whitfield, Grace").locator("summary"), { label: "Grace Whitfield controls" });
+    const field = card(page, "Whitfield, Grace").getByLabel("Patient unavailable until");
     await take.setValue(field, value, { label: "Grace Whitfield unavailable" });
     // The later slates are full, so she returns to the waitlist and the next
     // patient in line takes the time on Slate 1.
